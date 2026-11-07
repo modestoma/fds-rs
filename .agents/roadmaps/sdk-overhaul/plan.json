@@ -2,12 +2,12 @@
   "schema_version": 3,
   "id": "sdk-overhaul",
   "title": "FDS Rust SDK 设计重构（0.1.0）",
-  "revision": 4,
+  "revision": 5,
   "status": "running",
   "base_branch": "main",
   "merge_mode": "local",
-  "approved_revision": 4,
-  "approval_ref": "2026-11-07 用户回复\"并行\"，批准把三个 fluent 迁移任务的 resources 收窄并并行执行；授权范围同前（本地快进合并，不推送）",
+  "approved_revision": 5,
+  "approval_ref": "2026-11-07 用户在提问中选择：multipart init 无 uploadId \"接受新行为（推荐）\"；delete-prefix \"SDK 加显式选项（推荐）\"；授权范围同前",
   "max_parallel": 3,
   "pending_questions": [],
   "tasks": [
@@ -143,7 +143,7 @@
       "type": "feat",
       "document": "tasks/fluent-multipart-manager.md",
       "status": "planned",
-      "reviewed_revision": 4,
+      "reviewed_revision": 5,
       "depends_on": [
         "fluent-object"
       ],
@@ -160,11 +160,12 @@
       "type": "feat",
       "document": "tasks/typed-responses.md",
       "status": "planned",
-      "reviewed_revision": 4,
+      "reviewed_revision": 5,
       "depends_on": [
         "fluent-bucket",
         "fluent-listing-delete",
-        "fluent-multipart-manager"
+        "fluent-multipart-manager",
+        "delete-prefix-options"
       ],
       "resources": [
         "*"
@@ -176,7 +177,7 @@
       "type": "feat",
       "document": "tasks/object-metadata.md",
       "status": "planned",
-      "reviewed_revision": 4,
+      "reviewed_revision": 5,
       "depends_on": [
         "typed-responses"
       ],
@@ -190,7 +191,7 @@
       "type": "feat",
       "document": "tasks/credentials-provider.md",
       "status": "planned",
-      "reviewed_revision": 4,
+      "reviewed_revision": 5,
       "depends_on": [
         "object-metadata"
       ],
@@ -211,7 +212,7 @@
       "type": "feat",
       "document": "tasks/idempotent-retry.md",
       "status": "planned",
-      "reviewed_revision": 4,
+      "reviewed_revision": 5,
       "depends_on": [
         "object-metadata"
       ],
@@ -225,7 +226,7 @@
       "type": "docs",
       "document": "tasks/docs-release.md",
       "status": "planned",
-      "reviewed_revision": 4,
+      "reviewed_revision": 5,
       "depends_on": [
         "credentials-provider",
         "idempotent-retry"
@@ -285,6 +286,26 @@
         "crates/fds/tests",
         "crates/fds/examples"
       ]
+    },
+    {
+      "key": "delete-prefix-options",
+      "title": "delete_prefix 增加显式 marker/delimiter，CLI 改用 SDK",
+      "type": "refactor",
+      "document": "tasks/delete-prefix-options.md",
+      "status": "planned",
+      "reviewed_revision": 5,
+      "depends_on": [
+        "fluent-listing-delete"
+      ],
+      "resources": [
+        "crates/fds/src/object/listing.rs",
+        "crates/fds/src/object/delete.rs",
+        "crates/fds_cli/src/object.rs",
+        "crates/fds/tests",
+        "crates/fds_cli/tests",
+        "README.md",
+        "docs"
+      ]
     }
   ],
   "acceptance": null,
@@ -319,6 +340,19 @@
         "typed-responses"
       ],
       "at": "2026-11-07T13:54:19Z"
+    },
+    {
+      "revision": 5,
+      "reason": "用户决定：delete_prefix 加显式 marker/delimiter 选项供 CLI 复用；multipart init 无 uploadId 时报错作为 AC-7 例外",
+      "affects": [
+        "credentials-provider",
+        "docs-release",
+        "fluent-multipart-manager",
+        "idempotent-retry",
+        "object-metadata",
+        "typed-responses"
+      ],
+      "at": "2026-11-07T14:30:48Z"
     }
   ]
 }
