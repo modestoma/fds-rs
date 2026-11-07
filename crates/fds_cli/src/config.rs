@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use clap::Args;
-use fds::credentials::{Credentials, StaticCredentials};
+use fds::credentials::{Credentials, StaticCredentials, StorageTokenProvider};
 use fds::oauth::FdsServiceClient;
 use fds::{Client, ClientBuilder, RetryPolicy};
 use std::{path::PathBuf, time::Duration};
@@ -30,7 +30,7 @@ pub struct Connection {
         conflicts_with = "oauth"
     )]
     access_key_secret: Option<String>,
-    /// JSON OAuth exchange inputs; explicitly exchange once before the operation
+    /// JSON OAuth exchange inputs; exchange before the operation and again before expiry
     #[arg(long, env = "FDS_OAUTH_FILE", global = true)]
     oauth: Option<PathBuf>,
     /// Explicit origin for OAuth exchange (defaults to --endpoint)
@@ -102,11 +102,15 @@ impl Connection {
         Ok(b)
     }
 
-    /// Static credentials, as before the provider API: `--oauth` exchanges
-    /// exactly once before the operation and the token is never refreshed.
+    /// `--oauth` exchanges once before the operation, exactly as before the
+    /// provider API, so a failed first exchange is reported with the same
+    /// message, timing and exit code. The token then seeds a
+    /// [`StorageTokenProvider`] built from the same exchange request, which
+    /// exchanges again before the token expires (SDK default margin). Access
+    /// keys stay static credentials.
     pub async fn client(&self) -> Result<Client> {
         let builder = self.builder()?;
-        let credentials = if let Some(path) = &self.oauth {
+        if let Some(path) = &self.oauth {
             if self.access_key_id.is_some() || self.access_key_secret.is_some() {
                 bail!("choose access keys or OAuth, not both");
             }
@@ -115,21 +119,20 @@ impl Connection {
             if let Some(origin) = &self.auth_endpoint {
                 auth = auth.endpoint(origin);
             }
-            let token = request
-                .exchange(&FdsServiceClient::from_builder(auth)?)
-                .send()
-                .await?;
-            Credentials::storage_token(token)
-        } else {
-            Credentials::access_key(
-                self.access_key_id
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("provide FDS_ACCESS_KEY_ID or --oauth"))?,
-                self.access_key_secret
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("provide FDS_ACCESS_KEY_SECRET or --oauth"))?,
-            )
-        };
+            let exchange = request.exchange(&FdsServiceClient::from_builder(auth)?);
+            let token = exchange.clone().send().await?;
+            return Ok(builder
+                .credentials_provider(StorageTokenProvider::new(exchange).with_token(token))
+                .build()?);
+        }
+        let credentials = Credentials::access_key(
+            self.access_key_id
+                .as_ref()
+                .ok_or_else(|| anyhow!("provide FDS_ACCESS_KEY_ID or --oauth"))?,
+            self.access_key_secret
+                .as_ref()
+                .ok_or_else(|| anyhow!("provide FDS_ACCESS_KEY_SECRET or --oauth"))?,
+        );
         Ok(builder
             .credentials_provider(StaticCredentials::new(credentials))
             .build()?)

@@ -306,7 +306,7 @@ fds_cli --oauth ./oauth.json object list demo-bucket --all # 使用 OAuth 列举
 fds_cli --oauth ./oauth.json object get demo-bucket demo/hello.txt --out ./oauth-downloaded.txt # 使用 OAuth 下载并比对已知内容
 ```
 
-普通存储请求仍使用 `FDS_ENDPOINT`；未指定 `--auth-endpoint` 时也用它交换 token。每次 `--oauth` 调用显式交换一次，不自动刷新；发现的 hostname 不会被自动采用。provider 支持 `XiaoMi`、`QQ`、`Sina`、`RenRen`，需分别提供对应平台的真实凭据。
+普通存储请求仍使用 `FDS_ENDPOINT`；未指定 `--auth-endpoint` 时也用它交换 token。每次 `--oauth` 调用在操作开始前交换一次 token，交换失败时立即报错退出（码 1），不执行操作；之后由 SDK 的 `StorageTokenProvider` 在 token 剩余有效期不超过默认提前量（5 分钟）时自动重新交换，长时间运行的命令（大文件传输、分页列举、批量删除等）不会因 token 过期中断。提前量不可通过命令行修改。续期失败时，当前请求不发送，命令以 `Unauthenticated`（token 未过期）或 `CredentialsExpired`（token 已过期）报错并以 1 退出，已完成的操作不回滚；过期 token 不会被发出。发现的 hostname 不会被自动采用。provider 支持 `XiaoMi`、`QQ`、`Sina`、`RenRen`，需分别提供对应平台的真实凭据。
 
 ## 超时、重试与诊断
 

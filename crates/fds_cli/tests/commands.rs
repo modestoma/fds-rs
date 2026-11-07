@@ -4,7 +4,11 @@ use std::{
     io::Write,
     path::PathBuf,
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 
 struct Files(PathBuf);
@@ -543,6 +547,190 @@ async fn discovery_needs_no_keys_and_oauth_exchange_authenticates_app_listing() 
     assert!(!String::from_utf8_lossy(&result.stderr).contains("secret"));
     exchange.assert_async().await;
     list.assert_async().await;
+}
+
+/// One query parameter of a mock request, as sent (the tests only use values
+/// that need no percent-encoding).
+fn query_value<'a>(request: &'a mockito::Request, key: &str) -> Option<&'a str> {
+    request
+        .path_and_query()
+        .split_once('?')?
+        .1
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// A token exchange mock that issues `storage-secret-N` tokens expiring
+/// `lifetime_ms` after issue, recording each token and its expiry (epoch ms).
+fn issuing_exchange(
+    server: &mut Server,
+    lifetime_ms: i64,
+    issued: &Arc<Mutex<Vec<(String, i64)>>>,
+) -> mockito::Mock {
+    let issued = issued.clone();
+    server
+        .mock("GET", "/")
+        .match_query(Matcher::UrlEncoded("storageAccessToken".into(), "".into()))
+        .match_header("authorization", "OAuth")
+        .with_body_from_request(move |_| {
+            let mut issued = issued.lock().unwrap();
+            let token = format!("storage-secret-{}", issued.len());
+            let expires = chrono::Utc::now().timestamp_millis() + lifetime_ms;
+            issued.push((token.clone(), expires));
+            json!({"token": token, "expireTime": expires})
+                .to_string()
+                .into_bytes()
+        })
+}
+
+/// A slow, token-authenticated listing of `pages` one-object pages that
+/// records the token of every request and when it arrived (epoch ms).
+async fn slow_listing(
+    server: &mut Server,
+    pages: usize,
+    seen: &Arc<Mutex<Vec<(String, i64)>>>,
+) -> mockito::Mock {
+    let seen = seen.clone();
+    server
+        .mock("GET", "/b")
+        .match_query(Matcher::UrlEncoded("appId".into(), "app".into()))
+        .match_header("authorization", "OAuth")
+        .with_body_from_request(move |request| {
+            let token = query_value(request, "storageAccessToken").unwrap_or_default();
+            seen.lock()
+                .unwrap()
+                .push((token.to_owned(), chrono::Utc::now().timestamp_millis()));
+            std::thread::sleep(Duration::from_millis(250));
+            let page: usize = query_value(request, "marker")
+                .and_then(|marker| marker.parse().ok())
+                .unwrap_or(0);
+            json!({"truncated": page + 1 < pages, "nextMarker": (page + 1).to_string(), "objects": [{"name": format!("o{page}")}]})
+                .to_string()
+                .into_bytes()
+        })
+        .create_async()
+        .await
+}
+
+async fn oauth_list_all(server: &Server, input: &str) -> Output {
+    let mut cmd = command(None);
+    cmd.args([
+        "--endpoint",
+        &server.url(),
+        "--oauth",
+        input,
+        "object",
+        "list",
+        "b",
+        "--max-keys",
+        "1",
+        "--all",
+    ]);
+    tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap()
+}
+
+/// Every request carried a token the exchange issued, before it expired.
+fn assert_only_live_tokens(issued: &[(String, i64)], seen: &[(String, i64)]) {
+    for (token, received) in seen {
+        let expires = issued
+            .iter()
+            .find(|(issued, _)| issued == token)
+            .unwrap_or_else(|| panic!("request carried an unknown token {token:?}"))
+            .1;
+        assert!(
+            *received < expires,
+            "{token} sent {}ms after expiry",
+            received - expires
+        );
+    }
+}
+
+#[tokio::test]
+async fn oauth_reexchanges_a_short_lived_token_during_a_long_listing() {
+    const PAGES: usize = 16;
+    let mut server = Server::new_async().await;
+    let files = Files::new();
+    let input = files.write("oauth.json", json!({"app_id":"app","oauth_app_id":"provider-app","access_token":"provider-secret","provider":"QQ"}).to_string());
+    let issued = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    // A 3 s token is refreshed at half its lifetime; the listing takes >= 4 s,
+    // so a token exchanged once would expire before the last pages.
+    let exchange = issuing_exchange(&mut server, 3000, &issued)
+        .expect_at_least(3)
+        .create_async()
+        .await;
+    let list = slow_listing(&mut server, PAGES, &seen).await;
+    let result = oauth_list_all(&server, &input).await;
+    success(&result);
+    let pages: Vec<Value> = serde_json::Deserializer::from_slice(&result.stdout)
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(pages.len(), PAGES);
+    assert_eq!(
+        pages[PAGES - 1]["objects"][0]["name"],
+        format!("o{}", PAGES - 1)
+    );
+    for output in [&result.stdout, &result.stderr] {
+        assert!(!String::from_utf8_lossy(output).contains("secret"));
+    }
+    exchange.assert_async().await;
+    list.expect(PAGES).assert_async().await;
+    let (issued, seen) = (issued.lock().unwrap(), seen.lock().unwrap());
+    assert_eq!(seen.len(), PAGES);
+    assert_only_live_tokens(&issued, &seen);
+    let mut used: Vec<&str> = seen.iter().map(|(token, _)| token.as_str()).collect();
+    used.dedup();
+    assert!(
+        used.len() >= 2,
+        "no token refresh during the listing: {used:?}"
+    );
+}
+
+#[tokio::test]
+async fn oauth_refresh_failure_stops_before_sending_and_exits_one() {
+    const PAGES: usize = 12;
+    let mut server = Server::new_async().await;
+    let files = Files::new();
+    let input = files.write("oauth.json", json!({"app_id":"app","oauth_app_id":"provider-app","access_token":"provider-secret","provider":"QQ"}).to_string());
+    let issued = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    // The first token enters the default 5 minute refresh window after 1.5 s;
+    // every later exchange fails.
+    let first = issuing_exchange(&mut server, 301_500, &issued)
+        .expect(1)
+        .create_async()
+        .await;
+    let failing = server
+        .mock("GET", "/")
+        .match_query(Matcher::UrlEncoded("storageAccessToken".into(), "".into()))
+        .with_status(503)
+        .with_body("private-diagnostic")
+        .expect(1)
+        .create_async()
+        .await;
+    slow_listing(&mut server, PAGES, &seen).await;
+    let result = oauth_list_all(&server, &input).await;
+    assert_eq!(result.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(stderr.contains("storage token exchange failed"), "{stderr}");
+    assert!(
+        !stderr.contains("secret") && !stderr.contains("private"),
+        "{stderr}"
+    );
+    let printed = serde_json::Deserializer::from_slice(&result.stdout)
+        .into_iter::<Value>()
+        .map(Result::unwrap)
+        .count();
+    first.assert_async().await;
+    failing.assert_async().await;
+    let (issued, seen) = (issued.lock().unwrap(), seen.lock().unwrap());
+    assert!((1..PAGES).contains(&printed), "{printed} pages printed");
+    assert_eq!(printed, seen.len(), "the failed page must not be sent");
+    assert_only_live_tokens(&issued, &seen);
 }
 
 #[tokio::test]

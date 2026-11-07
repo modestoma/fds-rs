@@ -313,7 +313,7 @@
       "title": "fds_cli --oauth 改用 StorageTokenProvider 自动续期",
       "type": "feat",
       "document": "tasks/cli-oauth-refresh.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 8,
       "depends_on": [
         "credentials-provider"
