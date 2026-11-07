@@ -13,7 +13,8 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 crate::de::lenient! {
-    /// One entry in a listing.
+    /// One entry in a listing. Missing or `null` keys read as empty, zero or
+    /// `None`.
     #[derive(Debug, Clone, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
     pub struct ObjectSummary {
@@ -21,28 +22,32 @@ crate::de::lenient! {
         #[serde(rename = "name")]
         pub object_name: String,
         pub owner: Owner,
-        pub size: i64,
+        /// Size in bytes; a negative value is a protocol violation.
+        pub size: u64,
+        /// An RFC 3339 `lastModified` string, when the service sends one.
         pub last_modified: Option<DateTime<Utc>>,
-        pub upload_time: i64,
+        /// Upload time, decoded from Unix epoch milliseconds; a negative or
+        /// unrepresentable timestamp is a protocol violation.
+        pub upload_time: Option<DateTime<Utc>> => "crate::de::opt_millis",
     }
 }
 
 crate::de::lenient! {
     /// One page of [`Client::list_objects`]; also carries the state needed to fetch the
-    /// next batch.
+    /// next batch. Missing or `null` keys read as empty, zero or `false`.
     #[derive(Debug, Clone, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
     pub struct ObjectListing {
         #[serde(rename = "name")]
         pub bucket_name: String,
         pub prefix: String,
-        pub max_keys: i32,
+        /// The page limit the service applied, as echoed in `maxKeys`.
+        pub max_keys: u32,
         pub marker: String,
         pub truncated: bool,
         pub next_marker: String,
         pub delimiter: String,
-        #[serde(rename = "objects")]
-        pub object_summaries: Vec<ObjectSummary>,
+        pub objects: Vec<ObjectSummary>,
         pub common_prefixes: Vec<String>,
     }
 }
@@ -183,7 +188,7 @@ impl ListObjects {
     /// `into_pages` when directory prefixes are needed.
     pub fn into_objects(self) -> impl Stream<Item = Result<ObjectSummary>> + Send + 'static {
         self.into_pages()
-            .map_ok(|page| stream::iter(page.object_summaries.into_iter().map(Ok)))
+            .map_ok(|page| stream::iter(page.objects.into_iter().map(Ok)))
             .try_flatten()
     }
 }

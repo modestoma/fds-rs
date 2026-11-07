@@ -22,6 +22,7 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::acl::Owner;
@@ -70,21 +71,26 @@ pub use config::{
 };
 
 crate::de::lenient! {
-    /// Result of [`Client::get_bucket_info`](crate::Client::get_bucket_info).
+    /// Result of [`Client::get_bucket_info`](crate::Client::get_bucket_info),
+    /// and one entry of a [`BucketList`]. Missing or `null` keys read as
+    /// empty, zero, `false` or `None`.
     #[derive(Debug, Clone, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
-    pub struct GetBucketInfoResponse {
+    pub struct BucketInfo {
+        #[serde(rename = "name")]
+        pub bucket_name: String,
+        /// Creation time, decoded from Unix epoch milliseconds; a negative or
+        /// unrepresentable timestamp is a protocol violation.
+        pub creation_time: Option<DateTime<Utc>> => "crate::de::opt_millis",
+        /// Number of objects, as counted by the service (`numObjects`).
+        #[serde(rename = "numObjects")]
+        pub object_count: u64,
+        /// Bytes used.
+        pub used_space: u64,
+        pub storage_class: Option<StorageClass>,
         pub allow_outside_access: bool,
         #[serde(rename = "enableSSE")]
         pub enable_sse: bool,
-        pub creation_time: i64,
-        #[serde(rename = "name")]
-        pub bucket_name: String,
-        #[serde(rename = "numObjects")]
-        pub object_num: i64,
-        pub used_space: i64,
-        #[serde(rename = "storageClass")]
-        pub storage_class_type: Option<StorageClass>,
     }
 }
 
@@ -93,9 +99,9 @@ crate::de::lenient! {
     /// [`Client::list_authorized_buckets`](crate::Client::list_authorized_buckets).
     #[derive(Debug, Clone, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
-    pub struct ListBucketsResponse {
+    pub struct BucketList {
         pub owner: Owner,
-        pub buckets: Vec<GetBucketInfoResponse>,
+        pub buckets: Vec<BucketInfo>,
     }
 }
 

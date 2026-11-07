@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .prefix("quickstart/")
         .send()
         .await?;
-    for o in &listing.object_summaries {
+    for o in &listing.objects {
         println!("  - {} ({} bytes)", o.object_name, o.size);
     }
 

@@ -25,9 +25,11 @@ async fn main() -> fds::Result<()> {
         .send()
         .await?;
     println!(
-        "status={}, content-type={:?}",
-        output.status(),
-        output.metadata().get("Content-Type")
+        "status={}, partial={}, length={:?}, content-type={:?}",
+        output.status().as_u16(),
+        output.is_partial(),
+        output.content_length(),
+        output.content_type()
     );
     while let Some(chunk) = output.chunk().await? {
         println!("received {} bytes", chunk.len());

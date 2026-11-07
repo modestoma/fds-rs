@@ -31,16 +31,25 @@ pub struct PutObject {
 }
 
 crate::de::lenient! {
-    /// Result of `put_object` / `complete_multipart_upload`.
+    /// Result of [`PutObject::send`], also returned by multipart completion.
+    ///
+    /// Missing or `null` strings read as empty and a missing flag as `false`.
+    /// `access_key_id`, `signature` and `expires` describe a download
+    /// signature the service issues for the new object (by default valid for
+    /// 30 days); it is a credential-bearing value, so never log the whole
+    /// response.
     #[derive(Debug, Clone, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
-    pub struct PutObjectResponse {
+    pub struct PutObjectOutput {
         pub bucket_name: String,
         pub object_name: String,
+        /// The version this write replaced, if the service reported one.
+        pub previous_version_id: Option<String>,
         pub access_key_id: String,
         pub signature: String,
-        pub expires: i64,
-        pub previous_version_id: String,
+        /// When [`signature`](Self::signature) expires, decoded from Unix
+        /// epoch milliseconds; not an object TTL.
+        pub expires: Option<DateTime<Utc>> => "crate::de::opt_millis",
         pub outside_access: bool,
     }
 }
@@ -112,7 +121,7 @@ impl PutObject {
 
     /// PUT `/{bucket}/{object}`, consuming the body without copying or
     /// retrying it.
-    pub async fn send(self) -> Result<PutObjectResponse> {
+    pub async fn send(self) -> Result<PutObjectOutput> {
         validate_object(&self.bucket, &self.object)?;
         let mut headers = HeaderMap::new();
         for (name, value) in [

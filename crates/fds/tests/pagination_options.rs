@@ -48,10 +48,7 @@ async fn lazy_pages_preserve_scope_initial_marker_and_empty_pages() {
         ["logs/dir/"]
     );
     assert!(!second.matched_async().await);
-    assert_eq!(
-        pages.next().await.unwrap().unwrap().object_summaries.len(),
-        1
-    );
+    assert_eq!(pages.next().await.unwrap().unwrap().objects.len(), 1);
     assert!(pages.next().await.is_none());
     assert!(pages.next().await.is_none());
     first.assert_async().await;

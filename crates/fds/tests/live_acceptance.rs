@@ -70,11 +70,7 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
             .send()
             .await?;
         let listing = client.list_objects(&bucket).prefix(&key).send().await?;
-        if !listing
-            .object_summaries
-            .iter()
-            .any(|o| o.object_name == key)
-        {
+        if !listing.objects.iter().any(|o| o.object_name == key) {
             return Err(fds::Error::new(
                 fds::ErrorKind::Unexpected,
                 "listing did not return uploaded object",

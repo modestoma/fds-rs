@@ -19,10 +19,10 @@ fn basic_info_entry_list_metadata() {
     let json = r#"{"size":10,"uploadTime":1,"storageClass":"Standard","metadataBean":{"rawMeta":{"entry":[{"key":"content-type","value":"image/png"}]}}}"#;
     let info: ObjectBasicInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.size, 10);
-    assert_eq!(
-        info.storage_class_type.as_ref().map(|s| s.as_str()),
-        Some("Standard")
-    );
+    assert_eq!(info.upload_time, chrono::DateTime::from_timestamp_millis(1));
+    let class = info.storage_class.as_ref().unwrap();
+    assert_eq!(class.as_str(), "Standard");
+    assert!(class.is_standard());
     assert_eq!(info.metadata.get("content-type"), Some("image/png"));
 }
 
@@ -37,9 +37,9 @@ fn object_listing_tolerates_null_fields() {
     assert_eq!(l.next_marker, "");
     assert_eq!(l.delimiter, "");
     assert!(l.common_prefixes.is_empty());
-    assert_eq!(l.object_summaries.len(), 1);
-    assert_eq!(l.object_summaries[0].object_name, "manifest/a");
-    assert!(l.object_summaries[0].last_modified.is_none());
+    assert_eq!(l.objects.len(), 1);
+    assert_eq!(l.objects[0].object_name, "manifest/a");
+    assert!(l.objects[0].last_modified.is_none());
 }
 
 #[test]
@@ -49,7 +49,8 @@ fn presigned_get_url_shape() {
         .presign_object("b", "o")
         .expires_at(ts)
         .build()
-        .unwrap();
+        .unwrap()
+        .to_string();
     // Query is sorted: Expires < GalaxyAccessKeyId; Signature appended raw.
     assert!(url.starts_with(
             "https://cnbj1.fds.api.xiaomi.com/b/o?Expires=1752400000000&GalaxyAccessKeyId=AKID&Signature="
@@ -66,7 +67,8 @@ fn presigned_head_url_has_metadata_subresource() {
         .method(Method::HEAD)
         .expires_at(ts)
         .build()
-        .unwrap();
+        .unwrap()
+        .to_string();
     assert!(url.contains("metadata="));
     assert!(url.contains("&Signature="));
 }
@@ -89,13 +91,15 @@ fn presign_requires_a_valid_expiration() {
         .cdn()
         .build()
         .unwrap();
-    assert!(url.starts_with("https://cdn.cnbj1.fds.api.mi-img.com/b/o?Expires="));
+    assert!(url
+        .as_str()
+        .starts_with("https://cdn.cnbj1.fds.api.mi-img.com/b/o?Expires="));
 }
 
 #[test]
 fn absolute_url() {
     let u = client().absolute_object_url("b", "dir/o.txt").unwrap();
-    assert_eq!(u, "https://cnbj1.fds.api.xiaomi.com/b/dir%2Fo.txt");
+    assert_eq!(u.as_str(), "https://cnbj1.fds.api.xiaomi.com/b/dir%2Fo.txt");
 }
 
 #[test]
@@ -110,6 +114,32 @@ fn storage_class_transparent_string() {
     assert_eq!(sc.as_str(), "Standard");
     let sc2: StorageClass = serde_json::from_str("\"STANDARD_IA\"").unwrap();
     assert_eq!(sc2.as_str(), "STANDARD_IA");
+    assert_eq!(sc2.to_string(), "STANDARD_IA");
+}
+
+#[test]
+fn storage_class_predicates_ignore_ascii_case() {
+    // (value, standard, standard_ia, archive)
+    for (value, standard, ia, archive) in [
+        ("STANDARD", true, false, false),
+        ("Standard", true, false, false),
+        ("standard", true, false, false),
+        ("STANDARD_IA", false, true, false),
+        ("standard_ia", false, true, false),
+        ("Archive", false, false, true),
+        ("ARCHIVE", false, false, true),
+        ("", false, false, false),
+        ("StandardIA", false, false, false),
+        ("STANDARD ", false, false, false),
+    ] {
+        let class = StorageClass::new(value);
+        assert_eq!(class.is_standard(), standard, "{value:?}");
+        assert_eq!(class.is_standard_ia(), ia, "{value:?}");
+        assert_eq!(class.is_archive(), archive, "{value:?}");
+        assert_eq!(class.as_str(), value);
+    }
+    // Equality stays exact: the casing is preserved, not normalized.
+    assert_ne!(StorageClass::new("Standard"), StorageClass::new("STANDARD"));
 }
 
 #[test]

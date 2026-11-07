@@ -53,6 +53,7 @@ OAuth 的服务错误丢弃 body、request ID 和 service code，仅保留状态
 | `GetObjectOutput::chunk()` | 消费下一块，不累计完整 body |
 | `bytes()` | 全量收集剩余 body；先消费过的 chunk 不会重现 |
 | `copy_to()` | 流式写入调用者的 writer；不 flush/shutdown，不回滚目标 |
+| `into_stream()` / `into_async_read()` | 剩余 body 转为 `Stream<Item = Result<Bytes>>` 或 `AsyncRead`，逐块转发，不累计；AsyncRead 的错误是包着 `fds::Error` 的 `io::Error` |
 
 流提前 EOF 或单块超过剩余长度时报错，达到声明长度后停止轮询，因此不验证尾随数据。未知长度没有隐式内存收集或临时落盘入口。Content-Length 由 body 产生，metadata 不能覆盖 Content-Length/Transfer-Encoding。
 

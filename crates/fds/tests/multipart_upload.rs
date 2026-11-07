@@ -470,7 +470,7 @@ async fn failed_run_is_recovered_manually_from_progress() {
     assert_eq!(progress.total_parts, 2);
     assert_eq!(progress.file_size, 6);
     assert_eq!(progress.parts.len(), 1);
-    assert_eq!(progress.parts[0].part_number, 1);
+    assert_eq!(progress.parts[0].part_number.get(), 1);
     // Running again is refused instead of replaying hidden requests.
     let again = upload.upload(std::future::pending()).await.unwrap_err();
     assert_eq!(again.kind(), fds::ErrorKind::InvalidInput);

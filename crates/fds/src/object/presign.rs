@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use http::Method;
 use reqwest::header::HeaderMap;
 use std::time::Duration;
+use url::Url;
 
 /// Builder for [`Client::presign_object`]. Presigning is local: `build`
 /// signs with the client's access key and makes no request, so this builder
@@ -74,8 +75,9 @@ impl PresignObject {
     ///
     /// `Expires` is a millisecond timestamp and drives the signature's Date
     /// row; `Signature` is appended after the sorted query and is NOT
-    /// URL-encoded.
-    pub fn build(self) -> Result<String> {
+    /// URL-encoded. The [`Url`]'s string form (`as_str`, `Display`) is
+    /// exactly the signed URL: parsing does not re-encode it.
+    pub fn build(self) -> Result<Url> {
         // Check the lifetime first, then the names, then the credentials.
         let expiration = match self.expiration {
             Some(Expiration::At(at)) => at,
@@ -112,7 +114,17 @@ impl PresignObject {
         let sig = auth::sign(access_secret, self.method.as_str(), &with_query, &headers)?;
 
         // Append &Signature=<sig> raw (unsorted, un-encoded).
-        Ok(format!("{}&{}={}", with_query, HTTP_HEADER_SIGNATURE, sig))
+        let signed = format!("{}&{}={}", with_query, HTTP_HEADER_SIGNATURE, sig);
+        parse_verbatim(&signed)
+    }
+}
+
+/// Parse an already-encoded URL, insisting that parsing kept every byte: the
+/// signature covers this exact string.
+fn parse_verbatim(url: &str) -> Result<Url> {
+    match Url::parse(url) {
+        Ok(parsed) if parsed.as_str() == url => Ok(parsed),
+        _ => Err(Error::unexpected("presigned URL does not round-trip")),
     }
 }
 
@@ -132,8 +144,8 @@ fn expires_after(lifetime: Duration) -> Result<DateTime<Utc>> {
 impl Client {
     /// Build an unsigned URL. An empty object selects the bucket URL; empty
     /// bucket and object select the endpoint root. No network request occurs.
-    pub fn absolute_object_url(&self, bucket: &str, object: &str) -> Result<String> {
-        Ok(self.build_request_url(bucket, object, "", false)?.into())
+    pub fn absolute_object_url(&self, bucket: &str, object: &str) -> Result<Url> {
+        self.build_request_url(bucket, object, "", false)
     }
 
     /// Presign a URL for an object with the client's access key. No network

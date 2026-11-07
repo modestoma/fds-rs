@@ -75,7 +75,7 @@ pub use acl::{GetObjectAcl, SetObjectAcl, SetObjectPublic};
 #[cfg(feature = "manager")]
 pub(crate) use basic::head_request;
 pub use basic::{
-    CopyObject, CopyObjectResponse, GetObject, HeadObject, ObjectExists, PrefetchObject,
+    CopyObject, CopyObjectOutput, GetObject, HeadObject, ObjectExists, PrefetchObject,
     RefreshObject, RenameObject, RestoreObject,
 };
 pub use delete::{
@@ -84,9 +84,9 @@ pub use delete::{
 pub use listing::{ListObjects, ObjectListing, ObjectSummary};
 pub use metadata::{GetObjectBasicInfo, GetObjectMetadata, ObjectBasicInfo, SetObjectMetadata};
 pub use presign::PresignObject;
-pub use put::{PutObject, PutObjectResponse};
+pub use put::{PutObject, PutObjectOutput};
 
-pub use crate::download::{ByteRange, GetObjectOutput};
+pub use crate::download::{ByteRange, ContentRange, GetObjectOutput};
 pub use crate::metadata::ObjectMetadata;
 pub use crate::upload::UploadBody;
 
@@ -116,11 +116,15 @@ pub(crate) fn validate_object(bucket: &str, object: &str) -> Result<()> {
 /// Storage class. FDS models this as `type StorageClass string` (an opaque
 /// string), and the value's casing is NOT stable: e.g. `create_bucket` sends
 /// `STANDARD`, but `get_bucket_info` may return `Standard`. A strict enum would
-/// reject those, so we keep a transparent string wrapper (any server value
-/// deserializes and round-trips losslessly).
+/// reject those, so this is a transparent string wrapper: any server value
+/// deserializes and round-trips losslessly through [`as_str`](Self::as_str).
+///
+/// Compare with the case-insensitive [`is_standard`](Self::is_standard),
+/// [`is_standard_ia`](Self::is_standard_ia) and
+/// [`is_archive`](Self::is_archive); `==` compares the exact strings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct StorageClass(pub String);
+pub struct StorageClass(String);
 
 impl StorageClass {
     /// Canonical value used by `create_bucket` (matches Go's `Standard`).
@@ -132,8 +136,30 @@ impl StorageClass {
         Self(value.into())
     }
 
+    /// The value exactly as sent or received.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// [`STANDARD`](Self::STANDARD), ignoring ASCII case.
+    pub fn is_standard(&self) -> bool {
+        self.0.eq_ignore_ascii_case(Self::STANDARD)
+    }
+
+    /// [`STANDARD_IA`](Self::STANDARD_IA), ignoring ASCII case.
+    pub fn is_standard_ia(&self) -> bool {
+        self.0.eq_ignore_ascii_case(Self::STANDARD_IA)
+    }
+
+    /// [`ARCHIVE`](Self::ARCHIVE), ignoring ASCII case.
+    pub fn is_archive(&self) -> bool {
+        self.0.eq_ignore_ascii_case(Self::ARCHIVE)
+    }
+}
+
+impl std::fmt::Display for StorageClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

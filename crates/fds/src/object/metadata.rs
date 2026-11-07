@@ -5,21 +5,25 @@ use super::{ObjectMetadata, StorageClass};
 use crate::client::ClientRequest;
 use crate::{Client, Result};
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use http::Method;
 use serde::Deserialize;
 use std::time::Duration;
 
 crate::de::lenient! {
     /// Result of `get_object_basic_info`. `metadata` uses the entry-list form
-    /// (see [`ObjectMetadata`](super::ObjectMetadata)).
+    /// (see [`ObjectMetadata`](super::ObjectMetadata)). Missing or `null` keys
+    /// read as zero, `None` or empty metadata.
     #[derive(Debug, Clone, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
     pub struct ObjectBasicInfo {
         pub allow_outside_access: Option<bool>,
-        pub size: i64,
-        pub upload_time: i64,
-        #[serde(rename = "storageClass")]
-        pub storage_class_type: Option<StorageClass>,
+        /// Size in bytes; a negative value is a protocol violation.
+        pub size: u64,
+        /// Upload time, decoded from Unix epoch milliseconds; a negative or
+        /// unrepresentable timestamp is a protocol violation.
+        pub upload_time: Option<DateTime<Utc>> => "crate::de::opt_millis",
+        pub storage_class: Option<StorageClass>,
         #[serde(rename = "metadataBean")]
         pub metadata: ObjectMetadata,
     }

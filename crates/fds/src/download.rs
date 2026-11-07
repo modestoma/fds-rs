@@ -1,11 +1,17 @@
 //! Streaming download types and response consumption helpers.
 
 use crate::object::ObjectMetadata;
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 use bytes::Bytes;
-use reqwest::header::HeaderMap;
+use chrono::{DateTime, Utc};
+use futures_util::{Stream, TryStreamExt};
+use http::header::{
+    HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED,
+};
+use http::StatusCode;
 use std::{fmt, num::NonZeroU64};
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio_util::io::StreamReader;
 
 /// A single HTTP byte range. Closed bounds are inclusive.
 /// Constructors reject reversed bounds and zero-length suffixes locally.
@@ -78,15 +84,76 @@ impl std::str::FromStr for ByteRange {
     }
 }
 
+/// The `Content-Range` of a partial response: an inclusive byte range and,
+/// when the service states it, the complete object size.
+///
+/// Returned by [`GetObjectOutput::content_range`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentRange {
+    start: u64,
+    end: u64,
+    complete_length: Option<u64>,
+}
+
+impl ContentRange {
+    /// First byte position.
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// Last byte position, inclusive.
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+
+    /// The complete object size, or `None` when the service sent `*`.
+    pub fn complete_length(&self) -> Option<u64> {
+        self.complete_length
+    }
+
+    /// Parse `bytes <start>-<end>/<length or *>`; `None` for anything else,
+    /// including reversed bounds and an end beyond the stated length.
+    fn parse(value: &str) -> Option<Self> {
+        let number = |s: &str| -> Option<u64> {
+            if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            s.parse().ok()
+        };
+        let (range, length) = value.strip_prefix("bytes ")?.split_once('/')?;
+        let (start, end) = range.split_once('-')?;
+        let (start, end) = (number(start)?, number(end)?);
+        let complete_length = match length {
+            "*" => None,
+            length => Some(number(length)?),
+        };
+        if start > end || complete_length.is_some_and(|length| end >= length) {
+            return None;
+        }
+        Some(Self {
+            start,
+            end,
+            complete_length,
+        })
+    }
+}
+
 /// Successful GET response. Body consumption is incremental unless `bytes` is used.
-/// A server may ignore Range and return 200; inspect `status()` / `headers()`.
+/// A server may ignore Range and return 200; check [`is_partial`](Self::is_partial)
+/// and [`content_range`](Self::content_range) before relying on a range.
+///
+/// The typed accessors read the response headers. They return `None` for a
+/// missing header and for a value that does not parse, so an unusual header
+/// never fails the download; [`headers`](Self::headers) keeps the raw values.
 ///
 /// Reading the body is bounded by the client's read idle timeout, reset after
 /// each read that makes progress. No total deadline applies by default; if one
 /// was set via [`ClientBuilder::request_timeout`](crate::ClientBuilder::request_timeout)
 /// or [`GetObject::timeout`](crate::object::GetObject::timeout), it keeps
-/// running while [`chunk`](Self::chunk), [`bytes`](Self::bytes) or
-/// [`copy_to`](Self::copy_to) consume the body and fails them once it passes.
+/// running while [`chunk`](Self::chunk), [`bytes`](Self::bytes),
+/// [`copy_to`](Self::copy_to), [`into_stream`](Self::into_stream) or
+/// [`into_async_read`](Self::into_async_read) consume the body and fails them
+/// once it passes.
 #[non_exhaustive]
 pub struct GetObjectOutput {
     response: reqwest::Response,
@@ -97,14 +164,52 @@ impl GetObjectOutput {
         let metadata = ObjectMetadata::from_headers(response.headers());
         Self { response, metadata }
     }
-    pub fn status(&self) -> u16 {
-        self.response.status().as_u16()
+    /// The response status: 200, or 206 for a ranged request the service
+    /// honored.
+    pub fn status(&self) -> StatusCode {
+        self.response.status()
+    }
+    /// Whether the service answered with 206 Partial Content.
+    pub fn is_partial(&self) -> bool {
+        self.status() == StatusCode::PARTIAL_CONTENT
     }
     pub fn headers(&self) -> &HeaderMap {
         self.response.headers()
     }
     pub fn metadata(&self) -> &ObjectMetadata {
         &self.metadata
+    }
+    /// `Content-Length`: the number of body bytes this response carries (the
+    /// range length for a partial response).
+    pub fn content_length(&self) -> Option<u64> {
+        let value = self.header(CONTENT_LENGTH)?;
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        value.parse().ok()
+    }
+    /// `Content-Type`, verbatim.
+    pub fn content_type(&self) -> Option<&str> {
+        self.header(CONTENT_TYPE)
+    }
+    /// `ETag`, verbatim (including any quotes).
+    pub fn etag(&self) -> Option<&str> {
+        self.header(ETAG)
+    }
+    /// `Last-Modified`, parsed as an HTTP date in the IMF-fixdate form
+    /// (`Sun, 06 Nov 1994 08:49:37 GMT`); the obsolete RFC 850 and asctime
+    /// forms read as `None`.
+    pub fn last_modified(&self) -> Option<DateTime<Utc>> {
+        DateTime::parse_from_rfc2822(self.header(LAST_MODIFIED)?)
+            .ok()
+            .map(|date| date.with_timezone(&Utc))
+    }
+    /// `Content-Range` of a partial response, parsed.
+    pub fn content_range(&self) -> Option<ContentRange> {
+        ContentRange::parse(self.header(CONTENT_RANGE)?)
+    }
+    fn header(&self, name: HeaderName) -> Option<&str> {
+        self.headers().get(name)?.to_str().ok()
     }
     /// Read the next chunk; repeated calls after EOF return `None`.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>> {
@@ -127,10 +232,48 @@ impl GetObjectOutput {
         }
         Ok(written)
     }
-
-    /// Escape hatch for transport-specific response features.
-    pub fn into_raw(self) -> reqwest::Response {
-        self.response
+    /// The remaining body as a stream of chunks, with the same errors as
+    /// [`chunk`](Self::chunk). The stream ends after the last chunk; after an
+    /// error, do not rely on further items.
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// use futures_util::TryStreamExt;
+    ///
+    /// let output = client.get_object("bucket", "key").send().await?;
+    /// let mut body = output.into_stream();
+    /// while let Some(chunk) = body.try_next().await? {
+    ///     let _ = chunk;
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn into_stream(self) -> impl Stream<Item = Result<Bytes>> + Send + Unpin + 'static {
+        self.response.bytes_stream().map_err(Error::body_failure)
+    }
+    /// The remaining body as an [`AsyncRead`], for example for
+    /// [`tokio::io::copy`] or a decoder.
+    ///
+    /// A failure is reported as a [`std::io::Error`] (kind `TimedOut` for a
+    /// timeout, `Other` otherwise) wrapping the [`Error`] that
+    /// [`chunk`](Self::chunk) would return; recover it with
+    /// `io_error.into_inner()` and `downcast::<fds::Error>()`.
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// let output = client.get_object("bucket", "key").send().await?;
+    /// let mut reader = output.into_async_read();
+    /// let mut file = tokio::fs::File::create("local.bin").await?;
+    /// tokio::io::copy(&mut reader, &mut file).await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn into_async_read(self) -> impl AsyncRead + Send + Unpin + 'static {
+        StreamReader::new(self.into_stream().map_err(|error| {
+            let kind = match error.kind() {
+                ErrorKind::Timeout => std::io::ErrorKind::TimedOut,
+                _ => std::io::ErrorKind::Other,
+            };
+            std::io::Error::new(kind, error)
+        }))
     }
 }
 impl fmt::Debug for GetObjectOutput {

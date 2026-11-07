@@ -168,7 +168,7 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             metadata,
             expires,
         } => {
-            let parts: Vec<UploadPartResponse> = read_json(parts)?;
+            let parts: Vec<UploadPartOutput> = read_json(parts)?;
             let mut request = client
                 .complete_multipart_upload(
                     &session.bucket,

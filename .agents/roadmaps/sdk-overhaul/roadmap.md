@@ -97,7 +97,7 @@ flowchart LR
     t_delete_prefix_options["delete-prefix-options：delete_prefix 增加显式 marker/delimiter，CLI 改用 SDK ✅"]
   end
   subgraph G11["批次 11"]
-    t_typed_responses["typed-responses：返回值类型化与精简"]
+    t_typed_responses["typed-responses：返回值类型化与精简 ✅"]
   end
   subgraph G12["批次 12"]
     t_object_metadata["object-metadata：ObjectMetadata 拆分系统字段与用户元数据"]
@@ -136,7 +136,7 @@ flowchart LR
   t_internal_cleanup --> t_cslb_internal
   t_fluent_listing_delete --> t_delete_prefix_options
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_baseline_green,t_upload_idle_timeout,t_cslb_internal,t_delete_prefix_options done
+  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_typed_responses,t_baseline_green,t_upload_idle_timeout,t_cslb_internal,t_delete_prefix_options done
 ```
 
 - 批次 1：baseline-green✅
@@ -149,7 +149,7 @@ flowchart LR
 - 批次 8：fluent-object✅
 - 批次 9（可并行）：fluent-bucket✅、fluent-listing-delete✅、fluent-multipart-manager✅
 - 批次 10：delete-prefix-options✅
-- 批次 11：typed-responses
+- 批次 11：typed-responses✅
 - 批次 12：object-metadata
 - 批次 13：credentials-provider
 - 批次 14：idempotent-retry

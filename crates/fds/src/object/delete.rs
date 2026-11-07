@@ -302,7 +302,7 @@ impl DeletePrefix {
                 Err(error) => return Err(error.with_delete_output(output)),
             };
             if page
-                .object_summaries
+                .objects
                 .iter()
                 .any(|o| o.object_name.is_empty() || !o.object_name.starts_with(&self.prefix))
             {
@@ -311,11 +311,10 @@ impl DeletePrefix {
                 )
                 .with_delete_output(output));
             }
-            let mut batch = self.client.delete_objects(&self.bucket).keys(
-                page.object_summaries
-                    .into_iter()
-                    .map(|object| object.object_name),
-            );
+            let mut batch = self
+                .client
+                .delete_objects(&self.bucket)
+                .keys(page.objects.into_iter().map(|object| object.object_name));
             if self.move_to_trash {
                 batch = batch.move_to_trash();
             }

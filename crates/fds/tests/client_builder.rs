@@ -200,6 +200,7 @@ async fn explicit_cdn_and_md5_keep_wire_behavior() {
     };
     assert!(presign(&c)
         .unwrap()
+        .as_str()
         .starts_with("https://cdn.example.com/b/a%2Fb%20%2B?"));
     assert!(presign(&builder().build().unwrap()).is_err());
 }
@@ -497,7 +498,7 @@ async fn read_up_to(
 async fn put_with_idle_threshold(
     mode: Upload,
     body: fds::object::UploadBody,
-) -> (fds::Result<fds::object::PutObjectResponse>, Duration) {
+) -> (fds::Result<fds::object::PutObjectOutput>, Duration) {
     let (endpoint, server) = upload_server(mode).await;
     let c = builder()
         .endpoint(endpoint)

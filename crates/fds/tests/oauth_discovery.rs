@@ -161,7 +161,7 @@ async fn oauth_operations_use_bound_app_token_and_reject_presigning() {
     for (path, body) in [("/", "{\"owner\":{\"id\":\"user\"},\"buckets\":[{\"name\":\"b\",\"orgId\":\"org\",\"creationTime\":123,\"usedSpace\":4,\"numObjects\":1}]}"), ("/b/dir%2Fa%20%2B%25%E4%B8%AD", "content")] {
         let mock = server.mock("GET", path).match_header("authorization", "OAuth").match_query(Matcher::AllOf(vec![Matcher::UrlEncoded("appId".into(),"app +&中".into()),Matcher::UrlEncoded("storageAccessToken".into(),"storage-secret +&%中".into())])).with_body(body).create_async().await;
         if path == "/" { let output = client.list_app_buckets().send().await.unwrap(); assert_eq!(output.buckets[0].org_id,"org"); }
-        else { let output = client.get_object("b","dir/a +%中").send().await.unwrap(); assert!(!format!("{output:?}").contains("secret")); let raw = output.into_raw(); assert!(!format!("{raw:?}").contains("secret")); assert!(raw.url().query().is_none()); assert_eq!(raw.bytes().await.unwrap(),"content"); }
+        else { let output = client.get_object("b","dir/a +%中").send().await.unwrap(); assert!(!format!("{output:?}").contains("secret")); assert_eq!(output.bytes().await.unwrap(),"content"); }
         mock.assert_async().await;
     }
     let presign = client

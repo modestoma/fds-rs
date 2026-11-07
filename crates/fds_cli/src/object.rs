@@ -256,7 +256,7 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
                     .collect();
                 eprintln!(
                     "{}",
-                    serde_json::json!({"status": output.status(), "headers": headers})
+                    serde_json::json!({"status": output.status().as_u16(), "headers": headers})
                 );
             }
             match out {

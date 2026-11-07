@@ -657,7 +657,7 @@ async fn read_retries_and_presign_metadata_reach_the_sdk() {
         .metadata(metadata)
         .build()
         .unwrap();
-    assert_eq!(url.trim(), expected);
+    assert_eq!(url.trim(), expected.as_str());
 }
 
 #[tokio::test]

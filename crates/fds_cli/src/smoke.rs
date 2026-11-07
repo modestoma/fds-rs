@@ -182,7 +182,7 @@ pub async fn smoke(
 
     // list
     match client.list_objects(bucket).prefix(&prefix).send().await {
-        Ok(l) => rep.assert("list_objects sees >=2", l.object_summaries.len() >= 2),
+        Ok(l) => rep.assert("list_objects sees >=2", l.objects.len() >= 2),
         Err(e) => rep.fail("list_objects", e),
     }
 
@@ -212,7 +212,7 @@ pub async fn smoke(
     {
         Ok(u) => rep.assert(
             "presigned url",
-            u.starts_with("http") && u.contains("&Signature="),
+            u.as_str().starts_with("http") && u.as_str().contains("&Signature="),
         ),
         Err(e) => rep.fail("presigned url", e),
     }
@@ -220,7 +220,7 @@ pub async fn smoke(
         "absolute url",
         client
             .absolute_object_url(bucket, &hello)
-            .map(|u| u.contains(&hello.replace('/', "%2F")))
+            .map(|u| u.as_str().contains(&hello.replace('/', "%2F")))
             .unwrap_or(false),
     );
 
@@ -300,7 +300,7 @@ async fn multipart_put(
     object: &str,
     data: &[u8],
     part_size: usize,
-) -> Result<PutObjectResponse> {
+) -> Result<PutObjectOutput> {
     // The session is bound to the requested identity, not names echoed back.
     let session = client
         .create_multipart_upload(bucket, object)

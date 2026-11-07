@@ -365,12 +365,11 @@ impl Client {
         };
 
         // Rebuild the response around an idle-timed body, retaining the
-        // headers, status and transport extensions. reqwest keeps the URL
-        // outside the http parts, so it is restored as an extension.
-        let url = self.redaction().response_url(resp.url());
+        // headers, status and transport extensions. The request URL (which
+        // carries the storage token in OAuth mode) is not carried over: no
+        // returned type exposes a response URL.
         let raw: http::Response<reqwest::Body> = resp.into();
-        let (mut parts, body) = raw.into_parts();
-        parts.extensions.extend(url_extension(url));
+        let (parts, body) = raw.into_parts();
         let body = reqwest::Body::wrap(crate::idle::IdleBody::new(body, idle));
         let resp = reqwest::Response::from(http::Response::from_parts(parts, body));
 
@@ -433,18 +432,6 @@ pub(crate) fn header_value(value: &str) -> Result<HeaderValue> {
     HeaderValue::from_str(value).map_err(|e| Error::invalid_input(e.to_string()))
 }
 
-/// The extensions reqwest reads a response URL from.
-fn url_extension(url: url::Url) -> http::Extensions {
-    use reqwest::ResponseBuilderExt;
-    // A builder that only carries an extension cannot fail; should it ever,
-    // the response reports reqwest's placeholder URL instead of a real one.
-    http::Response::builder()
-        .url(url)
-        .body(())
-        .map(|response| response.into_parts().0.extensions)
-        .unwrap_or_default()
-}
-
 /// The single redaction policy, decided by the credential mode.
 ///
 /// Access-key clients sign in headers, so response URLs carry no secrets and
@@ -465,16 +452,6 @@ impl Redaction {
                 Self::Redact
             }
         }
-    }
-
-    /// The URL reported by a returned response (visible through its Debug
-    /// output and raw-response escape hatches): no query when redacting.
-    fn response_url(self, url: &url::Url) -> url::Url {
-        let mut url = url.clone();
-        if self == Self::Redact {
-            url.set_query(None);
-        }
-        url
     }
 
     /// Server-controlled response strings are dropped when redacting.

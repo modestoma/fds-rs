@@ -734,7 +734,8 @@ fn urls() -> Vec<(&'static str, String)> {
         if let Some(metadata) = metadata {
             request = request.metadata(metadata);
         }
-        (name, request.build().unwrap())
+        // The snapshot records the Url's exact string form.
+        (name, request.build().unwrap().to_string())
     };
     vec![
         presign("presign GET", Method::GET, false, None),
@@ -754,13 +755,16 @@ fn urls() -> Vec<(&'static str, String)> {
         ),
         (
             "absolute object",
-            client.absolute_object_url("b", ODD).unwrap(),
+            client.absolute_object_url("b", ODD).unwrap().to_string(),
         ),
         (
             "absolute bucket",
-            client.absolute_object_url("b", "").unwrap(),
+            client.absolute_object_url("b", "").unwrap().to_string(),
         ),
-        ("absolute root", client.absolute_object_url("", "").unwrap()),
+        (
+            "absolute root",
+            client.absolute_object_url("", "").unwrap().to_string(),
+        ),
     ]
 }
 
@@ -1185,9 +1189,9 @@ const PART1_BODY: &str = r#"{"partNumber":1,"etag":"e1","partSize":4}"#;
 const PART2_BODY: &str = r#"{"partNumber":2,"etag":"e2","partSize":4}"#;
 const COMPLETE_BODY: &str = r#"{"bucketName":"b","objectName":"dir/a b+c.txt"}"#;
 
-fn receipt(number: i32, etag: &str, size: i64) -> fds::multipart::UploadPartResponse {
-    fds::multipart::UploadPartResponse {
-        part_number: number,
+fn receipt(number: u16, etag: &str, size: u64) -> fds::multipart::UploadPartOutput {
+    fds::multipart::UploadPartOutput {
+        part_number: std::num::NonZeroU16::new(number).unwrap(),
         etag: etag.into(),
         part_size: size,
     }

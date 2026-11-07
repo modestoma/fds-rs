@@ -117,7 +117,8 @@ async fn builders_preserve_encoded_keys_body_and_metadata() {
         .send()
         .await
         .unwrap();
-    assert_eq!(output.status(), 206);
+    assert_eq!(output.status(), http::StatusCode::PARTIAL_CONTENT);
+    assert!(output.is_partial());
     assert_eq!(output.headers()["content-range"], "bytes 0-4/10");
     assert_eq!(output.metadata().get("Content-Type"), Some("text/plain"));
     assert_eq!(output.bytes().await.unwrap(), "hello");
@@ -162,7 +163,7 @@ async fn streamed_output_does_not_wait_for_remaining_body() {
 }
 
 #[tokio::test]
-async fn output_preserves_errors_and_raw_escape_hatch() {
+async fn output_preserves_errors_and_body_length() {
     let mut server = mockito::Server::new_async().await;
     let error = server
         .mock("GET", "/b/error")
@@ -181,11 +182,10 @@ async fn output_preserves_errors_and_raw_escape_hatch() {
     assert_eq!(err.status(), Some(http::StatusCode::FORBIDDEN));
     assert_eq!(err.kind(), fds::ErrorKind::PermissionDenied);
     let output = client.get_object("b", "ok").send().await.unwrap();
-    // The idle-timed response body keeps the raw response's length and URL.
-    let raw = output.into_raw();
-    assert_eq!(raw.content_length(), Some(2));
-    assert_eq!(raw.url().path(), "/b/ok");
-    assert_eq!(raw.bytes().await.unwrap(), "ok");
+    // The idle-timed response body keeps the response's length.
+    assert_eq!(output.content_length(), Some(2));
+    assert!(!output.is_partial());
+    assert_eq!(output.bytes().await.unwrap(), "ok");
     error.assert_async().await;
     ok.assert_async().await;
 }
@@ -199,7 +199,8 @@ fn presign_builder_keeps_milliseconds_and_validates_lifetimes() {
         .method(Method::HEAD)
         .expires_at(expiry)
         .build()
-        .unwrap();
+        .unwrap()
+        .to_string();
     assert!(url.contains("Expires=1800000000123"));
     assert!(url.contains("metadata="));
     for ttl in [Duration::ZERO, Duration::from_nanos(1), Duration::MAX] {
@@ -221,6 +222,7 @@ fn presign_builder_keeps_milliseconds_and_validates_lifetimes() {
         .unwrap();
     let after = Utc::now().timestamp_millis();
     let expires: i64 = url
+        .as_str()
         .split("Expires=")
         .nth(1)
         .and_then(|rest| rest.split('&').next())

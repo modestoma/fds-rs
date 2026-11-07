@@ -32,7 +32,7 @@
 //! upload and returns the session, and [`MultipartUpload::upload`] runs it
 //! once. See [`MultipartUpload`] for inspecting progress and recovering
 //! manually after a failure.
-use crate::object::{ObjectMetadata, PutObjectResponse};
+use crate::object::{ObjectMetadata, PutObjectOutput};
 use crate::{Client, Dispatch, Error, ErrorKind, Result};
 use futures_util::future::{Fuse, FutureExt};
 use futures_util::{StreamExt, TryStreamExt};
@@ -45,7 +45,7 @@ use tokio::io::AsyncReadExt;
 
 pub use crate::object::multipart::{
     AbortMultipartUpload, CompleteMultipartUpload, CreateMultipartUpload, MultipartUploadSession,
-    UploadPart, UploadPartResponse, MAX_PART_NUMBER,
+    UploadPart, UploadPartOutput, MAX_PART_NUMBER,
 };
 
 /// Action after a part/read failure or cooperative cancellation before completion.
@@ -219,7 +219,7 @@ pub struct MultipartProgress {
     /// The initiated upload, bound to the requested bucket and object.
     pub session: MultipartUploadSession,
     /// Confirmed part receipts; in ascending part order once uploading ended.
-    pub parts: Vec<UploadPartResponse>,
+    pub parts: Vec<UploadPartOutput>,
     pub total_parts: usize,
     pub file_size: u64,
     pub state: MultipartState,
@@ -331,7 +331,7 @@ impl MultipartUpload {
     /// upload.upload(deadline).await?;
     /// # Ok(()) }
     /// ```
-    pub async fn upload<C>(&mut self, cancel: C) -> Result<PutObjectResponse>
+    pub async fn upload<C>(&mut self, cancel: C) -> Result<PutObjectOutput>
     where
         C: Future<Output = ()>,
     {
@@ -413,9 +413,9 @@ impl MultipartUpload {
         );
         let parts = source
             .map_ok(|(number, bytes)| async move {
-                let size = bytes.len() as i64;
+                let size = bytes.len() as u64;
                 let receipt = session.upload_part(number, bytes).send().await?;
-                if receipt.part_number != i32::from(number.get())
+                if receipt.part_number != number
                     || receipt.part_size != size
                     || receipt.etag.is_empty()
                     || receipt.etag.len() > 1024

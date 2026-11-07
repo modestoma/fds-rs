@@ -351,21 +351,32 @@ impl ExchangeStorageToken {
     }
 }
 
-/// App-scoped bucket listing, retaining the app API's organization field.
+/// Result of [`Client::list_app_buckets`]: the app-scoped bucket listing,
+/// retaining the app API's organization field. Every key is required.
 #[derive(Debug, serde::Deserialize)]
-pub struct AppBuckets {
+pub struct AppBucketList {
     pub owner: crate::acl::Owner,
     pub buckets: Vec<AppBucket>,
 }
+
+/// One bucket of an [`AppBucketList`]. Every key is required; a negative
+/// size or count, or a negative or unrepresentable timestamp, is a protocol
+/// violation.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppBucket {
-    pub name: String,
+    #[serde(rename = "name")]
+    pub bucket_name: String,
     pub org_id: String,
-    /// Unix epoch milliseconds, as documented by Bucket.yaml.
-    pub creation_time: i64,
-    pub used_space: i64,
-    pub num_objects: i64,
+    /// Creation time, decoded from the Unix epoch milliseconds documented by
+    /// Bucket.yaml.
+    #[serde(deserialize_with = "crate::de::millis")]
+    pub creation_time: DateTime<Utc>,
+    /// Bytes used.
+    pub used_space: u64,
+    /// Number of objects (`numObjects`).
+    #[serde(rename = "numObjects")]
+    pub object_count: u64,
 }
 /// Builder for [`Client::list_app_buckets`].
 #[derive(Debug)]
@@ -381,7 +392,7 @@ impl ListAppBuckets {
     /// GET `/` authenticated by the client's storage token and its app ID.
     /// A client without an exchanged storage token fails with
     /// [`ErrorKind::ConfigInvalid`] before sending.
-    pub async fn send(self) -> Result<AppBuckets> {
+    pub async fn send(self) -> Result<AppBucketList> {
         self.client.require_oauth()?;
         let cr = ClientRequest::new("", "", Method::GET)
             .read_only()

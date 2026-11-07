@@ -113,8 +113,8 @@ async fn list_objects_encodes_query_and_parses() {
         .unwrap();
 
     assert_eq!(listing.bucket_name, "mybucket");
-    assert_eq!(listing.object_summaries.len(), 1);
-    assert_eq!(listing.object_summaries[0].object_name, "logs/a.txt");
+    assert_eq!(listing.objects.len(), 1);
+    assert_eq!(listing.objects[0].object_name, "logs/a.txt");
     m.assert_async().await;
 }
 

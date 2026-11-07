@@ -135,7 +135,7 @@ pub struct CopyObject {
 /// service fields are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CopyObjectResponse {
+pub struct CopyObjectOutput {
     pub bucket_name: String,
     pub object_name: String,
 }
@@ -162,7 +162,7 @@ impl CopyObject {
     /// body, is [`ErrorKind::OutcomeUnknown`](crate::ErrorKind::OutcomeUnknown):
     /// the destination may have been written. `status()` and the source chain
     /// keep the underlying cause; reconcile before deciding whether to retry.
-    pub async fn send(self) -> Result<CopyObjectResponse> {
+    pub async fn send(self) -> Result<CopyObjectOutput> {
         validate_object(&self.source_bucket, &self.source_object)?;
         validate_object(&self.target_bucket, &self.target_object)?;
         let body = serde_json::to_vec(&CopyBody {
@@ -174,14 +174,14 @@ impl CopyObject {
             .with_timeout(self.timeout)?;
         cr.query.add("cp", "");
         cr.body = Some(Bytes::from(body).into());
-        let receipt: CopyObjectResponse = self
-            .client
-            .do_json_limited(cr, 64 * 1024)
-            .await
-            .map_err(|e| match e.dispatch() {
-                crate::Dispatch::NotSent => e,
-                _ => e.into_outcome_unknown(COPY_UNKNOWN),
-            })?;
+        let receipt: CopyObjectOutput =
+            self.client
+                .do_json_limited(cr, 64 * 1024)
+                .await
+                .map_err(|e| match e.dispatch() {
+                    crate::Dispatch::NotSent => e,
+                    _ => e.into_outcome_unknown(COPY_UNKNOWN),
+                })?;
         if receipt.bucket_name != self.target_bucket || receipt.object_name != self.target_object {
             return Err(
                 Error::protocol("copy receipt destination does not match request")

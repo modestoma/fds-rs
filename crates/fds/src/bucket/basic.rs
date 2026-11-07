@@ -1,7 +1,7 @@
 //! Bucket creation, existence checks, information, listing, migration and
 //! deletion.
 
-use super::{validate_bucket, GetBucketInfoResponse, ListBucketsResponse};
+use super::{validate_bucket, BucketInfo, BucketList};
 use crate::acl::BucketCannedAcl;
 use crate::client::ClientRequest;
 use crate::object::StorageClass;
@@ -114,7 +114,7 @@ bucket_builder! {
 
 impl GetBucketInfo {
     /// GET `/{bucket}`.
-    pub async fn send(self) -> Result<GetBucketInfoResponse> {
+    pub async fn send(self) -> Result<BucketInfo> {
         validate_bucket(&self.bucket)?;
         let cr = ClientRequest::new(&self.bucket, "", Method::GET)
             .read_only()
@@ -135,7 +135,7 @@ impl ListBuckets {
     timeout_option!();
 
     /// GET `/`.
-    pub async fn send(self) -> Result<ListBucketsResponse> {
+    pub async fn send(self) -> Result<BucketList> {
         let cr = ClientRequest::new("", "", Method::GET)
             .read_only()
             .with_timeout(self.timeout)?;
@@ -155,7 +155,7 @@ impl ListAuthorizedBuckets {
     timeout_option!();
 
     /// GET `/?authorizedBuckets`.
-    pub async fn send(self) -> Result<ListBucketsResponse> {
+    pub async fn send(self) -> Result<BucketList> {
         let mut cr = ClientRequest::new("", "", Method::GET)
             .read_only()
             .with_timeout(self.timeout)?;

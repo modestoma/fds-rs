@@ -100,7 +100,7 @@ async fn part_file_empty_and_owned_owned_send() {
         .send()
         .await
         .unwrap();
-    assert_eq!(result.part_number, 1);
+    assert_eq!(result.part_number.get(), 1);
     tokio::fs::remove_file(path).await.unwrap();
     client
         .put_object("b", "empty", Bytes::new())

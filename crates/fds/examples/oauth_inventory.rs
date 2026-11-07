@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .storage_token(token)
         .build()?;
     let app_buckets = client.list_app_buckets().send().await?;
-    if !app_buckets.buckets.iter().any(|b| b.name == args[1]) {
+    if !app_buckets.buckets.iter().any(|b| b.bucket_name == args[1]) {
         return Err("requested bucket is absent from the application bucket listing".into());
     }
     // Bucket 列表检查不替代服务的逐请求授权；token 到期时停止并交给应用处理。
@@ -46,9 +46,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if !object.object_name.starts_with(&args[2]) {
             return Err("listing returned an object outside the requested prefix".into());
         }
-        let size = u64::try_from(object.size)?;
         count = count.checked_add(1).ok_or("object count overflow")?;
-        total = total.checked_add(size).ok_or("total size overflow")?;
+        total = total
+            .checked_add(object.size)
+            .ok_or("total size overflow")?;
     }
     println!("objects={count} bytes={total}");
     eprintln!("storage token 到期时间：{expires_at}");

@@ -1,36 +1,42 @@
 //! CLI-owned JSON views. SDK response types need not expose serialization contracts.
+use chrono::{DateTime, Utc};
 use fds::{bucket::*, oauth::*, object::*, *};
 use serde_json::{json, Value};
 
-pub fn bucket(v: &GetBucketInfoResponse) -> Value {
-    json!({"name":v.bucket_name, "allowOutsideAccess":v.allow_outside_access,
-        "enableSSE":v.enable_sse, "creationTime":v.creation_time, "numObjects":v.object_num,
-        "usedSpace":v.used_space, "storageClass":v.storage_class_type})
+/// The CLI's time format: Unix epoch milliseconds, `0` when absent.
+fn millis(time: Option<DateTime<Utc>>) -> i64 {
+    time.map_or(0, |time| time.timestamp_millis())
 }
-pub fn buckets(v: &ListBucketsResponse) -> Value {
+pub fn bucket(v: &BucketInfo) -> Value {
+    json!({"name":v.bucket_name, "allowOutsideAccess":v.allow_outside_access,
+        "enableSSE":v.enable_sse, "creationTime":millis(v.creation_time), "numObjects":v.object_count,
+        "usedSpace":v.used_space, "storageClass":v.storage_class})
+}
+pub fn buckets(v: &BucketList) -> Value {
     json!({"owner":v.owner,"buckets":v.buckets.iter().map(bucket).collect::<Vec<_>>()})
 }
-pub fn app_buckets(v: &AppBuckets) -> Value {
+pub fn app_buckets(v: &AppBucketList) -> Value {
     json!({"owner":v.owner, "buckets":v.buckets.iter().map(|b| json!({
-        "name":b.name,"orgId":b.org_id,"creationTime":b.creation_time,
-        "usedSpace":b.used_space,"numObjects":b.num_objects
+        "name":b.bucket_name,"orgId":b.org_id,"creationTime":b.creation_time.timestamp_millis(),
+        "usedSpace":b.used_space,"numObjects":b.object_count
     })).collect::<Vec<_>>()})
 }
-pub fn put(v: &PutObjectResponse) -> Value {
+pub fn put(v: &PutObjectOutput) -> Value {
     // Keep the full verification response. Like presigned URLs, it may contain a signature.
     json!({"bucketName":v.bucket_name,"objectName":v.object_name,"accessKeyId":v.access_key_id,
-        "signature":v.signature,"expires":v.expires,"previousVersionId":v.previous_version_id,"outsideAccess":v.outside_access})
+        "signature":v.signature,"expires":millis(v.expires),
+        "previousVersionId":v.previous_version_id.as_deref().unwrap_or_default(),"outsideAccess":v.outside_access})
 }
 pub fn basic(v: &ObjectBasicInfo) -> Value {
-    json!({"allowOutsideAccess":v.allow_outside_access,"size":v.size,"uploadTime":v.upload_time,
-        "storageClass":v.storage_class_type,"metadata":v.metadata.as_map()})
+    json!({"allowOutsideAccess":v.allow_outside_access,"size":v.size,"uploadTime":millis(v.upload_time),
+        "storageClass":v.storage_class,"metadata":v.metadata.as_map()})
 }
 pub fn listing(v: &ObjectListing) -> Value {
     json!({"name":v.bucket_name,"prefix":v.prefix,"maxKeys":v.max_keys,"marker":v.marker,
         "truncated":v.truncated,"nextMarker":v.next_marker,"delimiter":v.delimiter,
-        "commonPrefixes":v.common_prefixes,"objects":v.object_summaries.iter().map(|o| json!({
+        "commonPrefixes":v.common_prefixes,"objects":v.objects.iter().map(|o| json!({
             "name":o.object_name,"etag":o.etag,"owner":o.owner,"size":o.size,
-            "lastModified":o.last_modified,"uploadTime":o.upload_time
+            "lastModified":o.last_modified,"uploadTime":millis(o.upload_time)
         })).collect::<Vec<_>>()})
 }
 pub fn deleted(v: &DeleteObjectsOutput) -> Value {

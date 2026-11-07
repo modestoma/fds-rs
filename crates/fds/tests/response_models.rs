@@ -2,21 +2,29 @@
 //! unknown keys. Lenient models read `null` exactly like a missing key (the
 //! field default); strict models reject both for required fields. Unknown keys
 //! are always ignored.
+//!
+//! Typed fields: millisecond timestamps become `DateTime<Utc>`, sizes and
+//! counts unsigned integers; a negative size, a negative or unrepresentable
+//! timestamp or a value of the wrong JSON type is rejected, and a response
+//! decoder reports that as `ErrorKind::ProtocolViolation`.
 
+use chrono::{DateTime, Utc};
 use fds::acl::{AccessControlList, Grant, GrantKey, Owner};
 use fds::bucket::{
-    AccessLog, GetBucketInfoResponse, LifecycleBaseItem, LifecycleConfig, LifecycleRule,
-    ListBucketsResponse,
+    AccessLog, BucketInfo, BucketList, LifecycleBaseItem, LifecycleConfig, LifecycleRule,
 };
-use fds::multipart::UploadPartResponse;
-use fds::oauth::{AppBucket, AppBuckets};
+use fds::multipart::UploadPartOutput;
+use fds::oauth::{AppBucket, AppBucketList};
+use fds::object::StorageClass;
 use fds::object::{
-    CopyObjectResponse, DeleteObjectFailure, ObjectBasicInfo, ObjectListing, ObjectMetadata,
-    ObjectSummary, PutObjectResponse,
+    CopyObjectOutput, DeleteObjectFailure, ObjectBasicInfo, ObjectListing, ObjectMetadata,
+    ObjectSummary, PutObjectOutput,
 };
+use fds::{Client, ErrorKind};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
 use std::fmt::Debug;
+use std::num::NonZeroU16;
 
 fn parse<T: DeserializeOwned>(value: &Value) -> serde_json::Result<T> {
     // Through bytes, as responses are decoded.
@@ -124,7 +132,7 @@ fn strict<T: DeserializeOwned + Debug>(full: Value, required: &[&str]) {
 
 #[test]
 fn object_models() {
-    lenient::<PutObjectResponse>(json!({
+    lenient::<PutObjectOutput>(json!({
         "bucketName": "b", "objectName": "o", "accessKeyId": "ak", "signature": "sig",
         "expires": 1, "previousVersionId": "v1", "outsideAccess": true,
     }));
@@ -141,7 +149,7 @@ fn object_models() {
         "nextMarker": "n", "delimiter": "/", "objects": [{"name": "p/a"}],
         "commonPrefixes": ["p/d/"],
     }));
-    strict::<CopyObjectResponse>(
+    strict::<CopyObjectOutput>(
         json!({"bucketName": "b", "objectName": "o"}),
         &["bucketName", "objectName"],
     );
@@ -186,7 +194,7 @@ fn object_metadata_model() {
 
 #[test]
 fn multipart_models() {
-    strict::<UploadPartResponse>(
+    strict::<UploadPartOutput>(
         json!({"partNumber": 1, "etag": "e", "partSize": 5}),
         &["partNumber", "etag", "partSize"],
     );
@@ -194,11 +202,11 @@ fn multipart_models() {
 
 #[test]
 fn bucket_models() {
-    lenient::<GetBucketInfoResponse>(json!({
+    lenient::<BucketInfo>(json!({
         "allowOutsideAccess": true, "enableSSE": true, "creationTime": 1, "name": "b",
         "numObjects": 2, "usedSpace": 3, "storageClass": "STANDARD",
     }));
-    lenient::<ListBucketsResponse>(json!({
+    lenient::<BucketList>(json!({
         "owner": {"id": "i"}, "buckets": [{"name": "b"}],
     }));
     lenient::<LifecycleRule>(json!({
@@ -242,8 +250,333 @@ fn oauth_models_are_strict() {
         bucket.clone(),
         &["name", "orgId", "creationTime", "usedSpace", "numObjects"],
     );
-    strict::<AppBuckets>(
+    strict::<AppBucketList>(
         json!({"owner": {"id": "i"}, "buckets": [bucket]}),
         &["owner", "buckets"],
     );
+}
+
+fn at(millis: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp_millis(millis).unwrap()
+}
+
+/// 9999-12-31T23:59:59.999Z.
+const LATE: i64 = 253_402_300_799_999;
+
+#[test]
+fn typed_fields_convert() {
+    // Millisecond timestamps, including 0 and a far-future instant.
+    for millis in [0, 1, 1_700_000_000_123, LATE] {
+        let put: PutObjectOutput = parse(&json!({"expires": millis})).unwrap();
+        assert_eq!(put.expires, Some(at(millis)), "{millis}");
+        let info: ObjectBasicInfo = parse(&json!({"uploadTime": millis})).unwrap();
+        assert_eq!(info.upload_time, Some(at(millis)), "{millis}");
+        let summary: ObjectSummary = parse(&json!({"uploadTime": millis})).unwrap();
+        assert_eq!(summary.upload_time, Some(at(millis)), "{millis}");
+        let bucket: BucketInfo = parse(&json!({"creationTime": millis})).unwrap();
+        assert_eq!(bucket.creation_time, Some(at(millis)), "{millis}");
+        let app: AppBucket = parse(&json!({
+            "name": "b", "orgId": "o", "creationTime": millis, "usedSpace": 0, "numObjects": 0,
+        }))
+        .unwrap();
+        assert_eq!(app.creation_time, at(millis), "{millis}");
+    }
+    assert_eq!(
+        at(1_700_000_000_123).to_rfc3339(),
+        "2023-11-14T22:13:20.123+00:00"
+    );
+    // Sizes and counts: the full unsigned range, beyond i64::MAX.
+    for size in [0, 1, i64::MAX as u64 + 1, u64::MAX] {
+        let info: ObjectBasicInfo = parse(&json!({"size": size})).unwrap();
+        assert_eq!(info.size, size);
+        let summary: ObjectSummary = parse(&json!({"size": size})).unwrap();
+        assert_eq!(summary.size, size);
+        let bucket: BucketInfo = parse(&json!({"numObjects": size, "usedSpace": size})).unwrap();
+        assert_eq!((bucket.object_count, bucket.used_space), (size, size));
+        let part: UploadPartOutput =
+            parse(&json!({"partNumber": 1, "etag": "e", "partSize": size})).unwrap();
+        assert_eq!(part.part_size, size);
+    }
+    let listing: ObjectListing = parse(&json!({"maxKeys": u32::MAX})).unwrap();
+    assert_eq!(listing.max_keys, u32::MAX);
+    for number in [1, 10_000, u16::MAX] {
+        let part: UploadPartOutput =
+            parse(&json!({"partNumber": number, "etag": "e", "partSize": 1})).unwrap();
+        assert_eq!(part.part_number, NonZeroU16::new(number).unwrap());
+    }
+    // Renamed fields keep their wire names.
+    let bucket: BucketInfo = parse(&json!({
+        "name": "b", "numObjects": 2, "storageClass": "Standard", "enableSSE": true,
+    }))
+    .unwrap();
+    assert_eq!(bucket.bucket_name, "b");
+    assert_eq!(bucket.object_count, 2);
+    assert!(bucket
+        .storage_class
+        .as_ref()
+        .is_some_and(StorageClass::is_standard));
+    assert!(bucket.enable_sse);
+    let listing: ObjectListing = parse(&json!({"objects": [{"name": "a", "size": 1}]})).unwrap();
+    assert_eq!(listing.objects[0].object_name, "a");
+    let info: ObjectBasicInfo = parse(&json!({"storageClass": "ARCHIVE"})).unwrap();
+    assert!(info.storage_class.unwrap().is_archive());
+    let app: AppBucket = parse(&json!({
+        "name": "b", "orgId": "o", "creationTime": 1, "usedSpace": 2, "numObjects": 3,
+    }))
+    .unwrap();
+    assert_eq!((app.bucket_name.as_str(), app.object_count), ("b", 3));
+}
+
+#[test]
+fn optional_fields_distinguish_missing_from_empty() {
+    // Missing and null are None; a present value, even an empty one, is kept.
+    for body in [json!({}), json!({"previousVersionId": null})] {
+        let put: PutObjectOutput = parse(&body).unwrap();
+        assert_eq!(put.previous_version_id, None, "{body}");
+    }
+    let put: PutObjectOutput = parse(&json!({"previousVersionId": ""})).unwrap();
+    assert_eq!(put.previous_version_id.as_deref(), Some(""));
+    let put: PutObjectOutput = parse(&json!({"previousVersionId": "v1"})).unwrap();
+    assert_eq!(put.previous_version_id.as_deref(), Some("v1"));
+    // Time fields: missing and null are None.
+    for body in [
+        json!({}),
+        json!({"uploadTime": null, "creationTime": null, "expires": null}),
+    ] {
+        assert_eq!(parse::<ObjectSummary>(&body).unwrap().upload_time, None);
+        assert_eq!(parse::<ObjectBasicInfo>(&body).unwrap().upload_time, None);
+        assert_eq!(parse::<BucketInfo>(&body).unwrap().creation_time, None);
+        assert_eq!(parse::<PutObjectOutput>(&body).unwrap().expires, None);
+    }
+}
+
+/// Values every time field rejects.
+fn bad_times() -> Vec<Value> {
+    vec![
+        json!(-1),
+        json!(i64::MIN),
+        // Beyond the representable range of DateTime<Utc>.
+        json!(9_000_000_000_000_000_i64),
+        json!(i64::MAX),
+        json!(u64::MAX),
+        json!(1.5),
+        json!("1700000000000"),
+        json!(true),
+    ]
+}
+
+/// Values every size or count field rejects.
+fn bad_sizes() -> Vec<Value> {
+    vec![
+        json!(-1),
+        json!(i64::MIN),
+        json!(1.5),
+        json!("10"),
+        json!(false),
+    ]
+}
+
+type Parser = fn(&Value) -> bool;
+
+fn accepts<T: DeserializeOwned>(value: &Value) -> bool {
+    parse::<T>(value).is_ok()
+}
+
+#[test]
+fn invalid_times_sizes_and_part_numbers_are_rejected() {
+    let app =
+        json!({"name": "b", "orgId": "o", "creationTime": 1, "usedSpace": 2, "numObjects": 3});
+    let part = json!({"partNumber": 1, "etag": "e", "partSize": 5});
+    // (model, valid sample, key, rejected values)
+    let cases: Vec<(&str, Parser, Value, &str, Vec<Value>)> = vec![
+        (
+            "PutObjectOutput",
+            accepts::<PutObjectOutput>,
+            json!({}),
+            "expires",
+            bad_times(),
+        ),
+        (
+            "ObjectBasicInfo",
+            accepts::<ObjectBasicInfo>,
+            json!({}),
+            "uploadTime",
+            bad_times(),
+        ),
+        (
+            "ObjectBasicInfo",
+            accepts::<ObjectBasicInfo>,
+            json!({}),
+            "size",
+            bad_sizes(),
+        ),
+        (
+            "ObjectSummary",
+            accepts::<ObjectSummary>,
+            json!({}),
+            "uploadTime",
+            bad_times(),
+        ),
+        (
+            "ObjectSummary",
+            accepts::<ObjectSummary>,
+            json!({}),
+            "size",
+            bad_sizes(),
+        ),
+        (
+            "ObjectListing",
+            accepts::<ObjectListing>,
+            json!({}),
+            "maxKeys",
+            {
+                let mut values = bad_sizes();
+                values.push(json!(u64::from(u32::MAX) + 1));
+                values
+            },
+        ),
+        (
+            "BucketInfo",
+            accepts::<BucketInfo>,
+            json!({}),
+            "creationTime",
+            bad_times(),
+        ),
+        (
+            "BucketInfo",
+            accepts::<BucketInfo>,
+            json!({}),
+            "numObjects",
+            bad_sizes(),
+        ),
+        (
+            "BucketInfo",
+            accepts::<BucketInfo>,
+            json!({}),
+            "usedSpace",
+            bad_sizes(),
+        ),
+        (
+            "AppBucket",
+            accepts::<AppBucket>,
+            app.clone(),
+            "creationTime",
+            bad_times(),
+        ),
+        (
+            "AppBucket",
+            accepts::<AppBucket>,
+            app.clone(),
+            "usedSpace",
+            bad_sizes(),
+        ),
+        (
+            "AppBucket",
+            accepts::<AppBucket>,
+            app,
+            "numObjects",
+            bad_sizes(),
+        ),
+        (
+            "UploadPartOutput",
+            accepts::<UploadPartOutput>,
+            part.clone(),
+            "partSize",
+            bad_sizes(),
+        ),
+        (
+            "UploadPartOutput",
+            accepts::<UploadPartOutput>,
+            part,
+            "partNumber",
+            {
+                let mut values = bad_sizes();
+                values.extend([json!(0), json!(65_536)]);
+                values
+            },
+        ),
+    ];
+    for (model, accepts, sample, key, values) in cases {
+        assert!(accepts(&sample), "{model}: sample rejected");
+        for value in values {
+            let mut map = sample.as_object().unwrap().clone();
+            map.insert(key.into(), value.clone());
+            assert!(!accepts(&object(&map)), "{model}.{key}: {value} accepted");
+        }
+    }
+    // Nested values fail the enclosing response.
+    assert!(parse::<ObjectListing>(&json!({"objects": [{"size": -1}]})).is_err());
+    assert!(parse::<BucketList>(&json!({"buckets": [{"creationTime": -1}]})).is_err());
+}
+
+/// Responses with invalid typed values are protocol violations, not
+/// transport or decode errors of another kind.
+#[tokio::test]
+async fn invalid_typed_values_are_protocol_violations() {
+    let mut server = mockito::Server::new_async().await;
+    let client = Client::builder()
+        .endpoint(server.url())
+        .credentials("AKID", "sk")
+        .build()
+        .unwrap();
+    // (method, path, body); the index selects the operation below.
+    let cases = [
+        (
+            "GET",
+            "/b",
+            r#"{"name":"b","objects":[{"name":"a","size":-1}]}"#,
+        ),
+        (
+            "GET",
+            "/b",
+            r#"{"name":"b","objects":[{"name":"a","uploadTime":-5}]}"#,
+        ),
+        (
+            "GET",
+            "/b/o",
+            r#"{"size":1,"uploadTime":9000000000000000000}"#,
+        ),
+        ("GET", "/b", r#"{"name":"b","numObjects":-2}"#),
+        (
+            "PUT",
+            "/b/o",
+            r#"{"bucketName":"b","objectName":"o","expires":-1}"#,
+        ),
+        ("PUT", "/b/o", r#"{"partNumber":0,"etag":"e","partSize":1}"#),
+    ];
+    for (index, (method, path, body)) in cases.into_iter().enumerate() {
+        let mock = server
+            .mock(method, path)
+            .match_query(mockito::Matcher::Any)
+            .with_body(body)
+            .create_async()
+            .await;
+        let error = match index {
+            0 | 1 => client.list_objects("b").send().await.map(drop),
+            2 => client
+                .get_object_basic_info("b", "o")
+                .send()
+                .await
+                .map(drop),
+            3 => client.get_bucket_info("b").send().await.map(drop),
+            4 => client
+                .put_object("b", "o", b"x".to_vec())
+                .send()
+                .await
+                .map(drop),
+            _ => client
+                .upload_part("b", "o", "u", NonZeroU16::MIN, b"x".to_vec())
+                .send()
+                .await
+                .map(drop),
+        }
+        .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::ProtocolViolation,
+            "{body}: {error:?}"
+        );
+        mock.assert_async().await;
+        mock.remove_async().await;
+    }
 }

@@ -161,7 +161,7 @@ async fn bucket_operations(client: &Client, bucket: &str) -> fds::Result<()> {
     let info = client.get_bucket_info(bucket).send().await?;
     let owned = client.list_buckets().send().await?;
     let authorized = client.list_authorized_buckets().send().await?;
-    println!("存在：{exists}，对象数：{}，字节数：{}", info.object_num, info.used_space);
+    println!("存在：{exists}，对象数：{}，字节数：{}", info.object_count, info.used_space);
     println!("所有桶：{}，授权桶：{}", owned.buckets.len(), authorized.buckets.len());
     Ok(())
 }
@@ -169,9 +169,9 @@ async fn bucket_operations(client: &Client, bucket: &str) -> fds::Result<()> {
 
 `storage_class`、`org_id` 和 `acl` 都是可选的链式方法，不调用即不发送，依服务默认；`org_id("")` 同样不发送。创建时的 canned ACL 见 ACL 章节。不要用“先 HEAD 不存在再创建”推导原子创建：检查和创建之间仍有竞争。
 
-`bucket_exists` 只将 200/404 转成 true/false；403、网络错误等继续返回错误。`GetBucketInfoResponse` 提供 `bucket_name`、`creation_time`、`object_num`、`used_space`、`storage_class_type`、`allow_outside_access`、`enable_sse`。`ListBucketsResponse` 包含 `owner` 和 `buckets`。
+`bucket_exists` 只将 200/404 转成 true/false；403、网络错误等继续返回错误。`BucketInfo` 提供 `bucket_name`、`creation_time`（`Option<DateTime<Utc>>`，由毫秒时间戳转换）、`object_count`、`used_space`（均为 `u64`）、`storage_class`、`allow_outside_access`、`enable_sse`；服务端缺省或返回 null 的字段为 `None`、0、`false` 或空串，负数或非法时间戳返回 `ErrorKind::ProtocolViolation`。`BucketList` 包含 `owner` 和 `buckets`（元素为 `BucketInfo`）。
 
-`StorageClass` 是保留服务端原始字符串的包装，使用 `new()`/`as_str()`；常量有 `STANDARD`、`STANDARD_IA`、`ARCHIVE`，后者的实际字符串为 `Archive`。类型存在不保证目标地区支持该存储类别。
+`StorageClass` 是保留服务端原始字符串的包装，使用 `new()`/`as_str()`（也实现 `Display`）；常量有 `STANDARD`、`STANDARD_IA`、`ARCHIVE`，后者的实际字符串为 `Archive`。服务端返回的大小写不稳定（如 `STANDARD` 与 `Standard`），判断类别用不区分 ASCII 大小写的 `is_standard()`、`is_standard_ia()`、`is_archive()`；`==` 比较的是原始字符串。类型存在不保证目标地区支持该存储类别。
 
 ### 迁移归属和删除
 
@@ -214,7 +214,7 @@ async fn upload_text(client: &Client, bucket: &str, key: &str) -> fds::Result<()
 }
 ```
 
-PUT 是创建或覆盖同名对象，不提供“不存在才写”的条件写入口。body 支持 `Vec<u8>`、`Bytes`、`UploadBody`；`Vec` 移入 Bytes，不复制整个 buffer。结果 `PutObjectResponse` 包含 `bucket_name`、`object_name`、`access_key_id`、`signature`、`expires`、`previous_version_id`、`outside_access`；不要把整个结果直接写入日志，因为它含签名信息。
+PUT 是创建或覆盖同名对象，不提供“不存在才写”的条件写入口。body 支持 `Vec<u8>`、`Bytes`、`UploadBody`；`Vec` 移入 Bytes，不复制整个 buffer。结果 `PutObjectOutput` 包含 `bucket_name`、`object_name`、`previous_version_id`（`Option<String>`，服务端未返回时为 `None`）、`access_key_id`、`signature`、`expires`（`Option<DateTime<Utc>>`，下载签名的过期时间，不是对象 TTL）、`outside_access`；不要把整个结果直接写入日志，因为它含签名信息。
 
 | 选项 | 含义 |
 | --- | --- |
@@ -302,7 +302,7 @@ use tokio::io::AsyncWriteExt;
 
 async fn stream_to_file(client: &Client, bucket: &str, key: &str, path: &std::path::Path) -> fds::Result<u64> {
     let output = client.get_object(bucket, key).send().await?;
-    println!("HTTP 状态：{}", output.status());
+    println!("HTTP 状态：{}，长度：{:?}", output.status(), output.content_length());
     let mut file = tokio::fs::File::create(path).await?;
     let written = output.copy_to(&mut file).await?;
     file.flush().await?;
@@ -318,11 +318,25 @@ async fn consume_chunks(client: &Client, bucket: &str, key: &str) -> fds::Result
     }
     Ok(total)
 }
+
+async fn decode_lines(client: &Client, bucket: &str, key: &str) -> fds::Result<usize> {
+    use tokio::io::AsyncBufReadExt;
+    let output = client.get_object(bucket, key).send().await?;
+    // 交给任何接受 AsyncRead 的解析器；错误是包着 fds::Error 的 io::Error。
+    let mut lines = tokio::io::BufReader::new(output.into_async_read()).lines();
+    let mut count = 0;
+    while lines.next_line().await?.is_some() {
+        count += 1;
+    }
+    Ok(count)
+}
 ```
 
 `copy_to` 不 flush、不 shutdown，也不回滚 writer；示例的 `File::create` 会截断已有文件，错误时可能留下部分内容。需要失败保留旧目标、原子替换、续传时使用后文的 `download_file`。
 
-`GetObjectOutput` 还提供 `headers()`、`metadata()` 和 `into_raw()`；后者转移出 `reqwest::Response`，供需要底层能力的调用者使用。
+`GetObjectOutput` 的 `status()` 返回 `http::StatusCode`，`is_partial()` 判断是否为 206。类型化的头部访问方法有 `content_length()`、`content_type()`、`etag()`（原样，含引号）、`last_modified()`（`DateTime<Utc>`）和 `content_range()`（`ContentRange`，提供 `start()`、`end()`（含）与 `complete_length()`）；头部缺失或无法解析时返回 `None`，不会让下载失败，原始值仍可通过 `headers()` 读取。`metadata()` 返回解析后的对象元数据。
+
+除 `chunk()`、`bytes()`、`copy_to()` 外，`into_stream()` 把剩余响应体转成 `Stream<Item = fds::Result<Bytes>>`，`into_async_read()` 转成 `AsyncRead`（失败时返回 `std::io::Error`：超时为 `TimedOut`，其余为 `Other`，`into_inner()` 后可 downcast 回 `fds::Error`）。两者都是 `Send + Unpin + 'static`，读取同样受 read timeout 和总期限约束。公开 API 不暴露 reqwest 类型。
 
 ### Range
 
@@ -337,11 +351,11 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
         .range(ByteRange::inclusive(0, 1023)?)
         .send()
         .await?;
-    if output.status() != 206 {
+    if !output.is_partial() {
         return Err(Error::new(ErrorKind::ProtocolViolation, "服务未返回范围响应"));
     }
-    let range = output.headers().get("content-range").and_then(|v| v.to_str().ok());
-    if !range.is_some_and(|v| v.starts_with("bytes 0-1023/")) {
+    let range = output.content_range();
+    if !range.is_some_and(|r| (r.start(), r.end()) == (0, 1023)) {
         return Err(Error::new(ErrorKind::ProtocolViolation, "Content-Range 与请求不匹配"));
     }
     let bytes = output.bytes().await?;
@@ -369,7 +383,7 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
 | --- | --- | --- |
 | `head_object(bucket, key).send()` | `Result<Option<ObjectMetadata>>` | 真正 HEAD；404 → None，200 → 元数据；`object_exists` 是同一请求的 bool 形式 |
 | `get_object_metadata(bucket, key).send()` | `Result<ObjectMetadata>` | GET `?metadata`，从响应头提取元数据；404 是错误 |
-| `get_object_basic_info(bucket, key).send()` | `Result<ObjectBasicInfo>` | GET `?basicInfo`，JSON 包含 size、upload_time、存储类别、metadata 等 |
+| `get_object_basic_info(bucket, key).send()` | `Result<ObjectBasicInfo>` | GET `?basicInfo`，JSON 包含 size（`u64`）、upload_time（`Option<DateTime<Utc>>`）、storage_class、metadata 等 |
 
 ```rust,no_run
 use fds::{Client, Error, ErrorKind};
@@ -419,7 +433,7 @@ async fn list_directory(client: &Client, bucket: &str) -> fds::Result<()> {
         .max_keys(page_size)
         .send()
         .await?;
-    for object in page.object_summaries {
+    for object in page.objects {
         println!("{}\t{}", object.object_name, object.size);
     }
     for prefix in page.common_prefixes {
@@ -440,7 +454,7 @@ async fn list_directory(client: &Client, bucket: &str) -> fds::Result<()> {
 }
 ```
 
-默认 `max_keys = 1000`；类型是 `NonZeroU32`，零在编译期就无法传入。`ObjectListing` 包含对象数组、common_prefixes、truncated、next_marker 等分页信息。`ObjectSummary` 包含 `object_name`、`size`、`etag`、`owner`、可选 UTC `last_modified` 和整数 `upload_time`。
+默认 `max_keys = 1000`；类型是 `NonZeroU32`，零在编译期就无法传入。`ObjectListing` 包含对象数组、common_prefixes、truncated、next_marker 等分页信息。`ObjectListing` 的对象数组字段是 `objects`，`max_keys` 是服务端回显的 `u32`。`ObjectSummary` 包含 `object_name`、`size`（`u64`）、`etag`、`owner`、可选 UTC `last_modified`（RFC 3339 字符串）和可选 UTC `upload_time`（由毫秒时间戳转换）。负数大小或非法时间戳会让整页返回 `ErrorKind::ProtocolViolation`。
 
 prefix 是字符串前缀，没有真实目录实体。要遍历前缀下全部对象通常省略 delimiter；设为 `/` 后，下一层分组出现在 common_prefixes，SDK 不递归进入这些分组。
 
@@ -456,9 +470,7 @@ async fn sum_prefix(client: &Client, bucket: &str, prefix: &str) -> fds::Result<
     let mut total = 0u64;
     while let Some(object) = objects.next().await {
         let object = object?;
-        let size = u64::try_from(object.size)
-            .map_err(|_| fds::Error::new(fds::ErrorKind::ProtocolViolation, "服务返回负数大小"))?;
-        total = total.checked_add(size)
+        total = total.checked_add(object.size)
             .ok_or_else(|| fds::Error::new(fds::ErrorKind::Unexpected, "累计大小溢出"))?;
     }
     Ok(total)
@@ -503,7 +515,7 @@ async fn restore_deleted(client: &Client, bucket: &str, key: &str) -> fds::Resul
 
 复制是服务端操作，不会把源文件下载到调用进程。支持分别指定源/目标 Bucket 和 key；仍使用此 Client 的目标服务入口，不能据此假设能跨地区或跨独立 FDS 服务复制。没有条件防覆盖保证，也没有把复制和 rename 包装为事务。
 
-`copy_object(..).send()` 返回 `CopyObjectResponse`，并执行完整回执校验：必须 HTTP 200、完整有效 JSON、必填 `bucketName` / `objectName` 与请求目标完全一致。回执最多 64 KiB（含额外字段和空白），空体、截断、缺字段、目标不符、超限及超时均失败；读取受 Client 的 `request_timeout` 和 `read_timeout` 约束。
+`copy_object(..).send()` 返回 `CopyObjectOutput`，并执行完整回执校验：必须 HTTP 200、完整有效 JSON、必填 `bucketName` / `objectName` 与请求目标完全一致。回执最多 64 KiB（含额外字段和空白），空体、截断、缺字段、目标不符、超限及超时均失败；读取受 Client 的 `request_timeout` 和 `read_timeout` 约束。
 
 Copy 不自动重试。请求可能已到达服务后的任何失败（错误状态、回执缺失或不符、响应体中断）都是 `ErrorKind::OutcomeUnknown`，表示未取得有效匹配回执，**目标可能已写入，不能据此认定复制未执行，也不能盲目重试**；可通过 `source()` 检查原因，HTTP 诊断仍可通过 `status()` / `response()` 读取。应由业务结合目标身份、版本或内容证据核对结果，仅检查目标存在不能证明它来自本次 Copy。`dispatch()` 为 `Dispatch::NotSent` 的失败（参数校验、签名、连接被拒）原样返回。
 
@@ -640,8 +652,8 @@ async fn create_public_read_bucket(client: &Client, bucket: &str) -> fds::Result
 
 ```rust,no_run
 use fds::Client;
-use fds::multipart::{MultipartUploadSession, UploadPartResponse};
-use fds::object::PutObjectResponse;
+use fds::multipart::{MultipartUploadSession, UploadPartOutput};
+use fds::object::PutObjectOutput;
 use std::num::NonZeroU16;
 
 // 返回会话给调用者保存；随后执行分片，不把会话藏在一个会丢失上下文的函数内。
@@ -651,13 +663,13 @@ async fn begin(client: &Client, bucket: &str, key: &str) -> fds::Result<Multipar
 }
 
 async fn send_part(session: &MultipartUploadSession, number: NonZeroU16, bytes: bytes::Bytes)
-    -> fds::Result<UploadPartResponse>
+    -> fds::Result<UploadPartOutput>
 {
     session.upload_part(number, bytes).send().await
 }
 
-async fn finish(session: &MultipartUploadSession, mut receipts: Vec<UploadPartResponse>)
-    -> fds::Result<PutObjectResponse>
+async fn finish(session: &MultipartUploadSession, mut receipts: Vec<UploadPartOutput>)
+    -> fds::Result<PutObjectOutput>
 {
     receipts.sort_by_key(|part| part.part_number);
     session.complete(receipts)
@@ -670,7 +682,7 @@ async fn abandon(session: &MultipartUploadSession) -> fds::Result<()> {
 }
 ```
 
-调用顺序示例：保存 `begin()` 返回的会话（至少持久化 `bucket()`、`object()`、`upload_id()`）；按从 1 开始的编号调用 `send_part()`，每收到一份回执就保存；确认分片编号、长度、ETag 和总数满足预期后把回执交给 `finish()`。回执为 `UploadPartResponse { part_number, etag, part_size }`。手动 complete 按调用者提供的集合序列化，不替调用者检查完整性或自动排序。
+调用顺序示例：保存 `begin()` 返回的会话（至少持久化 `bucket()`、`object()`、`upload_id()`）；按从 1 开始的编号调用 `send_part()`，每收到一份回执就保存；确认分片编号、长度、ETag 和总数满足预期后把回执交给 `finish()`。回执为 `UploadPartOutput { part_number: NonZeroU16, etag: String, part_size: u64 }`，序列化格式与服务端返回、complete 请求体中的 `{"partNumber","etag","partSize"}` 一致。手动 complete 按调用者提供的集合序列化，不替调用者检查完整性或自动排序。
 
 create 与 complete 支持 `.metadata(...)`，complete 另支持 `.expires(...)`；四个 builder 都支持 `.timeout(...)`。part 支持和 PUT 一样的 UploadBody，可显式 `.content_md5(...)`。跨进程恢复时不需要会话对象：`client.upload_part(bucket, key, upload_id, number, body)`、`client.complete_multipart_upload(bucket, key, upload_id, parts)` 和 `client.abort_multipart_upload(bucket, key, upload_id)` 直接接收持久化的 upload ID，会话上的同名方法返回同样的 builder。
 
@@ -684,7 +696,7 @@ create 与 complete 支持 `.metadata(...)`，complete 另支持 `.expires(...)`
 
 ```rust,no_run
 use fds::multipart::{CleanupPolicy, MultipartUpload};
-use fds::object::PutObjectResponse;
+use fds::object::PutObjectOutput;
 use fds::Client;
 use std::future::Future;
 
@@ -702,7 +714,7 @@ async fn prepare_large_file(client: &Client, bucket: &str, key: &str, path: &std
 
 // session 由上层持有；错误返回后仍可读取 progress，不会随本函数丢失。
 async fn run_upload(session: &mut MultipartUpload, cancel: impl Future<Output = ()>)
-    -> fds::Result<PutObjectResponse>
+    -> fds::Result<PutObjectOutput>
 {
     let result = session.upload(cancel).await;
     if result.is_err() {
@@ -787,15 +799,16 @@ use fds::object::ObjectMetadata;
 use fds::Client;
 use http::Method;
 use std::time::Duration;
+use url::Url;
 
-fn download_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
+fn download_link(client: &Client, bucket: &str, key: &str) -> fds::Result<Url> {
     client
         .presign_object(bucket, key)
         .expires_in(Duration::from_secs(600))
         .build()
 }
 
-fn upload_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
+fn upload_link(client: &Client, bucket: &str, key: &str) -> fds::Result<Url> {
     let mut metadata = ObjectMetadata::new();
     metadata.set_content_type("application/octet-stream");
     client
@@ -806,14 +819,14 @@ fn upload_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> 
         .build()
 }
 
-fn public_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
+fn public_link(client: &Client, bucket: &str, key: &str) -> fds::Result<Url> {
     client.absolute_object_url(bucket, key)
 }
 ```
 
 预签名仅支持 access key Client，OAuth Client 返回错误。生成操作不联网、不验证对象存在或凭据是否有效。`expires_in` 的有效期从调用 `build()` 时计算，不是实际交付 URL 时，至少 1 ms；绝对时间用 `.expires_at(DateTime<Utc>)`。两者必须设置其一，method 默认 GET。
 
-接收方必须使用签名时的 HTTP method 与参与签名的头；例如上传示例使用相同 Content-Type。SDK 返回完整 String，保留它原样使用，不自行重排 query 或重复编码 Signature。该协议 Expires 是毫秒时间戳，HEAD 预签名还附带 metadata 子资源。URL 包含临时访问凭证，应经受控渠道交付，不放公开日志。
+接收方必须使用签名时的 HTTP method 与参与签名的头；例如上传示例使用相同 Content-Type。SDK 返回 `url::Url`，其 `as_str()` / `Display` 就是签名时的完整字符串；原样使用，不要再用 `Url` 的 setter 修改 query 或重复编码 Signature。`absolute_object_url` 同样返回 `Url`。该协议 Expires 是毫秒时间戳，HEAD 预签名还附带 metadata 子资源。URL 包含临时访问凭证，应经受控渠道交付，不放公开日志。
 
 `.cdn()` 请求 CDN 地址，必须在构建 Client 时显式设置 `cdn_endpoint(origin)`；未配置会返回错误，不会从 FDS 主机自动推导。普通 SDK 数据请求始终使用 FDS endpoint。CDN 地址是否已开通由服务环境决定。
 
@@ -948,7 +961,7 @@ async fn oauth_read(exchange_origin: &str, object_origin: &str, app_id: &str,
 
 provider 为 XiaoMi、QQ、Sina、RenRen。app ID、OAuth app ID、provider token 和 provider 是 `exchange_storage_token` 的必填参数；XiaoMi 还需在 `.send()` 前链式追加 `.xiaomi_mac(open_id, mac_key, algorithm)`，三者非空；algorithm 原样交给服务，不在本地计算 MAC。Weixin 尚无可调用枚举。provider token 由应用通过相应授权流程获取，SDK 不提供用户登录流程。
 
-`StorageAccessToken` 提供 `app_id()`、`expires_at()`、`is_expired()` 和敏感访问器 `token()`；过期时间是 UTC 绝对时间，接口不提供任意字符串手动构造 token 的公开入口。交换始终只尝试一次。token 绑定 appId，`list_app_buckets` 自动使用该 appId，返回 `AppBuckets { owner, buckets }`；AppBucket 含 name、org_id、creation_time、used_space、num_objects。
+`StorageAccessToken` 提供 `app_id()`、`expires_at()`、`is_expired()` 和敏感访问器 `token()`；过期时间是 UTC 绝对时间，接口不提供任意字符串手动构造 token 的公开入口。交换始终只尝试一次。token 绑定 appId，`list_app_buckets` 自动使用该 appId，返回 `AppBucketList { owner, buckets }`；`AppBucket` 含 `bucket_name`、`org_id`、`creation_time`（`DateTime<Utc>`）、`used_space`、`object_count`（`u64`），每个字段都必须出现。
 
 OAuth Client 普通对象 API 共用 token 认证；`credentials` 与 `storage_token` 最后一个 setter 生效。构建及每次发送前检查过期；不会自动续期。需要新的 provider 凭据时由应用取得，再显式 exchange、构建新 Client 并替换应用持有的句柄，旧 clone 不更新。
 
@@ -999,7 +1012,7 @@ fn report_error(error: &fds::Error) {
 
 HTTP status 与服务 error code 是两套字段。JSON 操作即使 HTTP 200，也可能因空体或非法 JSON 失败；权限错误不能转换成“对象不存在”。SDK 禁止自动跟随重定向，未列入操作成功状态的 2xx 也会失败。更多状态规则见 [响应处理](docs/runtime.md#响应与错误)。
 
-`fds::Error` 的 Display 包含 kind、消息、HTTP 状态和形如标识符的 service code；Debug 另含 dispatch、上下文和 source 链（逐项按 Display 输出）。两者都不输出 AK/SK、签名、storage token、带凭证的 URL、request ID 或原始响应体；OAuth/匿名模式下不保留 service code、request ID 和响应体。但调用者自己的错误文本、metadata、ACL、key、原始响应和 PutObjectResponse 等并非统一脱敏对象。不要把任意 SDK 模型整体打印当成安全日志策略。
+`fds::Error` 的 Display 包含 kind、消息、HTTP 状态和形如标识符的 service code；Debug 另含 dispatch、上下文和 source 链（逐项按 Display 输出）。两者都不输出 AK/SK、签名、storage token、带凭证的 URL、request ID 或原始响应体；OAuth/匿名模式下不保留 service code、request ID 和响应体。但调用者自己的错误文本、metadata、ACL、key、原始响应和 PutObjectOutput 等并非统一脱敏对象。不要把任意 SDK 模型整体打印当成安全日志策略。
 
 ### 重试和整体期限
 

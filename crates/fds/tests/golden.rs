@@ -90,8 +90,10 @@ fn golden_absolute_urls() {
     assert!(!fx.absolute_urls.is_empty());
     for case in &fx.absolute_urls {
         let got = c.absolute_object_url(&case.bucket, &case.object).unwrap();
+        // The Url's string form is the exact golden string.
         assert_eq!(
-            got, case.expected,
+            got.as_str(),
+            case.expected,
             "absolute url mismatch for object {:?}",
             case.object
         );
@@ -117,10 +119,15 @@ fn golden_presigned_urls() {
             request = request.metadata(metadata);
         }
         let got = request.build().unwrap();
+        // The Url's string form (and Display) is the exact golden string.
+        assert_eq!(got.to_string(), got.as_str());
         assert_eq!(
-            got, case.expected,
+            got.as_str(),
+            case.expected,
             "presigned url mismatch for {} {}/{}",
-            case.method, case.bucket, case.object
+            case.method,
+            case.bucket,
+            case.object
         );
     }
 }

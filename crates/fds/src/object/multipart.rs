@@ -2,7 +2,7 @@
 //! Re-exported from [`crate::multipart`]; see there for the managed file upload.
 
 use super::{insert_header_opt, validate_object};
-use super::{ObjectMetadata, PutObjectResponse, UploadBody};
+use super::{ObjectMetadata, PutObjectOutput, UploadBody};
 use crate::client::ClientRequest;
 use crate::{Client, Error, Result};
 use bytes::Bytes;
@@ -24,14 +24,20 @@ crate::de::lenient! {
     }
 }
 
-/// Result of [`UploadPart::send`], sent back verbatim on completion. Every
-/// key is required.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Result of [`UploadPart::send`]: the part receipt, sent back verbatim on
+/// completion (`{"partNumber":..,"etag":..,"partSize":..}`).
+///
+/// Every key is required. A part number outside `1..=65535` or a negative
+/// size is a protocol violation; the managed upload additionally checks that
+/// each receipt matches the part it sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UploadPartResponse {
-    pub part_number: i32,
+pub struct UploadPartOutput {
+    /// The part number, the same type [`Client::upload_part`] takes.
+    pub part_number: NonZeroU16,
     pub etag: String,
-    pub part_size: i64,
+    /// Size in bytes.
+    pub part_size: u64,
 }
 
 fn validate_upload(bucket: &str, object: &str, upload_id: &str) -> Result<()> {
@@ -140,7 +146,7 @@ impl MultipartUploadSession {
     /// [`Client::complete_multipart_upload`].
     pub fn complete(
         &self,
-        parts: impl IntoIterator<Item = UploadPartResponse>,
+        parts: impl IntoIterator<Item = UploadPartOutput>,
     ) -> CompleteMultipartUpload {
         self.client
             .complete_multipart_upload(&self.bucket, &self.object, &self.upload_id, parts)
@@ -180,7 +186,7 @@ impl UploadPart {
     /// PUT `/{bucket}/{object}?uploadId=..&partNumber=..`, consuming the body
     /// without copying it. Never retried. The part number must not exceed
     /// [`MAX_PART_NUMBER`]; the upload ID must be non-empty.
-    pub async fn send(self) -> Result<UploadPartResponse> {
+    pub async fn send(self) -> Result<UploadPartOutput> {
         validate_upload(&self.bucket, &self.object, &self.upload_id)?;
         if self.part_number.get() > MAX_PART_NUMBER {
             return Err(Error::invalid_input("part number must be at most 10000"));
@@ -203,7 +209,7 @@ pub struct CompleteMultipartUpload {
     bucket: String,
     object: String,
     upload_id: String,
-    parts: Vec<UploadPartResponse>,
+    parts: Vec<UploadPartOutput>,
     metadata: Option<ObjectMetadata>,
     expires: Option<DateTime<Utc>>,
     timeout: Option<Duration>,
@@ -228,12 +234,12 @@ impl CompleteMultipartUpload {
     /// `{"uploadPartResultList":[...]}`, the receipts in the given order.
     /// Never retried; reconcile before repeating a completion whose outcome
     /// is unknown.
-    pub async fn send(self) -> Result<PutObjectResponse> {
+    pub async fn send(self) -> Result<PutObjectOutput> {
         validate_upload(&self.bucket, &self.object, &self.upload_id)?;
         #[derive(Serialize)]
         struct Parts<'a> {
             #[serde(rename = "uploadPartResultList")]
-            parts: &'a [UploadPartResponse],
+            parts: &'a [UploadPartOutput],
         }
         let body = serde_json::to_vec(&Parts { parts: &self.parts }).map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
@@ -325,7 +331,7 @@ impl Client {
         bucket: impl Into<String>,
         object: impl Into<String>,
         upload_id: impl Into<String>,
-        parts: impl IntoIterator<Item = UploadPartResponse>,
+        parts: impl IntoIterator<Item = UploadPartOutput>,
     ) -> CompleteMultipartUpload {
         CompleteMultipartUpload {
             client: self.clone(),

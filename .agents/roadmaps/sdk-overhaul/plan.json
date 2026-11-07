@@ -159,7 +159,7 @@
       "title": "返回值类型化与精简",
       "type": "feat",
       "document": "tasks/typed-responses.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 6,
       "depends_on": [
         "fluent-bucket",

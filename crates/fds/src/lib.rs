@@ -35,7 +35,8 @@
 //!   - [`object`]: single-object operations, listing, bulk delete, presigned
 //!     URLs and the object models ([`object::ObjectMetadata`],
 //!     [`object::UploadBody`], [`object::GetObjectOutput`],
-//!     [`object::ByteRange`], [`object::StorageClass`]);
+//!     [`object::ByteRange`], [`object::ContentRange`],
+//!     [`object::StorageClass`]);
 //!   - [`bucket`]: bucket operations, lifecycle and access-log models;
 //!   - [`acl`]: ACL models shared by buckets and objects;
 //!   - [`multipart`]: the low-level multipart builders, the

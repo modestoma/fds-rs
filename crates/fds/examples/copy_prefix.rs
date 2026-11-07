@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .strip_prefix(source_prefix.as_str())
             .ok_or("listing returned an object outside the requested prefix")?;
         let target_key = format!("{target_prefix}{suffix}");
-        let expected = u64::try_from(object.size)?;
+        let expected = object.size;
         client
             .copy_object(
                 (source_bucket, &object.object_name),
