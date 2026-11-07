@@ -194,6 +194,7 @@ flowchart LR
 - 2026-11-07 · revision 1 · 用户原话"现在本地删除 GitLab ci 相关的配置，然后提交第一版，然后本轮 roadmap 在本地以 main 分支为基线进行开发" · 明确决定 · `.gitlab-ci.yml` 已移出仓库，基线为本地 main（不受保护），合并方式为 local，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户在确认默认假设时补充"版本号回退至 0.1.0；fds_cli 同步修改" · 明确决定 · 两个 crate 的版本号都定为 0.1.0（原为 0.2.0）；fds_cli 跟随每个任务同步修改 · 影响 docs-release 及全部 API 任务。
 - 2026-11-07 · revision 1 · 默认假设，用户已确认 · 凭证 provider 和幂等写重试排在最后阶段，用户评审时可以删掉 · 影响 credentials-provider、idempotent-retry。
+- 2026-11-08 · revision 8 · 用户在提问中选择：is_retryable "接受（推荐）"、500 "不重试（推荐）"、保守标注 "维持永不重试（推荐）" · 明确决定 · `Error::is_retryable()` 对 Transport + Dispatch::Unknown 返回 true（与读重试一致，rustdoc 说明不代表非幂等写可安全重发）；HTTP 500 不重试、不提供开关；ACL 修改、set_lifecycle_rule、abort_multipart_upload、delete_bucket 维持永不重试 · 影响 idempotent-retry（与实现一致，无需返工）。
 - 2026-11-08 · revision 8 · 用户对待答问题 cli-oauth-refresh 的回答"改为自动续期" · 明确决定 · 新增任务 cli-oauth-refresh：fds_cli `--oauth` 改用 `StorageTokenProvider` 自动续期；token 过期时由"报错退出 1"变为"自动续期后继续"，记为 AC-7 例外；docs-release 改为依赖它 · 影响 cli-oauth-refresh、docs-release。
 - 2026-11-07 · revision 7 · 用户在提问中选择"接受为例外（推荐）" · 明确决定 · AC-7 例外：fds_cli `--meta` 不再接受既非系统头、也非 `x-xiaomi-meta-*` 的旧白名单 key（content-length、last-modified、last-checked、upload-time、date、authorization、range、content-range、x-xiaomi-multipart-upload-mode），报 InvalidInput 并以 1 退出；SDK 不提供写入原始头的入口 · 影响 object-metadata。
 - 2026-11-07 · revision 7 · 用户在提问中选择"接受（推荐）" · 明确决定 · 系统头传空值时（例如 `--content-type ""`），put / init / complete / upload 不再发送空头；CLI 输出不变，set-metadata 的 body 仍保留空值 · 影响 object-metadata。
