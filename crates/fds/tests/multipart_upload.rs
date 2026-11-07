@@ -1,7 +1,7 @@
-use fds::{
-    CancellationToken, CleanupPolicy, Client, InitMultipartUploadRequest, MultipartOptions,
-    MultipartState, MultipartUpload, RetryPolicy,
+use fds::multipart::{
+    CleanupPolicy, InitMultipartUploadRequest, MultipartOptions, MultipartState, MultipartUpload,
 };
+use fds::{Client, RetryPolicy};
 use std::{
     path::PathBuf,
     sync::{
@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 struct File(PathBuf);
 impl File {
     async fn new(data: &[u8]) -> Self {
@@ -94,7 +95,7 @@ async fn part_failure_preserves_original_cleanup_failure_and_identity() {
         )
         .await
         .unwrap();
-        let error = upload.upload(&CancellationToken::new()).await.unwrap_err();
+        let error = upload.upload(std::future::pending()).await.unwrap_err();
         assert_eq!(error.status().map(|s| s.as_u16()), Some(503));
         assert_eq!(error.kind(), fds::ErrorKind::ServerError);
         let cleanup = error
@@ -115,7 +116,7 @@ async fn part_failure_preserves_original_cleanup_failure_and_identity() {
         assert_eq!(upload.progress().state, MultipartState::Failed);
         assert_eq!(upload.progress().upload.upload_id, "id");
         assert_eq!(upload.progress().upload.bucket_name, "b");
-        assert!(upload.upload(&CancellationToken::new()).await.is_err());
+        assert!(upload.upload(std::future::pending()).await.is_err());
         i.assert_async().await;
         p.assert_async().await;
         abort.assert_async().await;
@@ -152,7 +153,7 @@ async fn cooperative_cancel_aborts_once_and_bad_receipt_never_completes() {
         if cancelled {
             token.cancel();
         }
-        assert!(upload.upload(&token).await.is_err());
+        assert!(upload.upload(token.cancelled()).await.is_err());
         assert_eq!(upload.progress().state, MultipartState::Aborted);
         i.assert_async().await;
         p.assert_async().await;
@@ -187,7 +188,7 @@ async fn completion_failure_is_unknown_with_all_receipts_and_no_abort_or_retry()
         )
         .await
         .unwrap();
-        let error = upload.upload(&CancellationToken::new()).await.unwrap_err();
+        let error = upload.upload(std::future::pending()).await.unwrap_err();
         assert!(error.is_outcome_unknown(), "{error:?}");
         assert_eq!(error.dispatch(), fds::Dispatch::Sent);
         // An identity mismatch is detected after decoding and carries no status.
@@ -196,7 +197,7 @@ async fn completion_failure_is_unknown_with_all_receipts_and_no_abort_or_retry()
         }
         assert_eq!(upload.progress().state, MultipartState::CompletionUnknown);
         assert_eq!(upload.progress().parts.len(), 1);
-        assert!(upload.upload(&CancellationToken::new()).await.is_err());
+        assert!(upload.upload(std::future::pending()).await.is_err());
         i.assert_async().await;
         p.assert_async().await;
         complete.assert_async().await;
@@ -306,7 +307,7 @@ async fn out_of_order_parts_are_bounded_and_completed_in_order() {
     .unwrap();
     let output = tokio::time::timeout(
         Duration::from_secs(5),
-        upload.upload(&CancellationToken::new()),
+        upload.upload(std::future::pending()),
     )
     .await
     .unwrap()
@@ -358,12 +359,12 @@ async fn dropping_future_keeps_session_and_completion_cancellation_never_aborts(
                 reached.notified().await;
                 token.cancel();
             };
-            let (result, ()) = tokio::join!(upload.upload(&token), cancel);
+            let (result, ()) = tokio::join!(upload.upload(token.cancelled()), cancel);
             let error = result.unwrap_err();
             assert!(error.is_outcome_unknown(), "{error:?}");
             assert_eq!(error.dispatch(), fds::Dispatch::Unknown);
         } else {
-            tokio::select! { result = upload.upload(&token) => panic!("unexpected {result:?}"), _ = reached.notified() => {} }
+            tokio::select! { result = upload.upload(token.cancelled()) => panic!("unexpected {result:?}"), _ = reached.notified() => {} }
         }
         assert_eq!(upload.progress().upload.upload_id, "id");
         assert_eq!(
@@ -438,7 +439,7 @@ async fn cancellation_stops_inflight_parts_before_abort_and_keeps_receipts() {
     )
     .await
     .unwrap();
-    let error = upload.upload(&token).await.unwrap_err();
+    let error = upload.upload(token.cancelled()).await.unwrap_err();
     assert_eq!(error.kind(), fds::ErrorKind::Cancelled);
     assert_eq!(upload.progress().parts.len(), 1);
     assert_eq!(upload.progress().state, MultipartState::Aborted);
@@ -464,7 +465,7 @@ async fn local_file_failure_is_preserved_and_aborted() {
     .await
     .unwrap();
     tokio::fs::write(&file.0, b"").await.unwrap();
-    let error = upload.upload(&CancellationToken::new()).await.unwrap_err();
+    let error = upload.upload(std::future::pending()).await.unwrap_err();
     assert_eq!(error.kind(), fds::ErrorKind::Io);
     assert_eq!(upload.progress().state, MultipartState::Aborted);
     i.assert_async().await;

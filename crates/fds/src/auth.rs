@@ -3,6 +3,9 @@
 //! 🔴🔴 This is the core of "functional zero-error": one wrong byte in the
 //! `StringToSign` yields a server 403. See `tests/fixtures/golden.json` for saved signing vectors.
 //!
+//! Crate-internal: signing is an implementation detail, not a public API. The
+//! saved Go signature vectors are checked by `tests::golden_signatures` below.
+//!
 //! ```text
 //! StringToSign = Method + "\n" + ContentMD5 + "\n" + ContentType + "\n"
 //!              + Date   + "\n" + CanonicalizedXiaomiHeaders + CanonicalizedResource
@@ -36,7 +39,7 @@ const SUB_RESOURCES: &[&str] = &[
 
 /// Case-insensitive header abstraction the signer needs. The production impl is
 /// for `reqwest::header::HeaderMap` (already lowercase-keyed).
-pub trait HeaderLookup {
+pub(crate) trait HeaderLookup {
     /// First value for a lowercase header name; empty string if absent.
     fn get_first(&self, name_lower: &str) -> String;
     /// Visit each distinct lowercase key with its multi-value joined by `,`.
@@ -96,7 +99,7 @@ pub(crate) fn string_to_sign(
 }
 
 /// Compute the Galaxy-V2 signature (auth.go:signature).
-pub fn sign(
+pub(crate) fn sign(
     secret: &str,
     method: &str,
     url_str: &str,
@@ -198,6 +201,39 @@ mod tests {
             for (k, v) in &self.0 {
                 f(k, v);
             }
+        }
+    }
+
+    /// Saved signature vectors captured from the Go SDK
+    /// (`tests/fixtures/golden.json`). This lives here rather than in
+    /// `tests/golden.rs` because [`sign`] is crate-internal; the URL and
+    /// presign vectors of the same fixture still run through the public API
+    /// in `tests/golden.rs`.
+    #[test]
+    fn golden_signatures() {
+        #[derive(serde::Deserialize)]
+        struct Fixtures {
+            signatures: Vec<Signature>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Signature {
+            secret: String,
+            method: String,
+            url: String,
+            headers: std::collections::HashMap<String, String>,
+            expected: String,
+        }
+        let fixtures: Fixtures =
+            serde_json::from_str(include_str!("../tests/fixtures/golden.json")).unwrap();
+        assert!(!fixtures.signatures.is_empty());
+        for case in &fixtures.signatures {
+            let headers = TestHeaders(case.headers.clone().into_iter().collect());
+            let got = sign(&case.secret, &case.method, &case.url, &headers).unwrap();
+            assert_eq!(
+                got, case.expected,
+                "signature mismatch for {} {}",
+                case.method, case.url
+            );
         }
     }
 

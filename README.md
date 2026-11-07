@@ -144,7 +144,9 @@ fn configured_client(endpoint: &str, id: &str, secret: &str) -> fds::Result<Clie
 ### 创建、查询和列举
 
 ```rust,no_run
-use fds::{Client, CreateBucketRequest, StorageClass};
+use fds::Client;
+use fds::bucket::CreateBucketRequest;
+use fds::object::StorageClass;
 
 async fn bucket_operations(client: &Client, bucket: &str) -> fds::Result<()> {
     CreateBucketRequest::new(bucket)
@@ -171,7 +173,8 @@ async fn bucket_operations(client: &Client, bucket: &str) -> fds::Result<()> {
 ### 迁移归属和删除
 
 ```rust,no_run
-use fds::{Client, MigrateBucketRequest};
+use fds::Client;
+use fds::bucket::MigrateBucketRequest;
 
 async fn move_ownership(client: &Client, bucket: &str, org: &str, team: &str) -> fds::Result<()> {
     MigrateBucketRequest::new(bucket, org, team).send(client).await
@@ -189,7 +192,8 @@ async fn remove_empty_bucket(client: &Client, bucket: &str) -> fds::Result<()> {
 
 ```rust,no_run
 use bytes::Bytes;
-use fds::{Client, ObjectMetadata, PutObjectRequest};
+use fds::Client;
+use fds::object::{ObjectMetadata, PutObjectRequest};
 
 async fn upload_text(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     let mut metadata = ObjectMetadata::new();
@@ -224,7 +228,8 @@ PUT 是创建或覆盖同名对象，不提供“不存在才写”的条件写�
 ### 文件上传
 
 ```rust,no_run
-use fds::{Client, PutObjectRequest};
+use fds::Client;
+use fds::object::PutObjectRequest;
 use std::path::Path;
 
 async fn upload_file(client: &Client, bucket: &str, key: &str, path: &Path) -> fds::Result<()> {
@@ -241,7 +246,8 @@ async fn upload_file(client: &Client, bucket: &str, key: &str, path: &Path) -> f
 
 ```rust,no_run
 use bytes::Bytes;
-use fds::{Client, PutObjectRequest, UploadBody};
+use fds::Client;
+use fds::object::{PutObjectRequest, UploadBody};
 
 async fn upload_stream(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     let stream = futures_util::stream::iter([
@@ -269,7 +275,8 @@ async fn upload_stream(client: &Client, bucket: &str, key: &str) -> fds::Result<
 ### 小对象：收集到内存
 
 ```rust,no_run
-use fds::{Client, GetObjectRequest};
+use fds::Client;
+use fds::object::GetObjectRequest;
 
 async fn read_text(client: &Client, bucket: &str, key: &str) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = GetObjectRequest::new(bucket, key).send(client).await?.bytes().await?;
@@ -282,7 +289,8 @@ async fn read_text(client: &Client, bucket: &str, key: &str) -> Result<String, B
 ### 流式消费与写入文件
 
 ```rust,no_run
-use fds::{Client, GetObjectRequest};
+use fds::Client;
+use fds::object::GetObjectRequest;
 use tokio::io::AsyncWriteExt;
 
 async fn stream_to_file(client: &Client, bucket: &str, key: &str, path: &std::path::Path) -> fds::Result<u64> {
@@ -312,7 +320,8 @@ async fn consume_chunks(client: &Client, bucket: &str, key: &str) -> fds::Result
 ### Range
 
 ```rust,no_run
-use fds::{ByteRange, Client, Error, ErrorKind, GetObjectRequest};
+use fds::{Client, Error, ErrorKind};
+use fds::object::{ByteRange, GetObjectRequest};
 
 async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result<bytes::Bytes> {
     // 此示例要求对象至少有 1024 字节，并要求服务返回对应范围。
@@ -354,7 +363,8 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
 | `get_object_basic_info(bucket, key)` | `Result<ObjectBasicInfo>` | GET `?basicInfo`，JSON 包含 size、upload_time、存储类别、metadata 等 |
 
 ```rust,no_run
-use fds::{Client, Error, ErrorKind, ObjectMetadata, SetObjectMetadataRequest};
+use fds::{Client, Error, ErrorKind};
+use fds::object::{ObjectMetadata, SetObjectMetadataRequest};
 
 async fn inspect_and_set_metadata(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     let Some(head) = client.head_object(bucket, key).await? else {
@@ -388,7 +398,8 @@ async fn inspect_and_set_metadata(client: &Client, bucket: &str, key: &str) -> f
 ### 单页与目录式浏览
 
 ```rust,no_run
-use fds::{Client, ListObjectsRequest};
+use fds::Client;
+use fds::object::ListObjectsRequest;
 
 async fn list_directory(client: &Client, bucket: &str) -> fds::Result<()> {
     let page = ListObjectsRequest::new(bucket)
@@ -419,7 +430,8 @@ prefix 是字符串前缀，没有真实目录实体。要遍历前缀下全部�
 ### 自动遍历页或对象
 
 ```rust,no_run
-use fds::{Client, ListObjectsRequest};
+use fds::Client;
+use fds::object::ListObjectsRequest;
 use futures_util::{pin_mut, StreamExt};
 
 async fn sum_prefix(client: &Client, bucket: &str, prefix: &str) -> fds::Result<u64> {
@@ -453,7 +465,8 @@ async fn count_pages(client: &Client, bucket: &str) -> fds::Result<usize> {
 ## 复制、重命名与误删恢复
 
 ```rust,no_run
-use fds::{Client, CopyObjectRequest};
+use fds::Client;
+use fds::object::CopyObjectRequest;
 
 async fn copy_and_rename(client: &Client, src_bucket: &str, dst_bucket: &str) -> fds::Result<()> {
     let receipt = CopyObjectRequest::new(src_bucket, "incoming/a.bin", dst_bucket, "backup/a.bin")
@@ -481,7 +494,8 @@ Copy 不自动重试。请求可能已到达服务后的任何失败（错误状
 单个对象调用 `client.delete_object(bucket, key).await?`。批量删除接受 `&[String]` 和 `put_to_trash: bool`，发送一个批次；它不自动把任意长数组切成符合服务限制的小批次。
 
 ```rust,no_run
-use fds::{Client, DeleteObjectsOutput, Dispatch, ListObjectsRequest};
+use fds::{Client, Dispatch};
+use fds::object::{DeleteObjectsOutput, ListObjectsRequest};
 
 async fn delete_selected(client: &Client, bucket: &str, keys: &[String])
     -> fds::Result<DeleteObjectsOutput>
@@ -531,8 +545,10 @@ async fn delete_prefix(client: &Client, bucket: &str, prefix: &str)
 ACL 的 `Add` 是默认增量添加，`Delete` 删除指定授权项；没有 Replace action。把从本地 Vec 删除 grant 后的列表发为 Add，不会撤销远端原授权。
 
 ```rust,no_run
-use fds::{AccessControlList, AclAction, Client, GetObjectACLRequest, Grant,
-    GrantKey, GrantPermission, GrantType, SetBucketAclRequest, SetObjectACLRequest};
+use fds::Client;
+use fds::acl::{AccessControlList, AclAction, Grant, GrantKey, GrantPermission, GrantType};
+use fds::bucket::SetBucketAclRequest;
+use fds::object::{GetObjectACLRequest, SetObjectACLRequest};
 
 fn read_grant(user_id: &str) -> AccessControlList {
     let mut acl = AccessControlList::default();
@@ -565,7 +581,9 @@ async fn revoke_object_read(client: &Client, bucket: &str, key: &str, user_id: &
 创建桶的 canned ACL 使用独立枚举，可设置多个值：
 
 ```rust,no_run
-use fds::{BucketCannedAcl, Client, CreateBucketRequest};
+use fds::Client;
+use fds::acl::BucketCannedAcl;
+use fds::bucket::CreateBucketRequest;
 
 async fn create_public_read_bucket(client: &Client, bucket: &str) -> fds::Result<()> {
     CreateBucketRequest::new(bucket)
@@ -581,8 +599,9 @@ async fn create_public_read_bucket(client: &Client, bucket: &str) -> fds::Result
 适合调用者自行管理分片来源、调度、回执和恢复流程。步骤是 init → 一个或多个 part → complete；放弃已知会话时显式 abort。普通文件上传优先考虑下一节托管接口。
 
 ```rust,no_run
-use fds::{Client, Error, ErrorKind, InitMultipartUploadRequest, InitMultipartUploadResponse,
-    PutObjectResponse, UploadPartResponse};
+use fds::{Client, Error, ErrorKind};
+use fds::multipart::{InitMultipartUploadRequest, InitMultipartUploadResponse, UploadPartResponse};
+use fds::object::PutObjectResponse;
 
 // 返回会话给调用者保存；随后执行分片，不把会话藏在一个会丢失上下文的函数内。
 async fn begin(client: &Client, bucket: &str, key: &str) -> fds::Result<InitMultipartUploadResponse> {
@@ -629,8 +648,10 @@ init 与 complete 支持 `.metadata(...)`，complete 另支持 `.expires(...)`�
 `MultipartUpload` 打开一个非空普通文件，限制并发和缓冲，收集回执并按编号 complete。它属于核心 SDK，不依赖 manager feature。
 
 ```rust,no_run
-use fds::{CancellationToken, CleanupPolicy, Client, InitMultipartUploadRequest,
-    MultipartOptions, MultipartUpload, PutObjectResponse};
+use fds::multipart::{CleanupPolicy, InitMultipartUploadRequest, MultipartOptions, MultipartUpload};
+use fds::object::PutObjectResponse;
+use fds::Client;
+use std::future::Future;
 
 async fn prepare_large_file(client: &Client, bucket: &str, key: &str, path: &std::path::Path)
     -> fds::Result<MultipartUpload>
@@ -641,7 +662,7 @@ async fn prepare_large_file(client: &Client, bucket: &str, key: &str, path: &std
 }
 
 // session 由上层持有；错误返回后仍可读取 progress，不会随本函数丢失。
-async fn run_upload(session: &mut MultipartUpload, cancel: &CancellationToken)
+async fn run_upload(session: &mut MultipartUpload, cancel: impl Future<Output = ()>)
     -> fds::Result<PutObjectResponse>
 {
     let result = session.upload(cancel).await;
@@ -654,7 +675,7 @@ async fn run_upload(session: &mut MultipartUpload, cancel: &CancellationToken)
 }
 ```
 
-调用者先 await `prepare_large_file` 并保存会话，再创建 `CancellationToken::new()`，调用 `run_upload(&mut session, &cancel)`。控制任务可持有 token 的 clone；失败后从仍存活的 session 读取并持久化进度，随后决定恢复。
+调用者先 await `prepare_large_file` 并保存会话，再调用 `run_upload(&mut session, cancel)`。取消信号是任意 `Future<Output = ()>`：完成即请求合作式取消，SDK 仍会执行清理策略并返回最终状态；不需要取消时传 `std::future::pending()`，使用 tokio-util 的 `CancellationToken` 时传 `token.cancelled()`。失败后从仍存活的 session 读取并持久化进度，随后决定恢复。
 
 默认 8 MiB、4 并发、Preserve。`MultipartOptions::new` 的本地限制：每片 1 字节至 64 MiB，并发 1–64，二者乘积不超过 256 MiB，文件最多 10,000 片。非最后一片仍需满足服务要求；不要因本地允许 1 字节就按 1 字节部署。payload 缓冲约束为 `part_size × concurrency`，另有 HTTP、TLS、文件和响应模型开销，不是进程 RSS 上限。
 
@@ -678,7 +699,8 @@ async fn run_upload(session: &mut MultipartUpload, cancel: &CancellationToken)
 需要 `manager`（默认开启）。下载器接受 Client 的廉价副本，配置和单次下载请求分开构造。
 
 ```rust,no_run
-use fds::{Client, DownloadOptions, DownloadRequest, Downloader};
+use fds::Client;
+use fds::manager::{DownloadOptions, DownloadRequest, Downloader};
 
 async fn download_safely(client: &Client, bucket: &str, key: &str, path: &std::path::Path)
     -> fds::Result<()>
@@ -688,7 +710,7 @@ async fn download_safely(client: &Client, bucket: &str, key: &str, path: &std::p
         .concurrency(4)
         .resume(true)
         .build()?;
-    let downloader = Downloader::new(client, options);
+    let downloader = Downloader::new(client.clone(), options);
     DownloadRequest::new(bucket, key, path).send(&downloader).await
 }
 ```
@@ -704,7 +726,7 @@ async fn download_safely(client: &Client, bucket: &str, key: &str, path: &std::p
 ### 请求启动限流
 
 ```rust,no_run
-use fds::DownloadOptions;
+use fds::manager::DownloadOptions;
 use governor::{Quota, RateLimiter};
 use std::{num::NonZeroU32, sync::Arc};
 
@@ -721,18 +743,20 @@ fn limited_download_options() -> fds::Result<DownloadOptions> {
 ## 预签名与普通 URL
 
 ```rust,no_run
-use fds::{Client, GeneratePresignedURLRequest, HttpMethod, ObjectMetadata};
+use fds::object::{GeneratePresignedURLRequest, ObjectMetadata};
+use fds::Client;
+use http::Method;
 use std::time::Duration;
 
 fn download_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
-    GeneratePresignedURLRequest::expires_in(bucket, key, HttpMethod::Get, Duration::from_secs(600))?
+    GeneratePresignedURLRequest::expires_in(bucket, key, Method::GET, Duration::from_secs(600))?
         .generate(client)
 }
 
 fn upload_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
     let mut metadata = ObjectMetadata::new();
     metadata.set_content_type("application/octet-stream");
-    GeneratePresignedURLRequest::expires_in(bucket, key, HttpMethod::Put, Duration::from_secs(600))?
+    GeneratePresignedURLRequest::expires_in(bucket, key, Method::PUT, Duration::from_secs(600))?
         .metadata(metadata).generate(client)
 }
 
@@ -754,12 +778,13 @@ fn public_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> 
 ### 生命周期规则
 
 ```rust,no_run
-use fds::{Client, GetLifecycleConfigRequest, LifecycleBaseItem, LifecycleConfig, LifecycleRule};
-use fds::bucket::{LifecycleAction, ACTION_EXPIRATION};
+use fds::bucket::{GetLifecycleConfigRequest, LifecycleAction, LifecycleBaseItem, LifecycleConfig,
+    LifecycleRule};
+use fds::Client;
+use std::collections::BTreeMap;
 
 async fn configure_lifecycle(client: &Client, bucket: &str) -> fds::Result<()> {
-    let mut action = LifecycleAction::new();
-    action.insert(ACTION_EXPIRATION.into(), LifecycleBaseItem { days: 30.0 });
+    let action = BTreeMap::from([(LifecycleAction::Expiration, LifecycleBaseItem { days: 30.0 })]);
     let rule = LifecycleRule {
         id: "expire-temporary-reports".into(), prefix: "temporary-reports/".into(),
         enabled: true, action,
@@ -777,14 +802,15 @@ async fn configure_lifecycle(client: &Client, bucket: &str) -> fds::Result<()> {
 }
 ```
 
-`LifecycleRule.action` 是 action 名到 `{ days: f64 }` 的 map，序列化字段名为 `actions`。`LifecycleRule::from_json` 和 `LifecycleConfig::from_json` 接受 JSON bytes；完整配置形式为 `{"rules":[...]}`。
+`LifecycleRule.action` 是 `LifecycleAction` 到 `{ days: f64 }` 的有序 map，序列化字段名为 `actions`，多个 action 按线上字符串排序输出。`LifecycleRule::from_json` 和 `LifecycleConfig::from_json` 接受 JSON bytes；完整配置形式为 `{"rules":[...]}`。
 
-模块常量还有 `ACTION_NON_CURRENT_VERSION_EXPIRATION` 和 `ACTION_ABORT_INCOMPLETE_MULTIPART_UPLOAD`。后者保留了协议兼容字符串的尾随空格，不能自行 trim 后假定等价。SDK 不验证天数业务范围，也没有独立 delete-lifecycle-rule 方法；禁用可提交同 ID 的 `enabled: false` 规则，具体更新/删除语义以服务为准。expiration 会影响匹配对象的数据保留，请按业务策略选择前缀和天数。
+`LifecycleAction` 还有 `NonCurrentVersionExpiration` 和 `AbortIncompleteMultipartUpload`；后者的线上值保留了协议兼容字符串的尾随空格（`"abortIncompleteMultipartUpload "`），不带空格的 key 会作为 `Other` 原样往返，不能假定等价。SDK 不验证天数业务范围，也没有独立 delete-lifecycle-rule 方法；禁用可提交同 ID 的 `enabled: false` 规则，具体更新/删除语义以服务为准。expiration 会影响匹配对象的数据保留，请按业务策略选择前缀和天数。
 
 ### 访问日志
 
 ```rust,no_run
-use fds::{AccessLog, Client};
+use fds::Client;
+use fds::bucket::AccessLog;
 
 async fn enable_logs(client: &Client, bucket: &str, log_bucket: &str) -> fds::Result<()> {
     let config = AccessLog {
@@ -825,7 +851,8 @@ async fn request_refresh(client: &Client, bucket: &str, key: &str) -> fds::Resul
 ### 显式发现 endpoint
 
 ```rust,no_run
-use fds::{Client, Error, ErrorKind, FdsServiceClient};
+use fds::{Client, Error, ErrorKind};
+use fds::oauth::FdsServiceClient;
 
 async fn discover_client(discovery_origin: &str, region: &str, service_name: &str,
     allowed_hosts: &[String], id: &str, secret: &str) -> fds::Result<Client>
@@ -847,7 +874,9 @@ async fn discover_client(discovery_origin: &str, region: &str, service_name: &st
 ### 交换 storage token 并访问对象
 
 ```rust,no_run
-use fds::{Client, FdsServiceClient, GetObjectRequest, OAuthProvider, StorageTokenRequest};
+use fds::Client;
+use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::object::GetObjectRequest;
 
 async fn oauth_read(exchange_origin: &str, object_origin: &str, app_id: &str,
     oauth_app_id: &str, provider_token: &str, bucket: &str, key: &str) -> fds::Result<u64>
@@ -934,7 +963,8 @@ PUT、复制、rename、ACL 修改、删除、分片 init/part/complete/abort、
 客户端 request_timeout 是每次请求的期限；完整下载 body 消费和所有重试的外层期限可以这样设置：
 
 ```rust,no_run
-use fds::{Client, GetObjectRequest};
+use fds::Client;
+use fds::object::GetObjectRequest;
 use std::time::Duration;
 
 async fn read_with_deadline(client: &Client, bucket: &str, key: &str)
@@ -947,7 +977,7 @@ async fn read_with_deadline(client: &Client, bucket: &str, key: &str)
 }
 ```
 
-这里仍是小对象读取。若将 timeout 用于写入，超时只意味着停止等待，不证明远端没有执行；托管上传需要清理时使用合作式 CancellationToken。
+这里仍是小对象读取。若将 timeout 用于写入，超时只意味着停止等待，不证明远端没有执行；托管上传需要清理时使用传给 `upload` 的合作式取消 future。
 
 ## CSLB 负载均衡
 
@@ -955,7 +985,7 @@ async fn read_with_deadline(client: &Client, bucket: &str, key: &str)
 
 它在 DNS 解析时轮换首选地址并附带备选 IP，以 600 秒 TTL 刷新。HTTP 连接池复用不会逐请求重新选节点；节点数不是 HTTP 并发数。集成 resolver 没有连接失败反馈回调，不能视为自动故障摘除系统；无节点时会回退系统 DNS。
 
-普通 SDK 接入只需配置 Client。自定义节点来源或哈希选择策略等独立工具位于 `fds::cslb`，可通过 `cargo doc --all-features --no-deps --open` 查看类型文档。
+普通 SDK 接入只需配置 Client；resolver 本身是 crate 内部实现，不对外公开。自定义节点来源或哈希选择策略等独立工具位于 `fds::cslb`，可通过 `cargo doc --all-features --no-deps --open` 查看类型文档。
 
 ## 组合功能示例
 

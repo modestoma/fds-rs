@@ -153,13 +153,13 @@ impl ClientBuilder {
     ///
     /// Once set, the deadline runs from connecting until the response body has
     /// been fully consumed. It therefore also covers streaming reads through
-    /// [`GetObjectOutput::chunk`](crate::GetObjectOutput::chunk),
-    /// [`GetObjectOutput::copy_to`](crate::GetObjectOutput::copy_to) and
-    /// [`GetObjectOutput::bytes`](crate::GetObjectOutput::bytes): a transfer that
+    /// [`GetObjectOutput::chunk`](crate::object::GetObjectOutput::chunk),
+    /// [`GetObjectOutput::copy_to`](crate::object::GetObjectOutput::copy_to) and
+    /// [`GetObjectOutput::bytes`](crate::object::GetObjectOutput::bytes): a transfer that
     /// is still progressing fails with a timeout when the deadline passes. It
     /// applies to each attempt separately, not to all retries together.
     /// Requests that support a per-request `timeout` (for example
-    /// [`GetObjectRequest::timeout`](crate::GetObjectRequest::timeout)) override
+    /// [`GetObjectRequest::timeout`](crate::object::GetObjectRequest::timeout)) override
     /// this value. Must be nonzero and representable.
     pub fn request_timeout(mut self, value: Duration) -> Self {
         self.request_timeout = Some(value);

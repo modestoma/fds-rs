@@ -65,7 +65,7 @@ Galaxy-V2 使用 HMAC-SHA1/Base64。签名包含 Date/Expires 行、排序的 x-
 
 对象名斜杠编码为 `%2F`、空格为 `%20`、字面加号为 `%2B`。Content-MD5 沿用十六进制；预签名结果的 Signature 后缀原样追加，调用方不要重复编码。小写 `expires` 控制上传响应签名的到期，大写 `Expires` 用于预签名认证；均以毫秒表达，不是对象 TTL。OAuth expireTime 按上述模型与响应时间证据解释为 UTC epoch 毫秒。
 
-[签名实现](../crates/fds/src/auth.rs)、[查询编码](../crates/fds/src/encoding/query.rs)和[保存的签名向量](../crates/fds/tests/fixtures/golden.json)可用于回归，但不构成对未覆盖服务行为的证明。`encoding::parse_range` 保留旧解析语义，不支持开放结束且不按标准后缀范围解释空起点；下载请求应使用 `ByteRange`。
+[签名实现](../crates/fds/src/auth.rs)、[查询编码](../crates/fds/src/encoding/query.rs)和[保存的签名向量](../crates/fds/tests/fixtures/golden.json)可用于回归，但不构成对未覆盖服务行为的证明。签名与编码是 crate 内部实现，不属于公开 API；签名向量由 `auth` 模块的单元测试校验。下载范围使用 `ByteRange`。
 
 ## 补充服务证据
 

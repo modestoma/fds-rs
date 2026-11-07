@@ -1,12 +1,11 @@
 //! Object ACL requests and operations.
 
 use super::validate_object;
+use crate::acl::{AccessControlList, AclAction, Grant, GrantKey, GrantPermission, GrantType};
 use crate::client::ClientRequest;
-use crate::{
-    AccessControlList, AclAction, Client, Error, Grant, GrantKey, GrantPermission, GrantType,
-    HttpMethod, Result,
-};
+use crate::{Client, Error, Result};
 use bytes::Bytes;
+use http::Method;
 
 /// Input of `get_object_acl` (Go `GetObjectACLRequest`).
 #[derive(Debug, Clone, Default)]
@@ -80,7 +79,7 @@ impl Client {
     pub async fn get_object_acl(&self, req: &GetObjectACLRequest) -> Result<AccessControlList> {
         validate_object(&req.bucket_name, &req.object_name)?;
         let mut cr =
-            ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Get).read_only();
+            ClientRequest::new(&req.bucket_name, &req.object_name, Method::GET).read_only();
         cr.query.add("acl", "");
         if let Some(v) = &req.version_id {
             if !v.is_empty() {
@@ -94,7 +93,7 @@ impl Client {
     pub async fn set_object_acl(&self, req: &SetObjectACLRequest) -> Result<()> {
         validate_object(&req.bucket_name, &req.object_name)?;
         let body = serde_json::to_vec(&req.acl).map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.query.add("acl", "");
         req.action.apply(&mut cr.query);
         if let Some(v) = &req.version_id {

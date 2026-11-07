@@ -2,7 +2,7 @@ use super::output;
 use super::util::{print_json, read_json, BodyArgs, MetadataArgs};
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use fds::*;
+use fds::{manager::*, multipart::*, object::*, *};
 use std::{num::NonZeroU32, path::PathBuf, sync::Arc};
 
 #[derive(Args)]
@@ -217,20 +217,15 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
                 recovery.display(),
                 upload.progress().total_parts
             );
-            let token = CancellationToken::new();
-            let result = {
-                let running = upload.upload(&token);
-                tokio::pin!(running);
-                tokio::select! {
-                    result = &mut running => result,
-                    signal = tokio::signal::ctrl_c() => {
-                        if let Err(error) = signal { eprintln!("Ctrl-C listener failed: {error}; cancelling upload"); }
-                        token.cancel();
-                        eprintln!("cancelling; waiting for SDK cleanup and final state");
-                        running.await
-                    }
+            // Ctrl-C completes the cancellation signal; the SDK then stops,
+            // runs its cleanup policy and returns the final state.
+            let cancel = async {
+                if let Err(error) = tokio::signal::ctrl_c().await {
+                    eprintln!("Ctrl-C listener failed: {error}; cancelling upload");
                 }
+                eprintln!("cancelling; waiting for SDK cleanup and final state");
             };
+            let result = upload.upload(cancel).await;
             let state = progress(upload.progress());
             if let Err(error) = write_receipt(&mut receipt, &state) {
                 eprintln!("recovery write failed: {error}; final recovery JSON: {state}");

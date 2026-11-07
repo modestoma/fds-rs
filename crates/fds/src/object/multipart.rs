@@ -1,10 +1,12 @@
 //! Manual multipart requests and session helpers. See crate::multipart for managed file uploads.
 
 use super::{insert_header_opt, validate_object};
+use super::{ObjectMetadata, PutObjectResponse, UploadBody};
 use crate::client::ClientRequest;
-use crate::{Client, Error, HttpMethod, ObjectMetadata, PutObjectResponse, Result, UploadBody};
+use crate::{Client, Error, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use http::Method;
 use serde::{Deserialize, Serialize};
 
 /// Input of `init_multipart_upload` (Go `InitMultipartUploadRequest`).
@@ -45,7 +47,7 @@ pub struct UploadPartRequest {
     object_name: String,
     upload_id: String,
     part_number: i32,
-    body: crate::UploadBody,
+    body: crate::object::UploadBody,
     content_md5: Option<String>,
 }
 
@@ -149,7 +151,11 @@ impl CompleteMultipartUploadRequest {
 
 impl InitMultipartUploadResponse {
     /// Build a single-use part request bound to this upload session.
-    pub fn part(&self, number: i32, body: impl Into<crate::UploadBody>) -> UploadPartRequest {
+    pub fn part(
+        &self,
+        number: i32,
+        body: impl Into<crate::object::UploadBody>,
+    ) -> UploadPartRequest {
         UploadPartRequest::new(
             &self.bucket_name,
             &self.object_name,
@@ -183,7 +189,7 @@ impl Client {
         req: &InitMultipartUploadRequest,
     ) -> Result<InitMultipartUploadResponse> {
         validate_object(&req.bucket_name, &req.object_name)?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.query.add("uploads", "");
         cr.metadata = req.metadata.as_ref();
         self.do_json(cr).await
@@ -197,7 +203,7 @@ impl Client {
                 "upload ID must be non-empty and part number positive",
             ));
         }
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.query.add("uploadId", &req.upload_id);
         cr.query.add("partNumber", req.part_number.to_string());
         insert_header_opt(&mut cr.headers, "content-md5", &req.content_md5)?;
@@ -224,7 +230,7 @@ impl Client {
             parts: &req.upload_parts,
         })
         .map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.query.add("uploadId", &req.upload_id);
         if let Some(expires) = req.expires {
             cr.query
@@ -241,7 +247,7 @@ impl Client {
         if init.upload_id.is_empty() {
             return Err(Error::invalid_input("upload ID must be non-empty"));
         }
-        let mut cr = ClientRequest::new(&init.bucket_name, &init.object_name, HttpMethod::Delete);
+        let mut cr = ClientRequest::new(&init.bucket_name, &init.object_name, Method::DELETE);
         cr.query.add("uploadId", &init.upload_id);
         self.do_discard(cr).await
     }

@@ -1,5 +1,6 @@
 //! Local transport checks; no live FDS credentials or service are used.
-use fds::{Client, GetObjectRequest, PutObjectRequest};
+use fds::object::{GetObjectRequest, PutObjectRequest};
+use fds::Client;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -149,11 +150,11 @@ async fn explicit_cdn_and_md5_keep_wire_behavior() {
         .await
         .unwrap();
     m.assert_async().await;
-    let req = fds::GeneratePresignedURLRequest {
+    let req = fds::object::GeneratePresignedURLRequest {
         bucket_name: "b".into(),
         object_name: "a/b +".into(),
         cdn: true,
-        method: fds::HttpMethod::Get,
+        method: http::Method::GET,
         expiration: chrono::Utc::now(),
         metadata: None,
     };
@@ -471,8 +472,8 @@ async fn read_up_to(
 /// guarded by an outer deadline so a regression cannot hang the suite.
 async fn put_with_idle_threshold(
     mode: Upload,
-    body: fds::UploadBody,
-) -> (fds::Result<fds::PutObjectResponse>, Duration) {
+    body: fds::object::UploadBody,
+) -> (fds::Result<fds::object::PutObjectResponse>, Duration) {
     let (endpoint, server) = upload_server(mode).await;
     let c = builder()
         .endpoint(endpoint)
@@ -510,7 +511,8 @@ async fn progressing_upload_outlasts_idle_threshold() {
 async fn stalled_upload_times_out_with_unknown_dispatch() {
     let chunks = (0..UPLOAD_LEN / UPLOAD_STEP)
         .map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from(vec![7; UPLOAD_STEP])));
-    let body = fds::UploadBody::from_stream(futures_util::stream::iter(chunks), UPLOAD_LEN as u64);
+    let body =
+        fds::object::UploadBody::from_stream(futures_util::stream::iter(chunks), UPLOAD_LEN as u64);
     let (result, elapsed) = put_with_idle_threshold(Upload::Stall, body).await;
     let e = result.unwrap_err();
     assert_eq!(e.kind(), fds::ErrorKind::Timeout, "{e:?}");

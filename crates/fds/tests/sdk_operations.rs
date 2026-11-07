@@ -1,8 +1,9 @@
 //! SDK-only operations remain explicit wire contracts even without operation YAML.
-use fds::{
-    AccessLog, Client, GetLifecycleConfigRequest, LifecycleConfig, LifecycleRule,
+use fds::bucket::{
+    AccessLog, GetLifecycleConfigRequest, LifecycleAction, LifecycleConfig, LifecycleRule,
     MigrateBucketRequest,
 };
+use fds::Client;
 use mockito::Matcher;
 
 #[tokio::test]
@@ -28,7 +29,10 @@ async fn sdk_only_bucket_operations_preserve_dispatch_and_models() {
         })
         .await
         .unwrap();
-    assert_eq!(config.rules[0].action["expiration"].days, 1.5);
+    assert_eq!(
+        config.rules[0].action[&LifecycleAction::Expiration].days,
+        1.5
+    );
     get.assert_async().await;
     let put = server
         .mock("PUT", "/b")
@@ -121,7 +125,7 @@ async fn sdk_only_metadata_forms_remain_distinct() {
     assert_eq!(metadata.get("X-XIAOMI-META-TAG"), Some("header-value"));
     get.assert_async().await;
     // Use a fresh metadata map so transport response headers are not sent back.
-    metadata = fds::ObjectMetadata::new();
+    metadata = fds::object::ObjectMetadata::new();
     metadata.set("x-xiaomi-meta-tag", "new-value").unwrap();
     let set = server
         .mock("PUT", "/b/a%2Fb")
@@ -132,7 +136,7 @@ async fn sdk_only_metadata_forms_remain_distinct() {
         .create_async()
         .await;
     client
-        .set_object_metadata(&fds::SetObjectMetadataRequest {
+        .set_object_metadata(&fds::object::SetObjectMetadataRequest {
             bucket_name: "b".into(),
             object_name: "a/b".into(),
             metadata,

@@ -1,8 +1,9 @@
 use chrono::{TimeZone, Utc};
-use fds::{
-    AccessControlList, AclAction, BucketCannedAcl, Client, CompleteMultipartUploadRequest,
-    CreateBucketRequest, ListObjectsRequest, PutObjectRequest, SetObjectACLRequest,
-};
+use fds::acl::{AccessControlList, AclAction, BucketCannedAcl};
+use fds::bucket::CreateBucketRequest;
+use fds::multipart::CompleteMultipartUploadRequest;
+use fds::object::{ListObjectsRequest, PutObjectRequest, SetObjectACLRequest};
+use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 use mockito::{Matcher, Server};
 
@@ -209,13 +210,13 @@ async fn typed_acl_add_delete_and_bucket_creation_headers() {
     let mut s = Server::new_async().await;
     let c = client(&s);
     let mut acl = AccessControlList::default();
-    acl.add_grant(fds::Grant {
-        grantee: fds::GrantKey {
+    acl.add_grant(fds::acl::Grant {
+        grantee: fds::acl::GrantKey {
             id: "user".into(),
             display_name: String::new(),
         },
-        permission: fds::GrantPermission::Read,
-        grant_type: fds::GrantType::User,
+        permission: fds::acl::GrantPermission::Read,
+        grant_type: fds::acl::GrantType::User,
     });
     let body = serde_json::to_value(&acl).unwrap();
     for (action, query) in [
@@ -228,7 +229,7 @@ async fn typed_acl_add_delete_and_bucket_creation_headers() {
             .match_body(Matcher::Json(body.clone()))
             .create_async()
             .await;
-        c.set_bucket_acl(&fds::SetBucketAclRequest::new("b", acl.clone()).action(action))
+        c.set_bucket_acl(&fds::bucket::SetBucketAclRequest::new("b", acl.clone()).action(action))
             .await
             .unwrap();
         bucket.assert_async().await;

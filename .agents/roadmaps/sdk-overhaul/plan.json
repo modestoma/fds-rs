@@ -64,7 +64,7 @@
       "title": "收缩公开 API 面并清理死代码",
       "type": "refactor",
       "document": "tasks/public-surface.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 2,
       "depends_on": [
         "error-model",

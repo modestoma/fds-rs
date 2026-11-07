@@ -1,13 +1,14 @@
 use anyhow::anyhow;
 use anyhow::{bail, Result};
-use fds::*;
-pub fn parse_method(s: &str) -> Result<HttpMethod> {
+use fds::{acl::*, object::*};
+use http::Method;
+pub fn parse_method(s: &str) -> Result<Method> {
     Ok(match s.to_ascii_uppercase().as_str() {
-        "GET" => HttpMethod::Get,
-        "PUT" => HttpMethod::Put,
-        "HEAD" => HttpMethod::Head,
-        "POST" => HttpMethod::Post,
-        "DELETE" => HttpMethod::Delete,
+        "GET" => Method::GET,
+        "PUT" => Method::PUT,
+        "HEAD" => Method::HEAD,
+        "POST" => Method::POST,
+        "DELETE" => Method::DELETE,
         other => bail!("unknown method {other}"),
     })
 }

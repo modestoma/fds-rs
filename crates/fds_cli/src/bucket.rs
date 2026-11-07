@@ -2,7 +2,7 @@ use super::output;
 use super::util::{print_json, read_json, AclMode, CannedAcl};
 use anyhow::Result;
 use clap::Subcommand;
-use fds::*;
+use fds::{bucket::*, object::*, *};
 #[derive(Subcommand)]
 pub enum BucketCmd {
     Create {

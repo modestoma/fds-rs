@@ -1,5 +1,6 @@
 #![cfg(feature = "manager")]
-use fds::{Client, DownloadRequest, Downloader};
+use fds::manager::{DownloadRequest, Downloader};
+use fds::Client;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -44,7 +45,7 @@ fn downloader(
             .credentials("ak", "sk")
             .build()
             .unwrap(),
-        fds::DownloadOptions::builder()
+        fds::manager::DownloadOptions::builder()
             .part_size(part)
             .concurrency(concurrency)
             .resume(resume)
@@ -221,15 +222,15 @@ async fn no_strong_validator_restarts_in_one_request() {
 }
 #[test]
 fn invalid_options_fail_at_construction() {
-    assert!(fds::DownloadOptions::builder()
+    assert!(fds::manager::DownloadOptions::builder()
         .part_size(0)
         .build()
         .is_err());
-    assert!(fds::DownloadOptions::builder()
+    assert!(fds::manager::DownloadOptions::builder()
         .concurrency(0)
         .build()
         .is_err());
-    assert!(fds::DownloadOptions::builder()
+    assert!(fds::manager::DownloadOptions::builder()
         .part_size(u64::MAX)
         .build()
         .is_err());
@@ -278,7 +279,7 @@ async fn cancellation_and_checkpoint_failure_stop_workers_and_preserve_destinati
             .unwrap();
         let dl = Arc::new(Downloader::new(
             client,
-            fds::DownloadOptions::builder()
+            fds::manager::DownloadOptions::builder()
                 .part_size(4)
                 .concurrency(2)
                 .resume(true)
@@ -397,7 +398,7 @@ async fn limiter_controls_part_request_admission() {
         .credentials("ak", "sk")
         .build()
         .unwrap();
-    let options = fds::DownloadOptions::builder()
+    let options = fds::manager::DownloadOptions::builder()
         .part_size(4)
         .concurrency(2)
         .request_limiter(Arc::new(governor::RateLimiter::direct(
@@ -445,7 +446,7 @@ async fn path_destination_supports_typed_range() {
     let out = Output::new();
     let path = out.0.join("下载 output");
     DownloadRequest::new("b", "o", &path)
-        .range(fds::ByteRange::inclusive(1, 2).unwrap())
+        .range(fds::object::ByteRange::inclusive(1, 2).unwrap())
         .send(&downloader(&s, 4, 2, true))
         .await
         .unwrap();

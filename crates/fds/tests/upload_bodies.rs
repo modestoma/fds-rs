@@ -1,6 +1,8 @@
 use bytes::Bytes;
 use chrono::{TimeZone, Utc};
-use fds::{Client, PutObjectRequest, UploadBody, UploadPartRequest};
+use fds::multipart::UploadPartRequest;
+use fds::object::{PutObjectRequest, UploadBody};
+use fds::Client;
 use futures_util::stream;
 use std::{
     io,

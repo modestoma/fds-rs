@@ -2,10 +2,14 @@
 //! Enabled by the `cslb` feature. **Wire-format-neutral**: it only affects which
 //! IP a connection targets, never the request bytes/signature.
 //!
-//! Integration: a reqwest custom DNS resolver
-//! ([`CslbResolver`]) returns the round-robin pick plus the remaining healthy
-//! IPs as fallbacks, refreshed on a TTL timer. Precise connect-failure exile
-//! (Go's dialer retry) is a possible future enhancement.
+//! Integration: with this feature the [`Client`](crate::Client) installs a
+//! crate-internal DNS resolver (sized by
+//! [`ClientBuilder::cslb_max_nodes`](crate::ClientBuilder::cslb_max_nodes))
+//! that returns the round-robin pick plus the remaining healthy IPs as
+//! fallbacks, refreshed on a TTL timer. The resolver is not public: it would
+//! expose `reqwest` types. The load-balancing building blocks below are
+//! standalone utilities. Precise connect-failure exile (Go's dialer retry) is
+//! a possible future enhancement.
 
 mod group;
 mod metrics;
@@ -20,7 +24,7 @@ use tokio::sync::Mutex;
 
 pub use group::Group;
 pub use metrics::Metrics;
-pub use resolver::CslbResolver;
+pub(crate) use resolver::CslbResolver;
 pub use service::{NodeFailedCallback, RrDnsService, Service, StaticService};
 pub use strategy::{HashFunc, HashedStrategy, RoundRobinStrategy, Strategy};
 

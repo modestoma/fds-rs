@@ -3,7 +3,9 @@
 //! FDS_OAUTH_APP_ID / FDS_PROVIDER_TOKEN。
 //! 运行：cargo run --example oauth_inventory -- BUCKET PREFIX
 //! 只读取存储数据，但 token 交换可能创建或续期凭据。
-use fds::{Client, FdsServiceClient, ListObjectsRequest, OAuthProvider, StorageTokenRequest};
+use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::object::ListObjectsRequest;
+use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 use std::error::Error;
 

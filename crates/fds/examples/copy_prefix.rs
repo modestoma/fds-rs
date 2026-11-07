@@ -2,7 +2,8 @@
 //! 环境变量：FDS_ENDPOINT / FDS_ACCESS_KEY_ID / FDS_ACCESS_KEY_SECRET。
 //! 运行：cargo run --example copy_prefix -- SRC_BUCKET SRC_PREFIX DST_BUCKET DST_PREFIX
 //! 目标同名对象可能被覆盖；失败保留已复制对象，源对象不删除。
-use fds::{Client, CopyObjectRequest, ListObjectsRequest};
+use fds::object::{CopyObjectRequest, ListObjectsRequest};
+use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 use std::error::Error;
 

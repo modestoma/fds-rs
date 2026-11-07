@@ -598,12 +598,12 @@ async fn read_retries_and_presign_metadata_reach_the_sdk() {
         .credentials("id", "secret")
         .build()
         .unwrap();
-    let mut metadata = fds::ObjectMetadata::new();
+    let mut metadata = fds::object::ObjectMetadata::new();
     metadata.set("content-type", "text/plain").unwrap();
-    let expected = fds::GeneratePresignedURLRequest::new(
+    let expected = fds::object::GeneratePresignedURLRequest::new(
         "b",
         "k",
-        fds::HttpMethod::Put,
+        http::Method::PUT,
         chrono::DateTime::from_timestamp_millis(expiration).unwrap(),
     )
     .metadata(metadata)

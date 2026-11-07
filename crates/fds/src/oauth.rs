@@ -1,10 +1,10 @@
 //! Explicit endpoint discovery and OAuth exchange. See docs/protocol.md
 //! for protocol evidence, provisioning prerequisites and refresh semantics.
 use crate::{
-    client::ClientRequest, Client, ClientBuilder, ClientConfiguration, Error, ErrorKind,
-    HttpMethod, Result,
+    client::ClientRequest, Client, ClientBuilder, ClientConfiguration, Error, ErrorKind, Result,
 };
 use chrono::{DateTime, Utc};
+use http::Method;
 use reqwest::header::HeaderValue;
 use std::fmt;
 
@@ -208,7 +208,7 @@ impl FdsServiceClient {
     pub async fn get_endpoint(&self, region: &str, service: &str) -> Result<String> {
         nonempty(region)?;
         nonempty(service)?;
-        let mut req = ClientRequest::new("", "", HttpMethod::Get).read_only();
+        let mut req = ClientRequest::new("", "", Method::GET).read_only();
         req.query.add("endpoint", "");
         req.query.add("region", region);
         req.query.add("service", service);
@@ -237,7 +237,7 @@ impl FdsServiceClient {
     ) -> Result<StorageAccessToken> {
         input.validate()?;
         secure_origin(self.client.configuration().endpoint())?;
-        let mut req = ClientRequest::new("", "", HttpMethod::Get);
+        let mut req = ClientRequest::new("", "", Method::GET);
         req.headers
             .insert("authorization", HeaderValue::from_static("OAuth"));
         for (key, value) in [
@@ -277,7 +277,7 @@ impl FdsServiceClient {
 /// App-scoped bucket listing, retaining the app API's organization field.
 #[derive(Debug, serde::Deserialize)]
 pub struct AppBuckets {
-    pub owner: crate::Owner,
+    pub owner: crate::acl::Owner,
     pub buckets: Vec<AppBucket>,
 }
 #[derive(Debug, serde::Deserialize)]
@@ -295,7 +295,7 @@ impl Client {
     /// appId is never accepted as standalone authentication or an override.
     pub async fn list_app_buckets(&self) -> Result<AppBuckets> {
         self.require_oauth()?;
-        self.do_json(ClientRequest::new("", "", HttpMethod::Get).read_only())
+        self.do_json(ClientRequest::new("", "", Method::GET).read_only())
             .await
     }
 }

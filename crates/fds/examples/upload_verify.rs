@@ -2,10 +2,11 @@
 //! 环境变量：FDS_ENDPOINT / FDS_ACCESS_KEY_ID / FDS_ACCESS_KEY_SECRET。
 //! 运行：cargo run --example upload_verify -- BUCKET UNIQUE_KEY LOCAL_FILE
 //! stdout 包含临时访问 URL；请交给受控接收方，不写入公开日志。
-use fds::{
-    Client, GeneratePresignedURLRequest, GetObjectRequest, HttpMethod, ObjectMetadata,
-    PutObjectRequest,
+use fds::object::{
+    GeneratePresignedURLRequest, GetObjectRequest, ObjectMetadata, PutObjectRequest,
 };
+use fds::Client;
+use http::Method;
 use md5::{Digest, Md5};
 use std::{error::Error, path::Path, time::Duration};
 use tokio::io::AsyncReadExt;
@@ -79,7 +80,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let url = GeneratePresignedURLRequest::expires_in(
         bucket,
         key,
-        HttpMethod::Get,
+        Method::GET,
         Duration::from_secs(600),
     )?
     .generate(&client)?;

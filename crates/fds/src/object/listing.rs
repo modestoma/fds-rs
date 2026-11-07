@@ -3,9 +3,10 @@
 use crate::acl::Owner;
 use crate::client::ClientRequest;
 use crate::constant::DEFAULT_LIST_OBJECTS_MAX_KEYS;
-use crate::{Client, Error, HttpMethod, Result};
+use crate::{Client, Error, Result};
 use chrono::{DateTime, Utc};
 use futures_util::{stream, Stream, TryStreamExt};
+use http::Method;
 use serde::Deserialize;
 
 /// One entry in a listing (Go `ObjectSummary`).
@@ -196,7 +197,7 @@ impl Client {
         if req.max_keys <= 0 {
             return Err(Error::invalid_input("max_keys must be positive"));
         }
-        let mut cr = ClientRequest::new(&req.bucket_name, "", HttpMethod::Get).read_only();
+        let mut cr = ClientRequest::new(&req.bucket_name, "", Method::GET).read_only();
         if let Some(marker) = &req.marker {
             cr.query.add("marker", marker);
         }

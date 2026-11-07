@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use clap::Args;
-use fds::{Client, ClientBuilder, FdsServiceClient, RetryPolicy};
+use fds::oauth::FdsServiceClient;
+use fds::{Client, ClientBuilder, RetryPolicy};
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Args)]

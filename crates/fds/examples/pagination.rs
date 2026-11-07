@@ -1,6 +1,7 @@
 //! Run only against an intended bucket: FDS_ENDPOINT, FDS_ACCESS_KEY_ID,
 //! FDS_ACCESS_KEY_SECRET and FDS_BUCKET must be configured.
-use fds::{Client, ListObjectsRequest};
+use fds::object::ListObjectsRequest;
+use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 
 #[tokio::main]

@@ -1,7 +1,7 @@
 use super::config::Connection;
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
-use fds::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 

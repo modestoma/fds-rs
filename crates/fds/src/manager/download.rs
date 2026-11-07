@@ -17,8 +17,8 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::task::TaskTracker;
 
 use crate::client::{Client, ClientRequest};
-use crate::constant::HttpMethod;
 use crate::error::{Error, ErrorKind, Result};
+use http::Method;
 
 /// Validated, immutable download configuration. Build with named options.
 #[derive(Clone)]
@@ -93,7 +93,7 @@ pub struct Downloader {
 pub struct DownloadRequest {
     pub bucket_name: String,
     pub object_name: String,
-    pub range: Option<crate::ByteRange>,
+    pub range: Option<crate::object::ByteRange>,
     pub file_path: PathBuf,
 }
 impl DownloadRequest {
@@ -109,7 +109,7 @@ impl DownloadRequest {
             range: None,
         }
     }
-    pub fn range(mut self, range: crate::ByteRange) -> Self {
+    pub fn range(mut self, range: crate::object::ByteRange) -> Self {
         self.range = Some(range);
         self
     }
@@ -476,7 +476,7 @@ fn write_all_at(_: &File, _: &[u8], _: u64) -> std::io::Result<()> {
     Err(std::io::ErrorKind::Unsupported.into())
 }
 
-fn effective_range(range: Option<crate::ByteRange>, size: u64) -> Result<(u64, u64)> {
+fn effective_range(range: Option<crate::object::ByteRange>, size: u64) -> Result<(u64, u64)> {
     range.map_or(Ok((0, size)), |range| range.resolve(size))
 }
 
@@ -574,7 +574,7 @@ async fn download_part(
         limiter.until_ready().await;
     }
     let (start, end) = part_bounds(&id, index);
-    let mut request = ClientRequest::new(&id.bucket, &id.object, HttpMethod::Get);
+    let mut request = ClientRequest::new(&id.bucket, &id.object, Method::GET);
     request.accepted_statuses = &[200, 206];
     request.headers.insert(
         RANGE,
@@ -626,9 +626,11 @@ async fn download_part(
 }
 
 impl Downloader {
-    pub fn new(client: impl AsRef<Client>, options: DownloadOptions) -> Self {
+    /// The downloader keeps its own handle; pass `client.clone()` to keep
+    /// using the caller's (clones share one connection pool).
+    pub fn new(client: Client, options: DownloadOptions) -> Self {
         Self {
-            client: client.as_ref().clone(),
+            client,
             options,
             #[cfg(test)]
             panic_worker: false,
@@ -665,7 +667,7 @@ impl Downloader {
             .do_request(ClientRequest::new(
                 &request.bucket_name,
                 &request.object_name,
-                HttpMethod::Head,
+                Method::HEAD,
             ))
             .await?;
         let size = head
@@ -828,7 +830,7 @@ mod tests {
             .unwrap();
         let mut downloader = Downloader::new(
             client,
-            crate::DownloadOptions::builder()
+            crate::manager::DownloadOptions::builder()
                 .part_size(4)
                 .concurrency(2)
                 .resume(true)
@@ -933,7 +935,7 @@ mod tests {
             .unwrap();
         let downloader = Downloader::new(
             client,
-            crate::DownloadOptions::builder()
+            crate::manager::DownloadOptions::builder()
                 .part_size(4)
                 .concurrency(1)
                 .resume(true)
@@ -1009,20 +1011,24 @@ mod tests {
     #[test]
     fn ranges() {
         assert_eq!(
-            effective_range(Some(crate::ByteRange::from(2)), 10).unwrap(),
+            effective_range(Some(crate::object::ByteRange::from(2)), 10).unwrap(),
             (2, 10)
         );
         assert_eq!(
-            effective_range(Some(crate::ByteRange::suffix(3).unwrap()), 10).unwrap(),
+            effective_range(Some(crate::object::ByteRange::suffix(3).unwrap()), 10).unwrap(),
             (7, 10)
         );
         assert_eq!(
-            effective_range(Some(crate::ByteRange::inclusive(0, 999).unwrap()), 10).unwrap(),
+            effective_range(
+                Some(crate::object::ByteRange::inclusive(0, 999).unwrap()),
+                10
+            )
+            .unwrap(),
             (0, 10)
         );
         for s in ["bytes=10-", "bytes=-0", "bytes=3-2", "bytes=0-1,3-4"] {
             assert!(s
-                .parse::<crate::ByteRange>()
+                .parse::<crate::object::ByteRange>()
                 .and_then(|r| effective_range(Some(r), 10))
                 .is_err());
         }

@@ -3,9 +3,8 @@
 
 #![cfg(feature = "manager")]
 
-use std::sync::Arc;
-
-use fds::{Client, DownloadRequest, Downloader};
+use fds::manager::{DownloadRequest, Downloader};
+use fds::Client;
 
 fn client_for(server: &mockito::ServerGuard) -> Client {
     Client::builder()
@@ -47,11 +46,11 @@ async fn download_single_part_concurrency_one() {
     let out = std::env::temp_dir().join("fds_dl_single_part.bin");
     let _ = std::fs::remove_file(&out);
 
-    let client = Arc::new(client_for(&server));
+    let client = client_for(&server);
     // concurrency = 1 must NOT deadlock (Go BUG-2 is fixed).
     let downloader = Downloader::new(
         client,
-        fds::DownloadOptions::builder()
+        fds::manager::DownloadOptions::builder()
             .part_size(1024 * 1024)
             .concurrency(1)
             .resume(false)
@@ -108,10 +107,10 @@ async fn download_multi_part_concurrent() {
     let out = std::env::temp_dir().join("fds_dl_multi_part.bin");
     let _ = std::fs::remove_file(&out);
 
-    let client = Arc::new(client_for(&server));
+    let client = client_for(&server);
     let downloader = Downloader::new(
         client,
-        fds::DownloadOptions::builder()
+        fds::manager::DownloadOptions::builder()
             .part_size(4)
             .concurrency(3)
             .resume(false)

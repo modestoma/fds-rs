@@ -1,5 +1,5 @@
 //! CLI-owned JSON views. SDK response types need not expose serialization contracts.
-use fds::*;
+use fds::{bucket::*, oauth::*, object::*, *};
 use serde_json::{json, Value};
 
 pub fn bucket(v: &GetBucketInfoResponse) -> Value {

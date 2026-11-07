@@ -1,9 +1,11 @@
 //! Object reads, copies, renames and cache operations.
 
 use super::validate_object;
+use super::{ByteRange, GetObjectOutput, ObjectMetadata};
 use crate::client::ClientRequest;
-use crate::{ByteRange, Client, Error, GetObjectOutput, HttpMethod, ObjectMetadata, Result};
+use crate::{Client, Error, Result};
 use bytes::Bytes;
+use http::Method;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
@@ -18,7 +20,7 @@ pub struct GetObjectRequest {
     pub bucket_name: String,
     pub object_name: String,
     /// `Range` header (e.g. `bytes=0-1023`); `None` → not sent.
-    pub range: Option<crate::ByteRange>,
+    pub range: Option<crate::object::ByteRange>,
     /// Total deadline for this request, overriding the client-wide
     /// [`request_timeout`](crate::ClientBuilder::request_timeout); `None` uses
     /// the client setting. See [`GetObjectRequest::timeout`].
@@ -110,7 +112,10 @@ impl Client {
     /// Get an object (GET `/{b}/{o}`, optional Range) as a streaming SDK response.
     /// Use `bytes()` to collect or `copy_to()` to stream to a writer. Status 206
     /// is explicitly accepted only when a Range header was sent.
-    pub async fn get_object(&self, req: &GetObjectRequest) -> Result<crate::GetObjectOutput> {
+    pub async fn get_object(
+        &self,
+        req: &GetObjectRequest,
+    ) -> Result<crate::object::GetObjectOutput> {
         validate_object(&req.bucket_name, &req.object_name)?;
         let mut headers = HeaderMap::new();
         if let Some(range) = req.range {
@@ -121,7 +126,7 @@ impl Client {
             );
         }
         let mut cr =
-            ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Get).read_only();
+            ClientRequest::new(&req.bucket_name, &req.object_name, Method::GET).read_only();
         if headers.contains_key("range") {
             cr.accepted_statuses = &[200, 206];
         }
@@ -130,7 +135,9 @@ impl Client {
             .timeout
             .map(|t| crate::config::validate_timeout(t, crate::ErrorKind::InvalidInput))
             .transpose()?;
-        Ok(crate::GetObjectOutput::new(self.do_request(cr).await?))
+        Ok(crate::object::GetObjectOutput::new(
+            self.do_request(cr).await?,
+        ))
     }
 
     /// Whether an object exists (HEAD; 200 → true, 404 → false).
@@ -142,7 +149,7 @@ impl Client {
     /// every other status and transport failure remains an error.
     pub async fn head_object(&self, bucket: &str, object: &str) -> Result<Option<ObjectMetadata>> {
         validate_object(bucket, object)?;
-        let mut cr = ClientRequest::new(bucket, object, HttpMethod::Head).read_only();
+        let mut cr = ClientRequest::new(bucket, object, Method::HEAD).read_only();
         cr.accepted_statuses = &[200, 404];
         let resp = self.do_request(cr).await?;
         Ok((resp.status().as_u16() == 200).then(|| ObjectMetadata::from_headers(resp.headers())))
@@ -176,7 +183,7 @@ impl Client {
         let mut cr = ClientRequest::new(
             &req.target_bucket_name,
             &req.target_object_name,
-            HttpMethod::Put,
+            Method::PUT,
         );
         cr.query.add("cp", "");
         cr.body = Some(Bytes::from(body).into());
@@ -202,7 +209,7 @@ impl Client {
     pub async fn rename_object(&self, bucket: &str, src: &str, dst: &str) -> Result<()> {
         validate_object(bucket, src)?;
         validate_object(bucket, dst)?;
-        let mut cr = ClientRequest::new(bucket, src, HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, src, Method::PUT);
         cr.query.add("renameTo", dst);
         self.do_discard(cr).await
     }
@@ -212,7 +219,7 @@ impl Client {
     /// This is deleted-object recovery, not archive thawing (`?restoreArchive`).
     pub async fn restore_object(&self, bucket: &str, object: &str) -> Result<()> {
         validate_object(bucket, object)?;
-        let mut cr = ClientRequest::new(bucket, object, HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, object, Method::PUT);
         cr.query.add("restore", "");
         self.do_discard(cr).await
     }
@@ -235,7 +242,7 @@ impl Client {
 
     async fn cache_object(&self, bucket: &str, object: &str, operation: &str) -> Result<()> {
         validate_object(bucket, object)?;
-        let mut cr = ClientRequest::new(bucket, object, HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, object, Method::PUT);
         // Official REST traces and Java SDK use query flags, despite the
         // generated parameter table incorrectly listing them as headers.
         cr.query.add(operation, "");

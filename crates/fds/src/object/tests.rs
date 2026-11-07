@@ -1,4 +1,5 @@
-use crate::{Client, HttpMethod};
+use crate::Client;
+use http::Method;
 
 use super::*;
 
@@ -48,7 +49,7 @@ fn presigned_get_url_shape() {
             cdn: false,
             bucket_name: "b".into(),
             object_name: "o".into(),
-            method: HttpMethod::Get,
+            method: Method::GET,
             expiration: ts,
             metadata: None,
         })
@@ -69,7 +70,7 @@ fn presigned_head_url_has_metadata_subresource() {
             cdn: false,
             bucket_name: "b".into(),
             object_name: "o".into(),
-            method: HttpMethod::Head,
+            method: Method::HEAD,
             expiration: ts,
             metadata: None,
         })
@@ -84,4 +85,18 @@ fn absolute_url() {
         .generate_absolute_object_url("b", "dir/o.txt")
         .unwrap();
     assert_eq!(u, "https://cnbj1.fds.api.xiaomi.com/b/dir%2Fo.txt");
+}
+
+#[test]
+fn storage_class_transparent_string() {
+    // Serializes/deserializes as a bare string, and accepts ANY casing the
+    // server returns (Go treats it as an opaque string).
+    assert_eq!(
+        serde_json::to_string(&StorageClass::new("Archive")).unwrap(),
+        "\"Archive\""
+    );
+    let sc: StorageClass = serde_json::from_str("\"Standard\"").unwrap(); // title-case from server
+    assert_eq!(sc.as_str(), "Standard");
+    let sc2: StorageClass = serde_json::from_str("\"STANDARD_IA\"").unwrap();
+    assert_eq!(sc2.as_str(), "STANDARD_IA");
 }

@@ -1,6 +1,7 @@
 use super::util::parse_meta;
 use anyhow::{anyhow, bail, Result};
-use fds::*;
+use fds::{manager::*, multipart::*, object::*, *};
+use http::Method;
 use std::time::{SystemTime, UNIX_EPOCH};
 struct Report {
     pass: usize,
@@ -225,7 +226,7 @@ pub async fn smoke(
         cdn: false,
         bucket_name: bucket.into(),
         object_name: hello.clone(),
-        method: HttpMethod::Get,
+        method: Method::GET,
         expiration: chrono::Utc::now() + chrono::Duration::hours(1),
         metadata: None,
     }) {
@@ -249,7 +250,7 @@ pub async fn smoke(
         let r = async {
             let d = Downloader::new(
                 client.clone(),
-                fds::DownloadOptions::builder()
+                fds::manager::DownloadOptions::builder()
                     .part_size(1024 * 1024)
                     .concurrency(4)
                     .resume(false)

@@ -22,14 +22,15 @@ struct Inner {
 }
 
 /// A reqwest DNS resolver that load-balances across a host's A/AAAA records.
-/// Install via `reqwest::ClientBuilder::dns_resolver(Arc::new(resolver))`.
+/// Crate-internal so that `reqwest::dns::Resolve` stays out of the public API;
+/// the client installs it via `reqwest::ClientBuilder::dns_resolver`.
 #[derive(Clone)]
-pub struct CslbResolver {
+pub(crate) struct CslbResolver {
     inner: Arc<Inner>,
 }
 
 impl CslbResolver {
-    pub fn new(max_node_count: usize, ipv4: bool, ipv6: bool) -> Self {
+    pub(crate) fn new(max_node_count: usize, ipv4: bool, ipv6: bool) -> Self {
         let max_node_count = if max_node_count == 0 {
             NODE_COUNT_UNLIMITED
         } else {

@@ -1,15 +1,16 @@
 //! Bucket API (14 methods) + lifecycle / access-log types. Ports `fds/bucket.go`.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::acl::{AccessControlList, Owner};
 use crate::client::{Client, ClientRequest};
-use crate::constant::{HttpMethod, StorageClass};
 use crate::encoding::QueryValues;
 use crate::error::{Error, Result};
+use crate::object::StorageClass;
+use http::Method;
 
 // ---- Request/response types ------------------------------------------------
 
@@ -149,16 +150,118 @@ pub struct LifecycleBaseItem {
     pub days: f64,
 }
 
-/// Lifecycle action type values.
-pub const ACTION_EXPIRATION: &str = "expiration";
-pub const ACTION_NON_CURRENT_VERSION_EXPIRATION: &str = "nonCurrentVersionExpiration";
-/// BUG-4: Go's value has a trailing space; kept for server compatibility.
-pub const ACTION_ABORT_INCOMPLETE_MULTIPART_UPLOAD: &str = "abortIncompleteMultipartUpload ";
+/// A lifecycle action type: the key of [`LifecycleRule::action`].
+///
+/// Known values serialize to the exact strings the service expects, including
+/// the trailing space the Go SDK sends in `"abortIncompleteMultipartUpload "`.
+/// Any other key, including `"abortIncompleteMultipartUpload"` without the
+/// space, round-trips byte-for-byte through [`LifecycleAction::Other`].
+///
+/// Equality, ordering and hashing compare the wire string, so the actions of
+/// a rule serialize in sorted key order, as Go's `encoding/json` does.
+///
+/// ```
+/// use fds::bucket::LifecycleAction;
+///
+/// assert_eq!(LifecycleAction::AbortIncompleteMultipartUpload.as_str(), "abortIncompleteMultipartUpload ");
+/// assert_eq!(LifecycleAction::from("expiration"), LifecycleAction::Expiration);
+/// assert_eq!(LifecycleAction::from("transition").as_str(), "transition");
+/// ```
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum LifecycleAction {
+    /// `"abortIncompleteMultipartUpload "`. The trailing space is the Go SDK's
+    /// wire value and is kept for server compatibility.
+    AbortIncompleteMultipartUpload,
+    /// `"expiration"`.
+    Expiration,
+    /// `"nonCurrentVersionExpiration"`.
+    NonCurrentVersionExpiration,
+    /// Any other action key, kept verbatim.
+    Other(String),
+}
 
-/// Map of action-type → item (Go `LifecycleAction`).
-pub type LifecycleAction = HashMap<String, LifecycleBaseItem>;
+impl LifecycleAction {
+    const ABORT_INCOMPLETE_MULTIPART_UPLOAD: &'static str = "abortIncompleteMultipartUpload ";
+    const EXPIRATION: &'static str = "expiration";
+    const NON_CURRENT_VERSION_EXPIRATION: &'static str = "nonCurrentVersionExpiration";
 
-/// A lifecycle rule (Go `LifecycleRule`). The action JSON key is `actions`.
+    /// The exact JSON key sent to and received from the service.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::AbortIncompleteMultipartUpload => Self::ABORT_INCOMPLETE_MULTIPART_UPLOAD,
+            Self::Expiration => Self::EXPIRATION,
+            Self::NonCurrentVersionExpiration => Self::NON_CURRENT_VERSION_EXPIRATION,
+            Self::Other(value) => value,
+        }
+    }
+}
+
+impl From<&str> for LifecycleAction {
+    fn from(value: &str) -> Self {
+        match value {
+            Self::ABORT_INCOMPLETE_MULTIPART_UPLOAD => Self::AbortIncompleteMultipartUpload,
+            Self::EXPIRATION => Self::Expiration,
+            Self::NON_CURRENT_VERSION_EXPIRATION => Self::NonCurrentVersionExpiration,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+}
+
+impl From<String> for LifecycleAction {
+    fn from(value: String) -> Self {
+        match Self::from(value.as_str()) {
+            Self::Other(_) => Self::Other(value),
+            known => known,
+        }
+    }
+}
+
+impl PartialEq for LifecycleAction {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for LifecycleAction {}
+
+impl std::hash::Hash for LifecycleAction {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialOrd for LifecycleAction {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LifecycleAction {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl Serialize for LifecycleAction {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for LifecycleAction {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// A lifecycle rule (Go `LifecycleRule`). The action JSON key is `actions`;
+/// actions serialize in [`LifecycleAction`] (wire string) order.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LifecycleRule {
     #[serde(rename = "id", default, deserialize_with = "crate::de::null_default")]
@@ -180,7 +283,7 @@ pub struct LifecycleRule {
         default,
         deserialize_with = "crate::de::null_default"
     )]
-    pub action: LifecycleAction,
+    pub action: BTreeMap<LifecycleAction, LifecycleBaseItem>,
 }
 
 impl LifecycleRule {
@@ -296,7 +399,7 @@ impl Client {
         if !req.org_id.is_empty() {
             q.add("orgId", &req.org_id);
         }
-        let mut cr = ClientRequest::new(&req.bucket_name, "", HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, "", Method::PUT);
         cr.query = q;
         if !acl.is_empty() {
             let value = acl.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(",");
@@ -318,7 +421,7 @@ impl Client {
         validate_bucket(bucket)?;
         let resp = self
             .do_request({
-                let mut cr = ClientRequest::new(bucket, "", HttpMethod::Head).read_only();
+                let mut cr = ClientRequest::new(bucket, "", Method::HEAD).read_only();
                 cr.accepted_statuses = &[200, 404];
                 cr
             })
@@ -329,26 +432,26 @@ impl Client {
     /// Delete a bucket (DELETE `/{b}`).
     pub async fn delete_bucket(&self, bucket: &str) -> Result<()> {
         validate_bucket(bucket)?;
-        self.do_discard(ClientRequest::new(bucket, "", HttpMethod::Delete))
+        self.do_discard(ClientRequest::new(bucket, "", Method::DELETE))
             .await
     }
 
     /// Get bucket info (GET `/{b}`).
     pub async fn get_bucket_info(&self, bucket: &str) -> Result<GetBucketInfoResponse> {
         validate_bucket(bucket)?;
-        self.do_json(ClientRequest::new(bucket, "", HttpMethod::Get).read_only())
+        self.do_json(ClientRequest::new(bucket, "", Method::GET).read_only())
             .await
     }
 
     /// List all buckets (GET `/`).
     pub async fn list_buckets(&self) -> Result<ListBucketsResponse> {
-        self.do_json(ClientRequest::new("", "", HttpMethod::Get).read_only())
+        self.do_json(ClientRequest::new("", "", Method::GET).read_only())
             .await
     }
 
     /// List buckets the user can access (GET `/?authorizedBuckets`).
     pub async fn list_authorized_buckets(&self) -> Result<ListBucketsResponse> {
-        let mut cr = ClientRequest::new("", "", HttpMethod::Get).read_only();
+        let mut cr = ClientRequest::new("", "", Method::GET).read_only();
         cr.query.add("authorizedBuckets", "");
         self.do_json(cr).await
     }
@@ -360,7 +463,7 @@ impl Client {
         q.add("migrate", "");
         q.add("orgId", &req.org_id);
         q.add("teamId", &req.team_id);
-        let mut cr = ClientRequest::new(&req.bucket_name, "", HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, "", Method::PUT);
         cr.query = q;
         cr.body = Some(Bytes::new().into());
         self.do_discard(cr).await
@@ -369,7 +472,7 @@ impl Client {
     /// Get bucket ACL (GET `/{b}?acl`).
     pub async fn get_bucket_acl(&self, bucket: &str) -> Result<AccessControlList> {
         validate_bucket(bucket)?;
-        let mut cr = ClientRequest::new(bucket, "", HttpMethod::Get).read_only();
+        let mut cr = ClientRequest::new(bucket, "", Method::GET).read_only();
         cr.query.add("acl", "");
         self.do_json(cr).await
     }
@@ -381,7 +484,7 @@ impl Client {
         let acl = &req.acl;
         let action = req.action;
         let body = serde_json::to_vec(acl).map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, "", Method::PUT);
         cr.query.add("acl", "");
         action.apply(&mut cr.query);
         cr.body = Some(Bytes::from(body).into());
@@ -394,7 +497,7 @@ impl Client {
         req: &GetLifecycleConfigRequest,
     ) -> Result<LifecycleConfig> {
         validate_bucket(&req.bucket_name)?;
-        let mut cr = ClientRequest::new(&req.bucket_name, "", HttpMethod::Get).read_only();
+        let mut cr = ClientRequest::new(&req.bucket_name, "", Method::GET).read_only();
         cr.query.add("lifecycle", &req.rule_id);
         self.do_json(cr).await
     }
@@ -403,7 +506,7 @@ impl Client {
     pub async fn set_lifecycle_config(&self, bucket: &str, config: &LifecycleConfig) -> Result<()> {
         validate_bucket(bucket)?;
         let body = serde_json::to_vec(config).map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, "", Method::PUT);
         cr.query.add("lifecycle", "");
         cr.body = Some(Bytes::from(body).into());
         self.do_discard(cr).await
@@ -413,7 +516,7 @@ impl Client {
     pub async fn set_lifecycle_rule(&self, bucket: &str, rule: &LifecycleRule) -> Result<()> {
         validate_bucket(bucket)?;
         let body = serde_json::to_vec(rule).map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, "", Method::PUT);
         cr.query.add("lifecycle", "rule");
         cr.body = Some(Bytes::from(body).into());
         self.do_discard(cr).await
@@ -422,7 +525,7 @@ impl Client {
     /// Get access log (GET `/{b}?accessLog`).
     pub async fn get_access_log(&self, bucket: &str) -> Result<AccessLog> {
         validate_bucket(bucket)?;
-        let mut cr = ClientRequest::new(bucket, "", HttpMethod::Get).read_only();
+        let mut cr = ClientRequest::new(bucket, "", Method::GET).read_only();
         cr.query.add("accessLog", "");
         self.do_json(cr).await
     }
@@ -431,7 +534,7 @@ impl Client {
     pub async fn set_access_log(&self, bucket: &str, access_log: &AccessLog) -> Result<()> {
         validate_bucket(bucket)?;
         let body = serde_json::to_vec(access_log).map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, "", Method::PUT);
         cr.query.add("accessLog", "");
         cr.body = Some(Bytes::from(body).into());
         self.do_discard(cr).await
@@ -448,14 +551,99 @@ mod tests {
         let json =
             br#"{"id":"r","prefix":"p","enabled":true,"actions":{"expiration":{"days":164}}}"#;
         let rule = LifecycleRule::from_json(json).unwrap();
-        assert_eq!(rule.action.get(ACTION_EXPIRATION).unwrap().days, 164.0);
+        assert_eq!(rule.action[&LifecycleAction::Expiration].days, 164.0);
+    }
+
+    /// Wire bytes captured from the string-keyed map representation that
+    /// preceded the `LifecycleAction` enum. One action per rule: the old
+    /// `HashMap` had no stable order for several keys.
+    const LIFECYCLE_WIRE: &[&str] = &[
+        r#"{"id":"r1","prefix":"logs/","enabled":true,"actions":{"expiration":{"days":30.0}}}"#,
+        r#"{"id":"r2","prefix":"","enabled":false,"actions":{"nonCurrentVersionExpiration":{"days":1.5}}}"#,
+        r#"{"id":"r3","prefix":"tmp/","enabled":true,"actions":{"abortIncompleteMultipartUpload ":{"days":7.0}}}"#,
+        r#"{"id":"r4","prefix":"x","enabled":true,"actions":{"abortIncompleteMultipartUpload":{"days":2.0}}}"#,
+        r#"{"id":"r5","prefix":"y","enabled":true,"actions":{"transition":{"days":0.0}}}"#,
+        r#"{"id":"r6","prefix":"z","enabled":true,"actions":{}}"#,
+    ];
+
+    #[test]
+    fn lifecycle_wire_bytes_round_trip() {
+        for json in LIFECYCLE_WIRE {
+            let rule = LifecycleRule::from_json(json.as_bytes()).unwrap();
+            assert_eq!(serde_json::to_string(&rule).unwrap(), *json);
+        }
+        let config = format!(r#"{{"rules":[{}]}}"#, LIFECYCLE_WIRE.join(","));
+        let parsed = LifecycleConfig::from_json(config.as_bytes()).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), config);
     }
 
     #[test]
     fn abort_action_keeps_trailing_space() {
         assert_eq!(
-            ACTION_ABORT_INCOMPLETE_MULTIPART_UPLOAD,
+            LifecycleAction::AbortIncompleteMultipartUpload.as_str(),
             "abortIncompleteMultipartUpload "
+        );
+        // Without the space it is a different, verbatim key.
+        let trimmed = LifecycleAction::from("abortIncompleteMultipartUpload");
+        assert_eq!(
+            trimmed,
+            LifecycleAction::Other("abortIncompleteMultipartUpload".into())
+        );
+        assert_ne!(trimmed, LifecycleAction::AbortIncompleteMultipartUpload);
+    }
+
+    #[test]
+    fn lifecycle_typed_actions_match_wire_bytes() {
+        // Built through the enum: same bytes as the captured map encoding.
+        let typed = [
+            (LifecycleAction::Expiration, 30.0, LIFECYCLE_WIRE[0]),
+            (
+                LifecycleAction::NonCurrentVersionExpiration,
+                1.5,
+                LIFECYCLE_WIRE[1],
+            ),
+            (
+                LifecycleAction::AbortIncompleteMultipartUpload,
+                7.0,
+                LIFECYCLE_WIRE[2],
+            ),
+        ];
+        for (action, days, json) in typed {
+            let mut rule = LifecycleRule::from_json(json.as_bytes()).unwrap();
+            rule.action = BTreeMap::from([(action, LifecycleBaseItem { days })]);
+            assert_eq!(serde_json::to_string(&rule).unwrap(), json);
+        }
+        let parsed = LifecycleRule::from_json(LIFECYCLE_WIRE[2].as_bytes()).unwrap();
+        assert!(parsed
+            .action
+            .contains_key(&LifecycleAction::AbortIncompleteMultipartUpload));
+    }
+
+    #[test]
+    fn lifecycle_multiple_actions_use_sorted_go_key_order() {
+        let rule = LifecycleRule {
+            id: "r".into(),
+            prefix: String::new(),
+            enabled: true,
+            action: BTreeMap::from([
+                (
+                    LifecycleAction::NonCurrentVersionExpiration,
+                    LifecycleBaseItem { days: 2.0 },
+                ),
+                (
+                    LifecycleAction::Other("transition".into()),
+                    LifecycleBaseItem { days: 3.0 },
+                ),
+                (LifecycleAction::Expiration, LifecycleBaseItem { days: 1.0 }),
+                (
+                    LifecycleAction::AbortIncompleteMultipartUpload,
+                    LifecycleBaseItem { days: 4.0 },
+                ),
+            ]),
+        };
+        assert_eq!(
+            serde_json::to_string(&rule).unwrap(),
+            r#"{"id":"r","prefix":"","enabled":true,"actions":{"abortIncompleteMultipartUpload ":{"days":4.0},"expiration":{"days":1.0},"nonCurrentVersionExpiration":{"days":2.0},"transition":{"days":3.0}}}"#
         );
     }
 }

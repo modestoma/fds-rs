@@ -1,8 +1,9 @@
 //! Run with FDS_ENDPOINT/FDS_ACCESS_KEY/FDS_SECRET_KEY and bucket, key, file args.
-use fds::{
-    CancellationToken, CleanupPolicy, Client, InitMultipartUploadRequest, MultipartOptions,
-    MultipartUpload,
+use fds::multipart::{
+    CleanupPolicy, InitMultipartUploadRequest, MultipartOptions, MultipartUpload,
 };
+use fds::Client;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Retain session outside the future. Another task can call token.cancel(),
     // but keep awaiting upload to receive its failure/cleanup result.
     let token = CancellationToken::new();
-    match session.upload(&token).await {
+    match session.upload(token.cancelled()).await {
         Ok(_) => println!("upload completed"),
         Err(error) => {
             // In an application, securely persist this snapshot before returning.

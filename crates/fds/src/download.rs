@@ -1,6 +1,7 @@
 //! Streaming download types and response consumption helpers.
 
-use crate::{Error, ObjectMetadata, Result};
+use crate::object::ObjectMetadata;
+use crate::{Error, Result};
 use bytes::Bytes;
 use reqwest::header::HeaderMap;
 use std::{fmt, num::NonZeroU64};
@@ -83,7 +84,7 @@ impl std::str::FromStr for ByteRange {
 /// Reading the body is bounded by the client's read idle timeout, reset after
 /// each read that makes progress. No total deadline applies by default; if one
 /// was set via [`ClientBuilder::request_timeout`](crate::ClientBuilder::request_timeout)
-/// or [`GetObjectRequest::timeout`](crate::GetObjectRequest::timeout), it keeps
+/// or [`GetObjectRequest::timeout`](crate::object::GetObjectRequest::timeout), it keeps
 /// running while [`chunk`](Self::chunk), [`bytes`](Self::bytes) or
 /// [`copy_to`](Self::copy_to) consume the body and fails them once it passes.
 #[non_exhaustive]

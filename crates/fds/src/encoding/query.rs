@@ -7,8 +7,6 @@
 
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
-use crate::error::Result;
-
 /// Characters `url.QueryEscape` leaves unescaped are the "unreserved" set
 /// `A-Z a-z 0-9 - _ . ~`. So the escape set is "everything non-alphanumeric"
 /// minus those four punctuation marks. Space is escaped to `%20` here and then
@@ -24,7 +22,7 @@ const GO_QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC
 /// ⚠️ Do NOT use `url::form_urlencoded` / `serde_urlencoded`: they follow WHATWG
 /// rules and differ from Go on `*` (Go → `%2A`) and `~` (Go → unescaped),
 /// which would change object-name/query encoding and break the signature.
-pub fn go_query_escape(s: &str) -> String {
+pub(crate) fn go_query_escape(s: &str) -> String {
     // percent_encoding emits uppercase `%XX` and encodes space as `%20`;
     // Go's query component uses `+` for space. Only spaces produce `%20`
     // (other chars' `%XX` never contain that substring), so the replace is safe.
@@ -36,27 +34,23 @@ pub fn go_query_escape(s: &str) -> String {
 /// Ordered `(key, value)` pairs. Encoding sorts by key (mirroring
 /// `url.Values.Encode`); insertion order is preserved among equal keys.
 #[derive(Default, Debug, Clone)]
-pub struct QueryValues(pub Vec<(String, String)>);
+pub(crate) struct QueryValues(Vec<(String, String)>);
 
 impl QueryValues {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Vec::new())
     }
 
     /// Append a `(key, value)` pair. An empty value is kept (Go's no-`omitempty`
     /// fields emit `key=` — callers must only skip `omitempty` fields upstream).
-    pub fn add(&mut self, k: impl Into<String>, v: impl Into<String>) {
+    pub(crate) fn add(&mut self, k: impl Into<String>, v: impl Into<String>) {
         self.0.push((k.into(), v.into()));
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
 
     /// Encode like Go `url.Values.Encode()`: stable-sort by key ascending
     /// (ASCII byte order — uppercase before lowercase), then
     /// `escape(key)=escape(value)` joined by `&`.
-    pub fn encode(&self) -> String {
+    pub(crate) fn encode(&self) -> String {
         let mut items = self.0.clone();
         items.sort_by(|a, b| a.0.cmp(&b.0)); // stable; keeps per-key value order
         let mut out = String::new();
@@ -72,26 +66,9 @@ impl QueryValues {
     }
 }
 
-/// Types that can be encoded to query values (Go's `param` struct tags).
-///
-/// Implemented by hand per request struct. Remember the
-/// `omitempty` semantics: fields WITHOUT `omitempty` emit even when
-/// empty/zero; fields WITH `omitempty` are skipped when empty/zero.
-pub trait ToQuery {
-    fn to_query(&self) -> Result<QueryValues>;
-}
-
-/// Format a timestamp like Go `time.RFC822` (`02 Jan 06 15:04 MST`), used by the
-/// reflection encoder for `time.Time` fields. Real FDS request options don't use
-/// time query fields, but this keeps parity with the httpparser golden vectors.
-pub fn format_rfc822(dt: &chrono::DateTime<chrono::Utc>) -> String {
-    dt.format("%d %b %y %H:%M %Z").to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
 
     #[test]
     fn go_query_escape_specials() {
@@ -108,22 +85,15 @@ mod tests {
     }
 
     #[test]
-    fn rfc822_golden() {
-        // httpparser test: time.Date(2018,1,1,1,1,1,1,UTC) → "01 Jan 18 01:01 UTC"
-        let dt = Utc.with_ymd_and_hms(2018, 1, 1, 1, 1, 1).unwrap();
-        assert_eq!(format_rfc822(&dt), "01 Jan 18 01:01 UTC");
-    }
-
-    #[test]
     fn encode_golden_vector() {
         // Reproduces querystring_test.go:36 (the fields the hand-written encoder
-        // would emit for `testOptions`): sorted keys, RFC822 time, bool "false".
-        let dt = Utc.with_ymd_and_hms(2018, 1, 1, 1, 1, 1).unwrap();
+        // would emit for `testOptions`): sorted keys, the RFC822 rendering of
+        // time.Date(2018,1,1,1,1,1,1,UTC), bool "false".
         let mut q = QueryValues::new();
         // Insertion order is intentionally scrambled to prove sort-by-key.
         q.add("name", "John");
         q.add("age", "12");
-        q.add("last-modified", format_rfc822(&dt));
+        q.add("last-modified", "01 Jan 18 01:01 UTC");
         q.add("can", "false");
         q.add("OtherOption", "helloworld");
         assert_eq!(

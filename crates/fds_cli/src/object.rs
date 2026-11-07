@@ -2,7 +2,7 @@ use super::output;
 use super::util::{parse_method, print_json, read_json, AclMode, BodyArgs, MetadataArgs};
 use anyhow::Result;
 use clap::Subcommand;
-use fds::*;
+use fds::{object::*, *};
 #[derive(Subcommand)]
 pub enum ObjectCmd {
     Put {

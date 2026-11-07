@@ -1,4 +1,5 @@
-use fds::{Client, DeleteObjectsOutput, Dispatch, ErrorKind};
+use fds::object::DeleteObjectsOutput;
+use fds::{Client, Dispatch, ErrorKind};
 use mockito::Matcher;
 fn client(s: &mockito::ServerGuard) -> Client {
     Client::builder()
@@ -151,7 +152,10 @@ async fn prefix_keeps_progress_on_later_delete_or_list_failure() {
             .create_async()
             .await;
         let e = client(&s)
-            .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
+            .delete_objects_with_prefix(
+                &fds::object::ListObjectsRequest::new("b").prefix("p/"),
+                false,
+            )
             .await
             .unwrap_err();
         assert_eq!(partial(&e).deleted, ["p/a"]);
@@ -202,7 +206,10 @@ async fn prefix_empty_page_continues_and_partial_failure_stops() {
         .create_async()
         .await;
     let e = client(&s)
-        .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
+        .delete_objects_with_prefix(
+            &fds::object::ListObjectsRequest::new("b").prefix("p/"),
+            false,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.kind(), ErrorKind::PartialFailure);
@@ -228,7 +235,10 @@ async fn prefix_rejects_missing_marker_and_out_of_scope_names_before_deleting() 
             .await;
         let delete = s.mock("PUT", Matcher::Any).expect(0).create_async().await;
         let error = client(&s)
-            .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
+            .delete_objects_with_prefix(
+                &fds::object::ListObjectsRequest::new("b").prefix("p/"),
+                false,
+            )
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
@@ -268,7 +278,10 @@ async fn prefix_repeated_marker_stops_before_next_batch() {
         .create_async()
         .await;
     let e = client(&s)
-        .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
+        .delete_objects_with_prefix(
+            &fds::object::ListObjectsRequest::new("b").prefix("p/"),
+            false,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.kind(), ErrorKind::ProtocolViolation);
@@ -304,7 +317,10 @@ async fn prefix_success_batches_keep_caller_scope_and_finish() {
         .create_async()
         .await;
     let r = client(&s)
-        .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
+        .delete_objects_with_prefix(
+            &fds::object::ListObjectsRequest::new("b").prefix("p/"),
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(r.deleted, ["p/a", "p/b"]);
@@ -400,7 +416,7 @@ async fn prefix_long_cycle_and_initial_marker_are_checked_before_delete() {
                 .await,
         );
     }
-    let request = fds::ListObjectsRequest::new("b")
+    let request = fds::object::ListObjectsRequest::new("b")
         .prefix("p/")
         .delimiter("/")
         .max_keys(7)
@@ -428,7 +444,7 @@ async fn empty_prefix_does_not_allow_empty_object_names() {
         .await;
     let no_delete = s.mock("PUT", Matcher::Any).expect(0).create_async().await;
     let error = client(&s)
-        .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b"), false)
+        .delete_objects_with_prefix(&fds::object::ListObjectsRequest::new("b"), false)
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
@@ -439,7 +455,7 @@ async fn empty_prefix_does_not_allow_empty_object_names() {
 
 #[tokio::test]
 async fn bucket_targets_validate_locally_but_root_lists_remain_valid() {
-    use fds::*;
+    use fds::{acl::*, bucket::*, object::*};
     let mut s = mockito::Server::new_async().await;
     let c = client(&s);
     let mut forbidden = Vec::new();

@@ -1,5 +1,6 @@
 use chrono::{Duration, Utc};
-use fds::{Client, FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::Client;
 use mockito::{Matcher, Server};
 
 fn request(provider: OAuthProvider) -> StorageTokenRequest {
@@ -8,7 +9,7 @@ fn request(provider: OAuthProvider) -> StorageTokenRequest {
 fn response() -> String {
     serde_json::json!({"token":"storage-secret +&%中", "expireTime":(Utc::now()+Duration::days(7)).timestamp_millis()}).to_string()
 }
-async fn token(server: &mut Server) -> fds::StorageAccessToken {
+async fn token(server: &mut Server) -> fds::oauth::StorageAccessToken {
     let mock = server
         .mock("GET", "/")
         .match_query(Matcher::UrlEncoded("storageAccessToken".into(), "".into()))
@@ -160,13 +161,13 @@ async fn oauth_operations_use_bound_app_token_and_reject_presigning() {
     for (path, body) in [("/", "{\"owner\":{\"id\":\"user\"},\"buckets\":[{\"name\":\"b\",\"orgId\":\"org\",\"creationTime\":123,\"usedSpace\":4,\"numObjects\":1}]}"), ("/b/dir%2Fa%20%2B%25%E4%B8%AD", "content")] {
         let mock = server.mock("GET", path).match_header("authorization", "OAuth").match_query(Matcher::AllOf(vec![Matcher::UrlEncoded("appId".into(),"app +&中".into()),Matcher::UrlEncoded("storageAccessToken".into(),"storage-secret +&%中".into())])).with_body(body).create_async().await;
         if path == "/" { let output = client.list_app_buckets().await.unwrap(); assert_eq!(output.buckets[0].org_id,"org"); }
-        else { let output = fds::GetObjectRequest::new("b","dir/a +%中").send(&client).await.unwrap(); assert!(!format!("{output:?}").contains("secret")); let raw = output.into_raw(); assert!(!format!("{raw:?}").contains("secret")); assert!(raw.url().query().is_none()); assert_eq!(raw.bytes().await.unwrap(),"content"); }
+        else { let output = fds::object::GetObjectRequest::new("b","dir/a +%中").send(&client).await.unwrap(); assert!(!format!("{output:?}").contains("secret")); let raw = output.into_raw(); assert!(!format!("{raw:?}").contains("secret")); assert!(raw.url().query().is_none()); assert_eq!(raw.bytes().await.unwrap(),"content"); }
         mock.assert_async().await;
     }
-    let req = fds::GeneratePresignedURLRequest {
+    let req = fds::object::GeneratePresignedURLRequest {
         bucket_name: "b".into(),
         object_name: "o".into(),
-        method: fds::HttpMethod::Get,
+        method: http::Method::GET,
         expiration: Utc::now() + Duration::minutes(1),
         cdn: false,
         metadata: None,
@@ -263,7 +264,7 @@ async fn expired_clones_fail_locally_and_refresh_is_explicit() {
     assert!(!new_token.is_expired());
     assert!(client.list_app_buckets().await.is_err());
 }
-async fn token_for_refresh(server: &mut Server) -> fds::StorageAccessToken {
+async fn token_for_refresh(server: &mut Server) -> fds::oauth::StorageAccessToken {
     token(server).await
 }
 

@@ -2,7 +2,9 @@
 //! the full send pipeline — URL construction, header assembly, signing, and
 //! status-code handling — which the in-crate unit tests cannot reach.
 
-use fds::{Client, CreateBucketRequest, GetObjectRequest, ListObjectsRequest, PutObjectRequest};
+use fds::bucket::CreateBucketRequest;
+use fds::object::{GetObjectRequest, ListObjectsRequest, PutObjectRequest};
+use fds::Client;
 use mockito::Matcher;
 
 /// Build a validated client pointed at an explicit local HTTP endpoint.

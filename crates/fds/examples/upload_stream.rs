@@ -1,6 +1,7 @@
 //! Compile-checked uploads; this example does not contact a service by default.
 use bytes::Bytes;
-use fds::{Client, PutObjectRequest, UploadBody};
+use fds::object::{PutObjectRequest, UploadBody};
+use fds::Client;
 
 #[allow(dead_code)]
 async fn upload(client: &Client, path: &std::path::Path) -> fds::Result<()> {

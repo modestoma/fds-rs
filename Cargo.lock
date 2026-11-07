@@ -384,6 +384,7 @@ dependencies = [
  "fds",
  "futures-util",
  "governor",
+ "http",
  "mockito",
  "serde",
  "serde_json",

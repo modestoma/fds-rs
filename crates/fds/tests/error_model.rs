@@ -1,5 +1,6 @@
 //! The unified error model: status mapping, kinds, dispatch and redaction.
-use fds::{Client, CopyObjectRequest, Dispatch, ErrorKind, PutObjectRequest};
+use fds::object::{CopyObjectRequest, PutObjectRequest};
+use fds::{Client, Dispatch, ErrorKind};
 use mockito::Matcher;
 use std::error::Error as _;
 
@@ -204,7 +205,7 @@ async fn debug_is_diagnostic_and_omits_credentials() {
         .create_async()
         .await;
     let error = client(server.url())
-        .get_object(&fds::GetObjectRequest::new("b", "o"))
+        .get_object(&fds::object::GetObjectRequest::new("b", "o"))
         .await
         .unwrap_err();
     let text = chain(&error);
@@ -222,7 +223,7 @@ async fn debug_is_diagnostic_and_omits_credentials() {
 
     // Transport failure: the source chain is printed, the signed URL is not.
     let error = client(refused_endpoint())
-        .get_object(&fds::GetObjectRequest::new("b", "private-object"))
+        .get_object(&fds::object::GetObjectRequest::new("b", "private-object"))
         .await
         .unwrap_err();
     let debug = format!("{error:?}");
@@ -250,13 +251,13 @@ async fn debug_is_diagnostic_and_omits_credentials() {
         )
         .create_async()
         .await;
-    let token = fds::FdsServiceClient::new(service.url())
+    let token = fds::oauth::FdsServiceClient::new(service.url())
         .unwrap()
-        .exchange_storage_token(&fds::StorageTokenRequest::new(
+        .exchange_storage_token(&fds::oauth::StorageTokenRequest::new(
             "private-app",
             "private-oauth-app",
             "private-oauth-token",
-            fds::OAuthProvider::QQ,
+            fds::oauth::OAuthProvider::QQ,
         ))
         .await
         .unwrap();
@@ -266,7 +267,7 @@ async fn debug_is_diagnostic_and_omits_credentials() {
         .build()
         .unwrap();
     let error = oauth
-        .get_object(&fds::GetObjectRequest::new("b", "private-object"))
+        .get_object(&fds::object::GetObjectRequest::new("b", "private-object"))
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Transport);

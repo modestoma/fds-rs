@@ -1,13 +1,15 @@
 //! Absolute and presigned object URLs.
 
 use super::validate_object;
+use super::ObjectMetadata;
 use crate::auth;
 use crate::constant::HTTP_HEADER_EXPIRES;
 use crate::constant::HTTP_HEADER_GALAXY_ACCESS_KEY_ID;
 use crate::constant::HTTP_HEADER_SIGNATURE;
 use crate::encoding::QueryValues;
-use crate::{Client, Error, HttpMethod, ObjectMetadata, Result};
+use crate::{Client, Error, Result};
 use chrono::{DateTime, Utc};
+use http::Method;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
@@ -19,7 +21,7 @@ pub struct GeneratePresignedURLRequest {
     pub cdn: bool,
     pub bucket_name: String,
     pub object_name: String,
-    pub method: HttpMethod,
+    pub method: Method,
     pub expiration: DateTime<Utc>,
     pub metadata: Option<ObjectMetadata>,
 }
@@ -29,7 +31,7 @@ impl GeneratePresignedURLRequest {
     pub fn new(
         bucket: impl Into<String>,
         object: impl Into<String>,
-        method: HttpMethod,
+        method: Method,
         expiration: DateTime<Utc>,
     ) -> Self {
         Self {
@@ -45,7 +47,7 @@ impl GeneratePresignedURLRequest {
     pub fn expires_in(
         bucket: impl Into<String>,
         object: impl Into<String>,
-        method: HttpMethod,
+        method: Method,
         lifetime: Duration,
     ) -> Result<Self> {
         if lifetime.as_millis() == 0 {
@@ -93,7 +95,7 @@ impl Client {
 
         let expires_ms = req.expiration.timestamp_millis();
         let mut params = QueryValues::new();
-        if req.method == HttpMethod::Head {
+        if req.method == Method::HEAD {
             params.add("metadata", "");
         }
         params.add(HTTP_HEADER_GALAXY_ACCESS_KEY_ID, access_id);

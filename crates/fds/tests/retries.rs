@@ -1,6 +1,6 @@
-use fds::{
-    Client, GetObjectRequest, InitMultipartUploadRequest, PutObjectRequest, RetryPolicy, UploadBody,
-};
+use fds::multipart::InitMultipartUploadRequest;
+use fds::object::{GetObjectRequest, PutObjectRequest, UploadBody};
+use fds::{Client, RetryPolicy};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,

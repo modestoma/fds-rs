@@ -1,9 +1,11 @@
 //! Deletion with explicit partial-failure outcomes.
 
 use super::validate_object;
+use super::ListObjectsRequest;
 use crate::client::ClientRequest;
-use crate::{Client, Dispatch, Error, ErrorKind, HttpMethod, ListObjectsRequest, Result};
+use crate::{Client, Dispatch, Error, ErrorKind, Result};
 use bytes::Bytes;
+use http::Method;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -50,7 +52,7 @@ impl Client {
     /// Delete an object (DELETE `/{b}/{o}`).
     pub async fn delete_object(&self, bucket: &str, object: &str) -> Result<()> {
         validate_object(bucket, object)?;
-        self.do_discard(ClientRequest::new(bucket, object, HttpMethod::Delete))
+        self.do_discard(ClientRequest::new(bucket, object, Method::DELETE))
             .await
     }
 
@@ -87,7 +89,7 @@ impl Client {
         }
         let requested: HashSet<&str> = names.iter().map(String::as_str).collect();
         let body = serde_json::to_vec(names).map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
+        let mut cr = ClientRequest::new(bucket, "", Method::PUT);
         cr.query.add("enableTrash", put_to_trash.to_string());
         cr.query.add("deleteObjects", "");
         cr.body = Some(Bytes::from(body).into());

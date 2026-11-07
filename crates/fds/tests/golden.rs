@@ -9,11 +9,16 @@
 //! The Go generator (`go-fds/fds/golden_export_test.go`) emits real
 //! `buildRequestURL` / `signature` / `GeneratePresignedURL` values. Expected
 //! signature/URL strings MUST come from Go — never hand/LLM-computed.
+//!
+//! The `signatures` vectors of the same fixture are checked by the
+//! crate-internal unit test `auth::tests::golden_signatures`, because the
+//! signer is not public API.
 
 use std::collections::HashMap;
 
-use fds::auth::HeaderLookup;
-use fds::{Client, GeneratePresignedURLRequest, HttpMethod, ObjectMetadata};
+use fds::object::{GeneratePresignedURLRequest, ObjectMetadata};
+use fds::Client;
+use http::Method;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -22,7 +27,6 @@ struct Fixtures {
     access_secret: String,
     endpoint: String,
     absolute_urls: Vec<AbsUrl>,
-    signatures: Vec<Sig>,
     presigned_urls: Vec<Presigned>,
 }
 
@@ -30,15 +34,6 @@ struct Fixtures {
 struct AbsUrl {
     bucket: String,
     object: String,
-    expected: String,
-}
-
-#[derive(Deserialize)]
-struct Sig {
-    secret: String,
-    method: String,
-    url: String,
-    headers: HashMap<String, String>,
     expected: String,
 }
 
@@ -53,21 +48,6 @@ struct Presigned {
     expected: String,
 }
 
-/// A `HeaderLookup` over a plain lowercase-keyed map (mirrors how reqwest's
-/// `HeaderMap` behaves for the signer).
-struct MapHeaders(HashMap<String, String>);
-
-impl HeaderLookup for MapHeaders {
-    fn get_first(&self, name_lower: &str) -> String {
-        self.0.get(name_lower).cloned().unwrap_or_default()
-    }
-    fn for_each_lower(&self, f: &mut dyn FnMut(&str, &str)) {
-        for (k, v) in &self.0 {
-            f(k, v);
-        }
-    }
-}
-
 fn load() -> Fixtures {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/golden.json");
     let data = std::fs::read_to_string(path)
@@ -75,13 +55,13 @@ fn load() -> Fixtures {
     serde_json::from_str(&data).expect("parse golden.json")
 }
 
-fn parse_method(s: &str) -> HttpMethod {
+fn parse_method(s: &str) -> Method {
     match s {
-        "GET" => HttpMethod::Get,
-        "PUT" => HttpMethod::Put,
-        "HEAD" => HttpMethod::Head,
-        "POST" => HttpMethod::Post,
-        "DELETE" => HttpMethod::Delete,
+        "GET" => Method::GET,
+        "PUT" => Method::PUT,
+        "HEAD" => Method::HEAD,
+        "POST" => Method::POST,
+        "DELETE" => Method::DELETE,
         other => panic!("unknown method {other}"),
     }
 }
@@ -116,21 +96,6 @@ fn golden_absolute_urls() {
             got, case.expected,
             "absolute url mismatch for object {:?}",
             case.object
-        );
-    }
-}
-
-#[test]
-fn golden_signatures() {
-    let fx = load();
-    assert!(!fx.signatures.is_empty());
-    for case in &fx.signatures {
-        let headers = MapHeaders(case.headers.clone());
-        let got = fds::auth::sign(&case.secret, &case.method, &case.url, &headers).unwrap();
-        assert_eq!(
-            got, case.expected,
-            "signature mismatch for {} {}",
-            case.method, case.url
         );
     }
 }

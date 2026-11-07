@@ -9,10 +9,11 @@
 
 use std::error::Error;
 
-use fds::{
-    Client, GeneratePresignedURLRequest, GetObjectRequest, HttpMethod, ListObjectsRequest,
-    PutObjectRequest,
+use fds::object::{
+    GeneratePresignedURLRequest, GetObjectRequest, ListObjectsRequest, PutObjectRequest,
 };
+use fds::Client;
+use http::Method;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -61,7 +62,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let url = GeneratePresignedURLRequest::expires_in(
         &bucket,
         object,
-        HttpMethod::Get,
+        Method::GET,
         std::time::Duration::from_secs(3600),
     )?
     .generate(&client)?;

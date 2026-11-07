@@ -1,5 +1,6 @@
 //! Explicit, isolated real-service acceptance. Never part of the default suite.
-use fds::{ByteRange, Client, GetObjectRequest, ListObjectsRequest, PutObjectRequest};
+use fds::object::{ByteRange, GetObjectRequest, ListObjectsRequest, PutObjectRequest};
+use fds::Client;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tokio::test]
@@ -95,7 +96,7 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 #[ignore = "requires FDS_LIVE=1, provisioned OAuth app/provider and readable fixture"]
 async fn live_oauth_discovery_and_read() -> Result<(), Box<dyn std::error::Error>> {
-    use fds::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+    use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
     assert_eq!(std::env::var("FDS_LIVE").as_deref(), Ok("1"));
     let service = FdsServiceClient::new(std::env::var("FDS_DISCOVERY_ORIGIN")?)?;
     let discovered = service

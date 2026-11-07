@@ -1,9 +1,11 @@
 //! Owned PUT requests and transport.
 
 use super::{insert_header_opt, validate_object};
+use super::{ObjectMetadata, UploadBody};
 use crate::client::ClientRequest;
-use crate::{Client, HttpMethod, ObjectMetadata, Result, UploadBody};
+use crate::{Client, Result};
 use chrono::{DateTime, Utc};
+use http::Method;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use std::path::Path;
@@ -14,7 +16,7 @@ use std::time::Duration;
 pub struct PutObjectRequest {
     bucket_name: String,
     object_name: String,
-    body: crate::UploadBody,
+    body: crate::object::UploadBody,
     cache_control: Option<String>,
     content_disposition: Option<String>,
     content_encoding: Option<String>,
@@ -185,7 +187,7 @@ impl Client {
         insert_header_opt(&mut headers, "content-md5", &req.content_md5)?;
         insert_header_opt(&mut headers, "expect", &req.expect)?;
 
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.timeout = req
             .timeout
             .map(|t| crate::config::validate_timeout(t, crate::ErrorKind::InvalidInput))

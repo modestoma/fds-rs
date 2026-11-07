@@ -1,12 +1,19 @@
-//! Explicitly owned, bounded-memory file multipart uploads.
-use crate::{
-    Client, Dispatch, Error, ErrorKind, InitMultipartUploadRequest, InitMultipartUploadResponse,
-    ObjectMetadata, PutObjectResponse, Result, UploadPartRequest,
-};
+//! Multipart uploads: the low-level requests (initiate, upload part,
+//! complete, abort) and the explicitly owned, bounded-memory file upload
+//! [`MultipartUpload`].
+use crate::object::{ObjectMetadata, PutObjectResponse};
+use crate::{Client, Dispatch, Error, ErrorKind, Result};
+use futures_util::future::{Fuse, FutureExt};
 use futures_util::{StreamExt, TryStreamExt};
+use std::future::Future;
+use std::pin::{pin, Pin};
 use std::{path::Path, time::SystemTime};
 use tokio::io::AsyncReadExt;
-pub use tokio_util::sync::CancellationToken;
+
+pub use crate::object::multipart::{
+    CompleteMultipartUploadRequest, InitMultipartUploadRequest, InitMultipartUploadResponse,
+    UploadPartRequest, UploadPartResponse,
+};
 
 /// Action after a part/read failure or cooperative cancellation before completion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -84,7 +91,7 @@ pub enum MultipartState {
 #[derive(Clone)]
 pub struct MultipartProgress {
     pub upload: InitMultipartUploadResponse,
-    pub parts: Vec<crate::UploadPartResponse>,
+    pub parts: Vec<UploadPartResponse>,
     pub total_parts: usize,
     pub file_size: u64,
     pub state: MultipartState,
@@ -100,8 +107,9 @@ impl std::fmt::Debug for MultipartProgress {
 }
 
 /// A single-run session. Keep it alive until success or explicit recovery.
-/// No Drop implementation performs network IO. To cancel with cleanup, cancel
-/// the token and keep awaiting `upload`; dropping the future skips cleanup.
+/// No Drop implementation performs network IO. To cancel with cleanup, let the
+/// cancellation future passed to [`upload`](Self::upload) complete and keep
+/// awaiting `upload`; dropping the future skips cleanup.
 /// The source file must remain unchanged for the entire session.
 pub struct MultipartUpload {
     client: Client,
@@ -186,14 +194,36 @@ impl MultipartUpload {
     /// Any completion failure after the completion request may have been sent
     /// (including cancellation while it is in flight) is conservatively
     /// [`ErrorKind::OutcomeUnknown`], with the cause in the source chain.
-    pub async fn upload(&mut self, cancel: &CancellationToken) -> Result<PutObjectResponse> {
+    ///
+    /// # Cancellation
+    ///
+    /// `cancel` is any future that completes when the upload should stop
+    /// cooperatively; completion yields [`ErrorKind::Cancelled`] (or
+    /// `OutcomeUnknown` once completion is in flight) and still runs the
+    /// configured [`CleanupPolicy`]. Pass [`std::future::pending()`] for no
+    /// cancellation. A `tokio_util::sync::CancellationToken` works through
+    /// `token.cancelled()`, a timeout through `tokio::time::sleep(..)`, and a
+    /// oneshot receiver through `async { let _ = rx.await; }`.
+    ///
+    /// ```no_run
+    /// # async fn example(upload: &mut fds::multipart::MultipartUpload) -> fds::Result<()> {
+    /// let deadline = tokio::time::sleep(std::time::Duration::from_secs(3600));
+    /// upload.upload(deadline).await?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn upload<C>(&mut self, cancel: C) -> Result<PutObjectResponse>
+    where
+        C: Future<Output = ()>,
+    {
         if self.progress.state != MultipartState::Ready {
             return Err(Error::invalid_input(
                 "multipart session already run; explicit recovery required",
             ));
         }
+        // Fused: once the signal fires it is never polled again.
+        let mut cancel = pin!(cancel.fuse());
         self.progress.state = MultipartState::Uploading;
-        let result = self.upload_parts(cancel).await;
+        let result = self.upload_parts(cancel.as_mut()).await;
         if let Err(mut cause) = result {
             self.progress.state = MultipartState::Failed;
             if self.options.cleanup == CleanupPolicy::AbortOnFailure {
@@ -210,7 +240,7 @@ impl MultipartUpload {
         }
         // Set BEFORE polling the network future, so external drop is recoverable.
         self.progress.state = MultipartState::CompletionUnknown;
-        let request = crate::CompleteMultipartUploadRequest {
+        let request = CompleteMultipartUploadRequest {
             bucket_name: self.progress.upload.bucket_name.clone(),
             object_name: self.progress.upload.object_name.clone(),
             upload_id: self.progress.upload.upload_id.clone(),
@@ -221,7 +251,7 @@ impl MultipartUpload {
         const UNKNOWN: &str = "multipart completion outcome unknown; reconcile before retrying";
         let output = tokio::select! {
             biased;
-            _ = cancel.cancelled() => Err(Error::new(
+            _ = cancel => Err(Error::new(
                 ErrorKind::Cancelled,
                 "cancelled while multipart completion was in flight",
             )
@@ -245,7 +275,10 @@ impl MultipartUpload {
         Ok(output)
     }
 
-    async fn upload_parts(&mut self, cancel: &CancellationToken) -> Result<()> {
+    async fn upload_parts<C>(&mut self, mut cancel: Pin<&mut Fuse<C>>) -> Result<()>
+    where
+        C: Future<Output = ()>,
+    {
         let part_size = self.options.part_size;
         let client = &self.client;
         let upload = &self.progress.upload;
@@ -293,7 +326,7 @@ impl MultipartUpload {
             loop {
                 let next = tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => return Err(cancelled()),
+                    _ = cancel.as_mut() => return Err(cancelled()),
                     next = parts.next() => next,
                 };
                 match next {
@@ -312,14 +345,14 @@ impl MultipartUpload {
                 "source file changed during multipart upload",
             ));
         }
-        if cancel.is_cancelled() {
+        if cancel.now_or_never().is_some() {
             return Err(cancelled());
         }
         Ok(())
     }
 }
 
-/// Part requests may have been in flight when the token fired.
+/// Part requests may have been in flight when the cancellation signal fired.
 fn cancelled() -> Error {
     Error::new(ErrorKind::Cancelled, "multipart upload cancelled").with_dispatch(Dispatch::Unknown)
 }

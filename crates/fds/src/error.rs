@@ -1,36 +1,5 @@
-//! The single SDK error type: [`Error`], classified by [`ErrorKind`].
-//!
-//! The type is named `fds::Error` (like `std::io::Error`), not `FdsError`: the
-//! crate path already says which SDK it belongs to. There are no other public
-//! error types for SDK operations: bulk deletion, managed multipart uploads and
-//! the downloader all return this one.
-//!
-//! Every fallible SDK operation returns [`Result<T>`]. An [`Error`] is opaque:
-//! inspect it through [`Error::kind`], [`Error::dispatch`], the optional HTTP
-//! [`ResponseDetails`] and the standard [`std::error::Error::source`] chain.
-//!
-//! ```
-//! fn report(error: &fds::Error) {
-//!     match error.kind() {
-//!         fds::ErrorKind::NotFound => eprintln!("missing object or bucket"),
-//!         fds::ErrorKind::OutcomeUnknown => eprintln!("reconcile before retrying: {error}"),
-//!         _ if error.is_retryable() => eprintln!("transient: {error}"),
-//!         _ => eprintln!("failed: {error}"),
-//!     }
-//! }
-//! # report(&fds::Error::new(fds::ErrorKind::NotFound, "example"));
-//! ```
-//!
-//! # Redaction
-//!
-//! `Display` and `Debug` never contain credentials, signatures, storage tokens,
-//! credential-bearing URLs or raw response bodies. They print the kind, the
-//! SDK's own message, the HTTP status, a service code that looks like a plain
-//! identifier, attached context and the `Display` text of each source (transport
-//! sources have their URL removed). The request ID and the bounded diagnostic
-//! body are only available through explicit accessors because they are
-//! untrusted, server-controlled text. With OAuth or anonymous credentials the
-//! service code, request ID and body are not retained at all.
+//! The single SDK error type. Implementation module; [`Error`] and its
+//! companions are re-exported at the crate root.
 
 use std::borrow::Cow;
 use std::error::Error as StdError;
@@ -228,7 +197,40 @@ impl fmt::Debug for ResponseDetails {
     }
 }
 
-/// The error returned by every fallible SDK operation.
+/// The error returned by every fallible SDK operation, classified by
+/// [`ErrorKind`].
+///
+/// The type is named `fds::Error` (like `std::io::Error`), not `FdsError`: the
+/// crate path already says which SDK it belongs to. There are no other public
+/// error types for SDK operations: bulk deletion, managed multipart uploads and
+/// the downloader all return this one.
+///
+/// Every fallible SDK operation returns [`Result<T>`]. An `Error` is opaque:
+/// inspect it through [`Error::kind`], [`Error::dispatch`], the optional HTTP
+/// [`ResponseDetails`] and the standard [`std::error::Error::source`] chain.
+///
+/// ```
+/// fn report(error: &fds::Error) {
+///     match error.kind() {
+///         fds::ErrorKind::NotFound => eprintln!("missing object or bucket"),
+///         fds::ErrorKind::OutcomeUnknown => eprintln!("reconcile before retrying: {error}"),
+///         _ if error.is_retryable() => eprintln!("transient: {error}"),
+///         _ => eprintln!("failed: {error}"),
+///     }
+/// }
+/// # report(&fds::Error::new(fds::ErrorKind::NotFound, "example"));
+/// ```
+///
+/// # Redaction
+///
+/// `Display` and `Debug` never contain credentials, signatures, storage tokens,
+/// credential-bearing URLs or raw response bodies. They print the kind, the
+/// SDK's own message, the HTTP status, a service code that looks like a plain
+/// identifier, attached context and the `Display` text of each source (transport
+/// sources have their URL removed). The request ID and the bounded diagnostic
+/// body are only available through explicit accessors because they are
+/// untrusted, server-controlled text. With OAuth or anonymous credentials the
+/// service code, request ID and body are not retained at all.
 ///
 /// The value is a single pointer wide; all details live behind it.
 pub struct Error(Box<Inner>);

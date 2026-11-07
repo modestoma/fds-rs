@@ -1,7 +1,7 @@
 //! Compiled against the real SDK; requires explicit endpoint and credentials to run.
-use fds::{
-    ByteRange, Client, GeneratePresignedURLRequest, GetObjectRequest, HttpMethod, PutObjectRequest,
-};
+use fds::object::{ByteRange, GeneratePresignedURLRequest, GetObjectRequest, PutObjectRequest};
+use fds::Client;
+use http::Method;
 use std::time::Duration;
 
 #[tokio::main]
@@ -34,7 +34,7 @@ async fn main() -> fds::Result<()> {
     let _url = GeneratePresignedURLRequest::expires_in(
         &bucket,
         "example.txt",
-        HttpMethod::Get,
+        Method::GET,
         Duration::from_secs(60),
     )?
     .generate(&client)?;

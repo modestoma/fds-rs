@@ -9,10 +9,11 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::auth;
 use crate::config::{ClientBuilder, ClientConfiguration};
-use crate::constant::{HttpMethod, HTTP_HEADER_AUTHORIZATION, HTTP_HEADER_DATE};
+use crate::constant::{HTTP_HEADER_AUTHORIZATION, HTTP_HEADER_DATE};
 use crate::encoding::{go_query_escape, QueryValues};
 use crate::error::{Dispatch, Error, ErrorKind, JsonResponseSource, ResponseDetails, Result};
 use crate::metadata::ObjectMetadata;
+use http::Method;
 use std::{fmt, sync::Arc, time::Duration};
 
 /// A validated FDS client. Clones share immutable configuration, private
@@ -34,12 +35,6 @@ pub struct Client {
     inner: Arc<ClientInner>,
 }
 
-impl AsRef<Client> for Client {
-    fn as_ref(&self) -> &Client {
-        self
-    }
-}
-
 struct ClientInner {
     http: reqwest::Client,
     configuration: ClientConfiguration,
@@ -58,7 +53,7 @@ impl fmt::Debug for Client {
 pub(crate) struct ClientRequest<'a> {
     pub bucket: &'a str,
     pub object: &'a str,
-    pub method: HttpMethod,
+    pub method: Method,
     pub query: QueryValues,
     pub headers: HeaderMap,
     pub metadata: Option<&'a ObjectMetadata>,
@@ -77,7 +72,7 @@ impl<'a> ClientRequest<'a> {
     }
 
     /// A bare request with empty query/headers/metadata/body.
-    pub(crate) fn new(bucket: &'a str, object: &'a str, method: HttpMethod) -> Self {
+    pub(crate) fn new(bucket: &'a str, object: &'a str, method: Method) -> Self {
         Self {
             bucket,
             object,
@@ -194,7 +189,7 @@ impl Client {
             };
             let result = self
                 .send(
-                    req.method,
+                    req.method.clone(),
                     url.clone(),
                     headers.clone(),
                     body.take(),
@@ -295,7 +290,7 @@ impl Client {
     /// status check (Go `doRequest`). Ordering is load-bearing.
     async fn send(
         &self,
-        method: HttpMethod,
+        method: Method,
         url: url::Url,
         mut headers: HeaderMap,
         body: Option<UploadBody>,
@@ -347,7 +342,7 @@ impl Client {
 
         // (9) send. `.body()` (never `.json()`) so reqwest does not inject a
         // Content-Type that would corrupt the signature.
-        let mut rb = self.inner.http.request(method.into(), url).headers(headers);
+        let mut rb = self.inner.http.request(method, url).headers(headers);
         if let Some(b) = body {
             rb = rb.body(b);
         }
@@ -734,7 +729,7 @@ mod response_security_tests {
             .credentials("private-ak", "private-sk")
             .build()
             .unwrap();
-        let mut req = ClientRequest::new("b", "private-object", HttpMethod::Get);
+        let mut req = ClientRequest::new("b", "private-object", Method::GET);
         req.query.add("storageAccessToken", "private-token");
         req.query.add("Signature", "private-signature");
         client.do_request(req).await.unwrap();
@@ -743,14 +738,14 @@ mod response_security_tests {
             .match_query(mockito::Matcher::Any)
             .with_body(serde_json::json!({"token":"private-storage-token", "expireTime":(chrono::Utc::now()+chrono::Duration::days(1)).timestamp_millis()}).to_string())
             .create_async().await;
-        let input = crate::StorageTokenRequest::new(
+        let input = crate::oauth::StorageTokenRequest::new(
             "private-app",
             "private-oauth-app",
             "private-oauth-token",
-            crate::OAuthProvider::XiaoMi,
+            crate::oauth::OAuthProvider::XiaoMi,
         )
         .xiaomi_mac("private-openid", "private-mac-key", "HmacSHA1");
-        let token = crate::FdsServiceClient::new(server.url())
+        let token = crate::oauth::FdsServiceClient::new(server.url())
             .unwrap()
             .exchange_storage_token(&input)
             .await
@@ -761,7 +756,7 @@ mod response_security_tests {
             .build()
             .unwrap();
         oauth
-            .do_request(ClientRequest::new("b", "private-object", HttpMethod::Get))
+            .do_request(ClientRequest::new("b", "private-object", Method::GET))
             .await
             .unwrap();
         exchange.assert_async().await;
@@ -801,10 +796,10 @@ mod retry_safety_tests {
             .build()
             .unwrap();
         for (key, method, read, stream, attempts) in [
-            ("unclassified_get", HttpMethod::Get, false, false, 1),
-            ("unsafe_post", HttpMethod::Post, false, false, 1),
-            ("read_stream", HttpMethod::Get, true, true, 1),
-            ("read_bytes", HttpMethod::Get, true, false, 3),
+            ("unclassified_get", Method::GET, false, false, 1),
+            ("unsafe_post", Method::POST, false, false, 1),
+            ("read_stream", Method::GET, true, true, 1),
+            ("read_bytes", Method::GET, true, false, 3),
         ] {
             let m = server
                 .mock(method.as_str(), format!("/b/{key}").as_str())

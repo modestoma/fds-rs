@@ -1,6 +1,7 @@
 //! Compile-only usage: explicitly provision the app and supply real credentials
 //! before using the corresponding operations. This example makes no requests.
-use fds::{Client, FdsServiceClient, OAuthProvider, Result, StorageTokenRequest};
+use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::{Client, Result};
 
 #[allow(dead_code)]
 async fn provisioned_application(

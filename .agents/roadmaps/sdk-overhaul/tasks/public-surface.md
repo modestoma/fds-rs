@@ -47,11 +47,58 @@ AC-5（全部），AC-7、AC-8（本任务范围内）。
 
 ## 执行记录
 
-尚未开始。
+2026-11-07，分支 `refactor/sdk-overhaul-public-surface`（worktree `.worktrees/public-surface`），基于 main `01aa086`。
+
+**公开模块布局（约定已写进 `crates/fds/src/lib.rs` 的 "Module layout" 一节）：**
+
+- 根只导出客户端与错误核心：`Client`、`ClientBuilder`、`ClientConfiguration`、`RetryPolicy`、`Error`、`ErrorKind`、`Dispatch`、`ResponseDetails`、`Result`。
+- 操作的输入、输出和模型按所作用的资源放进唯一的公开领域模块：
+  - `fds::object`：单对象操作、列举、批量删除、预签名，以及 `ObjectMetadata`、`UploadBody`、`GetObjectOutput`、`ByteRange`、`StorageClass`（`StorageClass` 从 `constant.rs` 移到 `object/mod.rs`）；
+  - `fds::bucket`：bucket 操作、lifecycle、access log；
+  - `fds::acl`：bucket 和对象共用的 ACL 模型；
+  - `fds::multipart`：底层分片请求（原先在 `object` 下导出的 Init/UploadPart/Complete 请求与响应）和托管的 `MultipartUpload`；
+  - `fds::oauth`；`fds::manager`（`manager` feature，内部 `download` 子模块改为私有）；`fds::cslb`（`cslb` feature）。
+- 定义所在的实现模块（`client`、`config`、`error`、`retry`、`download`、`metadata`、`upload`）全部私有，只通过上面一条路径导出；不 re-export 第三方 crate。`error.rs` 原来的模块文档移到 `Error` 类型文档上。后续 fluent-* 任务新增的 builder 放进对应领域模块，同样只有一条路径。
+
+**改为内部或删除的项目：**
+
+- `constant`、`encoding`、`auth`、`de`（以及 `client` 等实现模块）改为私有 `mod`。在 crate 根，私有 `mod` 与 `pub(crate) mod` 等价；模块内的 `pub` 项也改成了 `pub(crate)`。
+- 删除：`encoding::parse_range`、`HttpRange`（整个 `range.rs`）、`format_rfc822`、从未被实现的 `ToQuery` / `ToHeaders` trait（整个 `header.rs`）、`QueryValues` 的公开字段和未用的 `is_empty`；常量 `VERSION`、`MAX_PART_SIZE`、`MIN_PART_SIZE`、`FILE_PERM_MODE`、`TEMP_FILE_PREFIX`、`URL_COM/NET/CDN_SUFFIX`、`MODE_MULTI_BLOB`、`MODE_DIRECT`；`HttpMethod`；`bucket::ACTION_*` 常量和 `LifecycleAction` map 别名；`impl AsRef<Client> for Client`；`multipart` 中对 `CancellationToken` 的 re-export。`encoding` 的 golden 向量测试保留，原来用 `format_rfc822` 生成的值改成字面量 `"01 Jan 18 01:01 UTC"`。
+- `MAX_PART_SIZE` / `MIN_PART_SIZE` 选择删除，没有与 `MultipartOptions` 统一。依据：两者在 src、tests、examples、fds_cli 中都没有使用；数值是 Go SDK 对服务端限制的描述（5 GiB / 5 MiB），而 `MultipartOptions::new` 的 64 MiB 上限是本地内存资源限制（文档写明"不是服务端约束"），两者含义不同；服务端真实限制没有经过验证，不应作为常量承诺。
+- `auth::sign` / `HeaderLookup` 改为 `pub(crate)`。`tests/golden.rs` 原来调用 `fds::auth::sign`，签名向量这部分移到 `auth.rs` 的单元测试 `auth::tests::golden_signatures`（通过 `include_str!` 读取同一份 `tests/fixtures/golden.json`，共 8 组）。选单元测试而不是 `#[doc(hidden)]` 入口，是为了不在公开 API 里留后门；绝对 URL 和预签名向量仍在 `tests/golden.rs` 里走公开 API。
+
+**`HttpMethod` → `http::Method`：** `GeneratePresignedURLRequest` 的 `method` 字段、`new` / `expires_in` 参数，以及内部 `ClientRequest.method` 都改成 `http::Method`（与 reqwest 0.12 的 `Method` 是同一类型，`send` 直接传入，不再转换）。`Method` 不是 `Copy`，重试循环里每次 attempt 克隆一次。`fds` 不 re-export `http`，调用方自己依赖 `http = "1"`；`fds_cli` 为此新增 `http = "1"` 依赖，Cargo.lock 只多了 `fds_cli → http` 这一条依赖边（http 1.x 早已在锁文件中，没有引入新包）。CLI 的 `parse_method` 仍只接受原来的 5 个方法名，行为不变。
+
+**取消信号（最终方案）：** `MultipartUpload::upload` 改为 `upload<C: Future<Output = ()>>(&mut self, cancel: C)`，不暴露任何第三方类型。内部把它 `fuse()` 后 pin 住，在分片循环和 completion 的 `select!` 中轮询，循环结束后用 `now_or_never()` 代替原来的 `is_cancelled()`。语义与原 token 一致：信号完成后返回 `Cancelled`（completion 进行中则为 `OutcomeUnknown`），并照常执行 `CleanupPolicy`。不需要取消时传 `std::future::pending()`；tokio-util 用户传 `token.cancelled()`，超时可传 `tokio::time::sleep(..)`。`fds_cli upload --multipart` 改为直接传入一个"等待 Ctrl-C 后打印提示"的 async 块，提示文本和顺序与原来相同。
+
+**`Downloader::new`：** 参数改为 `Client`（不再是 `impl AsRef<Client>`）；`tests/manager.rs` 原来传 `Arc<Client>`，改为直接传 `Client`。
+
+**Lifecycle action 枚举：** 新增 `bucket::LifecycleAction`（`#[non_exhaustive]`），变体为 `AbortIncompleteMultipartUpload`（线上值 `"abortIncompleteMultipartUpload "`，保留尾随空格）、`Expiration`、`NonCurrentVersionExpiration` 和 `Other(String)`。`LifecycleRule.action` 改为 `BTreeMap<LifecycleAction, LifecycleBaseItem>`，字段名和 JSON key `actions` 不变。Serialize / Deserialize / Eq / Ord / Hash 都按线上字符串手写实现，没有用 derive 加 `serde(rename)`，原因有两点：（1）未知 key，包括不带空格的 `"abortIncompleteMultipartUpload"`，必须经 `Other` 原样往返，否则 get → set 会改变线上值；（2）按字符串排序后，多个 action 的输出顺序与 Go `encoding/json` 对 map key 排序的结果一致（原来的 `HashMap` 顺序不确定）。逐字节测试 `bucket::tests::lifecycle_wire_bytes_round_trip` 的期望字节先在**改动前的代码**上跑通，再在新代码上验证，覆盖 3 个已知 key、不带空格的变体、未知 key、空 map 以及 `{"rules":[...]}` 整体；另外 `lifecycle_typed_actions_match_wire_bytes` 用枚举构造的规则与同一批字节比对，`lifecycle_multiple_actions_use_sorted_go_key_order` 固定多 action 时的顺序。
+
+**CSLB resolver 结论：** `CslbResolver`（实现 `reqwest::dns::Resolve`）改为 `pub(crate)`，reqwest 类型不再出现在公开 API 中；Client 仍在 `cslb` feature 下自动安装它，可配置的仍只有 `ClientBuilder::cslb_max_nodes`。`fds::cslb` 中的其他负载均衡构件（`LoadBalancer`、`Service`、`Strategy`、`Group`、`Metrics` 等）README 明确称为"独立工具"，本任务保持公开；是否整个模块改为内部（届时 `HashedStrategy`、`StaticService` 等会变成死代码需要删除）留给用户决定，见交付中的待决问题。
+
+**同步修改：** tests、examples、fds_cli 的导入全部改为新路径（fds_cli 原有的 `use fds::*` 改为按需 glob 对应领域模块）；README 中受影响的代码片段（各段 `use fds::{..}` 的路径、预签名的 `Method`、托管分片的取消 future、lifecycle 枚举、`Downloader::new(client.clone(), ..)`、CSLB 说明）和 `docs/protocol.md` 中关于 `encoding::parse_range` 的一句。`docs/migration.md` 留给 docs-release 删除，本任务没有修改。
+
+**未纳入本任务、留给后续任务的公开面问题（只记录，没有改动）：** `GetObjectOutput::into_raw()` 返回 `reqwest::Response`（typed-responses 任务提供 Stream / AsyncRead 适配时一起处理）；`DownloadOptionsBuilder::request_limiter` 接受 `Arc<governor::DefaultDirectRateLimiter>`，同样是第三方类型（fluent-multipart-manager 任务处理）；`ClientConfiguration::endpoint` 返回 `url::Url`。
+
+**验证（均在本 worktree 实际运行）：**
+
+- 公开项审计：`RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-deps` 通过；解析 `target/doc/fds/all.html` 得到 90 个公开项，按名称去重**没有重复**，其中没有 `constant`、`encoding`、`auth`、`HttpMethod`、`HttpRange`、`parse_range`、`format_rfc822`、`VERSION`、`CancellationToken`、`CslbResolver`、`MAX/MIN_PART_SIZE`、`ACTION_*`、`HeaderLookup`。
+- `cargo rustc --locked -p fds --all-features --lib -- -W unreachable-pub`：0 条警告。clippy `-D warnings` 也没有 dead_code 或未使用项的报错。
+- `cargo test -p fds --lib bucket`（lifecycle 逐字节测试，改动前后都跑过）、`cargo test -p fds --lib golden`（`auth::tests::golden_signatures`、`encoding::query::tests::encode_golden_vector`）、`cargo test -p fds --test golden`（`golden_absolute_urls`、`golden_presigned_urls`）：全部通过。
+- README 中 29 个 rust 代码块：抽成一个临时 example（`mod snippet_N { .. }`），用 `cargo build -p fds --all-features --example` 编译通过后删除。该文件没有提交。
+- `bash scripts/check.sh` 全部通过，结果见交付一节。
 
 ## 交付
 
 合并方式：local，验证后快进合并进 main，不推送。不写 commit hash：本任务的提交信息末行是 `Roadmap: sdk-overhaul/public-surface`，用 `git log --grep` 查。
+
+- 状态：实现与验证完成，分支上是 WIP 提交，等待协调者压成一笔后合并。
+- `bash scripts/check.sh`（2026-11-07，本 worktree，退出码 0）：fmt；clippy `--all-features --all-targets -D warnings`；四种 feature 组合（默认、`--no-default-features`、`--all-features`、`--no-default-features --features cslb`）的 `cargo test -p fds -- --test-threads=1` 和 `cargo check --all-targets`；`cargo test -p fds_cli --all-features` 和 check；`cargo doc -D warnings`；`fds_cli --help`；MSRV 1.86.0 下三种组合的 test 和 check，以及 fds_cli check；`check_coverage.py`（35/35 YAML、33/33 操作）；`check_docs.py`（114 个本地链接，retired 扫描通过）；`git diff --check`。日志中共有 135 个 `test result: ok`，没有失败。依赖 mockito 的本地端口测试这次都实际运行并通过。
+- 被忽略、未验证的测试：`tests/live_acceptance.rs` 中的 2 个 live 测试需要 `FDS_LIVE=1` 和真实凭证，按决定记录由用户本地执行；`de::null_default` 的 doctest 本来就是 `ignore`。本任务只确认 `live_acceptance.rs` 改了导入路径后能编译。
+- 依赖变化：`fds_cli` 新增 `http = "1"`；Cargo.lock 只在 `fds_cli` 的依赖列表中多了 `"http"` 一行。
+- 待用户决定：`fds::cslb` 中除 resolver 以外的独立负载均衡工具是否也改为内部（这样会删掉 `HashedStrategy`、`StaticService` 等没有被 Client 使用的代码，README 中"独立工具位于 `fds::cslb`"一句也要删除）。本任务保持现状。
+- 协调者复验：审查 lib.rs 的模块布局（根下 9 个导出 + 7 个公开领域模块，实现模块私有），在任务 worktree 中完整运行 `bash scripts/check.sh`，退出码 0。cslb 独立工具是否改为内部，已作为待答问题 `cslb-public-tools` 交给用户决定。
 
 ## 启动 prompt
 

@@ -1,8 +1,10 @@
 //! Compile-only migration contract against the real SDK; main performs no I/O.
-use fds::{
-    AccessControlList, AclAction, ByteRange, Client, GetObjectRequest, InitMultipartUploadRequest,
-    ListObjectsRequest, PutObjectRequest, SetObjectACLRequest,
+use fds::acl::{AccessControlList, AclAction};
+use fds::multipart::InitMultipartUploadRequest;
+use fds::object::{
+    ByteRange, GetObjectRequest, ListObjectsRequest, PutObjectRequest, SetObjectACLRequest,
 };
+use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 
 #[allow(dead_code)]

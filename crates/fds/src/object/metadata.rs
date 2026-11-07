@@ -1,9 +1,11 @@
 //! Object metadata and basic information.
 
 use super::validate_object;
+use super::{ObjectMetadata, StorageClass};
 use crate::client::ClientRequest;
-use crate::{Client, HttpMethod, ObjectMetadata, Result, StorageClass};
+use crate::{Client, Result};
 use bytes::Bytes;
+use http::Method;
 use serde::Deserialize;
 
 /// Input of `set_object_metadata` (Go `SetObjectMetadataRequest`).
@@ -15,7 +17,7 @@ pub struct SetObjectMetadataRequest {
 }
 
 /// Result of `get_object_basic_info` (Go `ObjectBasicInfo`). `metadata` uses the
-/// entry-list form (see [`crate::metadata`]).
+/// entry-list form (see [`ObjectMetadata`](super::ObjectMetadata)).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ObjectBasicInfo {
     #[serde(
@@ -71,7 +73,7 @@ impl Client {
         object: &str,
     ) -> Result<ObjectBasicInfo> {
         validate_object(bucket, object)?;
-        let mut cr = ClientRequest::new(bucket, object, HttpMethod::Get).read_only();
+        let mut cr = ClientRequest::new(bucket, object, Method::GET).read_only();
         cr.query.add("basicInfo", "");
         self.do_json(cr).await
     }
@@ -79,7 +81,7 @@ impl Client {
     /// Get object metadata (GET `/{b}/{o}?metadata`); parsed from response headers.
     pub async fn get_object_metadata(&self, bucket: &str, object: &str) -> Result<ObjectMetadata> {
         validate_object(bucket, object)?;
-        let mut cr = ClientRequest::new(bucket, object, HttpMethod::Get).read_only();
+        let mut cr = ClientRequest::new(bucket, object, Method::GET).read_only();
         cr.query.add("metadata", "");
         let resp = self.do_request(cr).await?;
         Ok(ObjectMetadata::from_headers(resp.headers()))
@@ -89,7 +91,7 @@ impl Client {
     pub async fn set_object_metadata(&self, req: &SetObjectMetadataRequest) -> Result<()> {
         validate_object(&req.bucket_name, &req.object_name)?;
         let body = req.metadata.serialize()?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
+        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.query.add("setMetaData", "");
         cr.body = Some(Bytes::from(body).into());
         self.do_discard(cr).await

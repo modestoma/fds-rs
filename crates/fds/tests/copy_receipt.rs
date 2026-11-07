@@ -1,4 +1,5 @@
-use fds::{Client, CopyObjectRequest, Dispatch, ErrorKind, RetryPolicy};
+use fds::object::CopyObjectRequest;
+use fds::{Client, Dispatch, ErrorKind, RetryPolicy};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

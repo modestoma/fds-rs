@@ -1,8 +1,9 @@
 use chrono::{TimeZone, Utc};
-use fds::{
-    ByteRange, Client, GeneratePresignedURLRequest, GetObjectRequest, HttpMethod, ObjectMetadata,
-    PutObjectRequest,
+use fds::object::{
+    ByteRange, GeneratePresignedURLRequest, GetObjectRequest, ObjectMetadata, PutObjectRequest,
 };
+use fds::Client;
+use http::Method;
 use std::time::Duration;
 
 fn client(endpoint: impl Into<String>) -> Client {
@@ -199,17 +200,17 @@ async fn output_preserves_errors_and_raw_escape_hatch() {
 fn typed_presign_keeps_wire_signature_and_milliseconds() {
     let client = client("https://cnbj1.fds.api.xiaomi.com");
     let expiry = Utc.timestamp_millis_opt(1_800_000_000_123).unwrap();
-    let request = GeneratePresignedURLRequest::new("b", "a/b +", HttpMethod::Head, expiry);
+    let request = GeneratePresignedURLRequest::new("b", "a/b +", Method::HEAD, expiry);
     let old = client.generate_presigned_url(&request).unwrap();
     assert_eq!(request.generate(&client).unwrap(), old);
     assert!(old.contains("Expires=1800000000123"));
     assert!(old.contains("metadata="));
     for ttl in [Duration::ZERO, Duration::from_nanos(1), Duration::MAX] {
-        assert!(GeneratePresignedURLRequest::expires_in("b", "o", HttpMethod::Get, ttl).is_err());
+        assert!(GeneratePresignedURLRequest::expires_in("b", "o", Method::GET, ttl).is_err());
     }
     let before = Utc::now();
     let request =
-        GeneratePresignedURLRequest::expires_in("b", "o", HttpMethod::Get, Duration::from_secs(60))
+        GeneratePresignedURLRequest::expires_in("b", "o", Method::GET, Duration::from_secs(60))
             .unwrap();
     assert!(request.expiration >= before + chrono::Duration::seconds(60));
     assert!(request.expiration <= Utc::now() + chrono::Duration::seconds(60));
@@ -268,7 +269,7 @@ async fn acl_builder_keeps_service_default_and_version() {
         .with_status(200)
         .create_async()
         .await;
-    fds::SetObjectACLRequest::new("b", "o", fds::AccessControlList::default())
+    fds::object::SetObjectACLRequest::new("b", "o", fds::acl::AccessControlList::default())
         .version_id("v1")
         .send(&client(server.url()))
         .await
@@ -325,7 +326,7 @@ async fn file_upload_helper_keeps_body_and_options() {
         .with_body(r#"{"objectName":"o"}"#)
         .create_async()
         .await;
-    let upload = fds::PutObjectRequest::from_file("b", "o", &path)
+    let upload = fds::object::PutObjectRequest::from_file("b", "o", &path)
         .await
         .unwrap();
     let result = upload
@@ -335,7 +336,7 @@ async fn file_upload_helper_keeps_body_and_options() {
     tokio::fs::remove_file(&path).await.unwrap();
     assert_eq!(result.unwrap().object_name, "o");
     assert!(matches!(
-        fds::PutObjectRequest::from_file("b", "o", &path).await,
+        fds::object::PutObjectRequest::from_file("b", "o", &path).await,
         Err(e) if e.kind() == fds::ErrorKind::Io
     ));
     stub.assert_async().await;
@@ -343,7 +344,7 @@ async fn file_upload_helper_keeps_body_and_options() {
 
 #[tokio::test]
 async fn multipart_helpers_bind_identity_and_preserve_receipts() {
-    use fds::InitMultipartUploadRequest;
+    use fds::multipart::InitMultipartUploadRequest;
     let mut server = mockito::Server::new_async().await;
     let init = server
         .mock("PUT", "/b/a%2Fb?uploads=")
@@ -403,21 +404,27 @@ async fn direct_client_entry_points_validate_before_transport() {
     for result in [
         client.head_object("", "o").await.map(|_| ()),
         client
-            .copy_object(&fds::CopyObjectRequest::new("b", "", "b", "o"))
+            .copy_object(&fds::object::CopyObjectRequest::new("b", "", "b", "o"))
             .await,
         client
             .put_object(PutObjectRequest::new("b", "", vec![]))
             .await
             .map(|_| ()),
         client
-            .list_objects(&fds::ListObjectsRequest::new("b").max_keys(0))
+            .list_objects(&fds::object::ListObjectsRequest::new("b").max_keys(0))
             .await
             .map(|_| ()),
         client
-            .upload_part(fds::UploadPartRequest::new("b", "o", "id", 0, vec![]))
+            .upload_part(fds::multipart::UploadPartRequest::new(
+                "b",
+                "o",
+                "id",
+                0,
+                vec![],
+            ))
             .await
             .map(|_| ()),
-        fds::InitMultipartUploadResponse::default()
+        fds::multipart::InitMultipartUploadResponse::default()
             .abort(&client)
             .await,
     ] {

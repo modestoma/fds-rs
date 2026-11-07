@@ -1,9 +1,6 @@
-//! Struct → query-string / header / range encoders. Ports `fds/httpparser/`.
+//! Query-string encoding. Ports `fds/httpparser/`. Crate-internal: the
+//! byte-exact encoding is an implementation detail.
 
-pub mod header;
-pub mod query;
-pub mod range;
+mod query;
 
-pub use header::ToHeaders;
-pub use query::{format_rfc822, go_query_escape, QueryValues, ToQuery};
-pub use range::{parse_range, HttpRange};
+pub(crate) use query::{go_query_escape, QueryValues};
