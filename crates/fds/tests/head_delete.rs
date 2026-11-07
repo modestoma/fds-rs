@@ -37,7 +37,7 @@ async fn head_metadata_status_and_encoded_key() {
             .with_header("x-xiaomi-meta-tag", "value")
             .create_async()
             .await;
-        let result = client(&s).head_object("b", "p/a +").await;
+        let result = client(&s).head_object("b", "p/a +").send().await;
         match status {
             200 => {
                 let md = result.unwrap().unwrap();

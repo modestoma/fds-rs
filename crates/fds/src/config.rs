@@ -177,7 +177,7 @@ impl ClientBuilder {
     /// is still progressing fails with a timeout when the deadline passes. It
     /// applies to each attempt separately, not to all retries together.
     /// Requests that support a per-request `timeout` (for example
-    /// [`GetObjectRequest::timeout`](crate::object::GetObjectRequest::timeout)) override
+    /// [`GetObject::timeout`](crate::object::GetObject::timeout)) override
     /// this value. Must be nonzero and representable.
     pub fn request_timeout(mut self, value: Duration) -> Self {
         self.request_timeout = Some(value);

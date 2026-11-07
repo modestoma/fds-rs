@@ -9,9 +9,7 @@
 
 use std::error::Error;
 
-use fds::object::{
-    GeneratePresignedURLRequest, GetObjectRequest, ListObjectsRequest, PutObjectRequest,
-};
+use fds::object::ListObjectsRequest;
 use fds::Client;
 use http::Method;
 
@@ -34,14 +32,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let object = "quickstart/hello.txt";
 
-    PutObjectRequest::new(&bucket, object, b"hello fds from rust".to_vec())
+    client
+        .put_object(&bucket, object, b"hello fds from rust".to_vec())
         .content_type("text/plain")
-        .send(&client)
+        .send()
         .await?;
     println!("put {bucket}/{object}");
 
-    let bytes = GetObjectRequest::new(&bucket, object)
-        .send(&client)
+    let bytes = client
+        .get_object(&bucket, object)
+        .send()
         .await?
         .bytes()
         .await?;
@@ -59,13 +59,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("  - {} ({} bytes)", o.object_name, o.size);
     }
 
-    let url = GeneratePresignedURLRequest::expires_in(
-        &bucket,
-        object,
-        Method::GET,
-        std::time::Duration::from_secs(3600),
-    )?
-    .generate(&client)?;
+    let url = client
+        .presign_object(&bucket, object)
+        .method(Method::GET)
+        .expires_in(std::time::Duration::from_secs(3600))
+        .build()?;
     println!("presigned GET url:\n{url}");
 
     Ok(())

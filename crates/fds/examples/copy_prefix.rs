@@ -2,7 +2,7 @@
 //! 环境变量：FDS_ENDPOINT / FDS_ACCESS_KEY_ID / FDS_ACCESS_KEY_SECRET。
 //! 运行：cargo run --example copy_prefix -- SRC_BUCKET SRC_PREFIX DST_BUCKET DST_PREFIX
 //! 目标同名对象可能被覆盖；失败保留已复制对象，源对象不删除。
-use fds::object::{CopyObjectRequest, ListObjectsRequest};
+use fds::object::ListObjectsRequest;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 use std::error::Error;
@@ -45,16 +45,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .ok_or("listing returned an object outside the requested prefix")?;
         let target_key = format!("{target_prefix}{suffix}");
         let expected = u64::try_from(object.size)?;
-        CopyObjectRequest::new(
-            source_bucket,
-            &object.object_name,
-            target_bucket,
-            &target_key,
-        )
-        .send(&client)
-        .await?;
+        client
+            .copy_object(
+                (source_bucket, &object.object_name),
+                (target_bucket, &target_key),
+            )
+            .send()
+            .await?;
         let head = client
             .head_object(target_bucket, &target_key)
+            .send()
             .await?
             .ok_or("copied object was not found by HEAD")?;
         let actual: u64 = head

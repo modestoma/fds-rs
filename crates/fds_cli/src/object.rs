@@ -164,7 +164,8 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             expect,
             content_disposition,
         } => {
-            let mut request = PutObjectRequest::new(bucket, object, body.load().await?)
+            let mut request = client
+                .put_object(bucket, object, body.load().await?)
                 .metadata(metadata.build()?);
             if let Some(value) = expires {
                 request = request.expires(*value);
@@ -175,22 +176,24 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             if let Some(value) = content_disposition {
                 request = request.content_disposition(value);
             }
-            print_json(&output::put(&request.send(client).await?))?;
+            print_json(&output::put(&request.send().await?))?;
         }
-        ObjectCmd::Head { bucket, object } => match client.head_object(bucket, object).await? {
-            Some(md) => print_json(md.as_map())?,
-            None => println!("null"),
-        },
+        ObjectCmd::Head { bucket, object } => {
+            match client.head_object(bucket, object).send().await? {
+                Some(md) => print_json(md.as_map())?,
+                None => println!("null"),
+            }
+        }
         ObjectCmd::Prefetch { bucket, object } => {
-            client.prefetch_object(bucket, object).await?;
+            client.prefetch_object(bucket, object).send().await?;
             print_json(&serde_json::json!({"acknowledged":true,"completion_confirmed":false}))?;
         }
         ObjectCmd::Refresh { bucket, object } => {
-            client.refresh_object(bucket, object).await?;
+            client.refresh_object(bucket, object).send().await?;
             print_json(&serde_json::json!({"acknowledged":true,"completion_confirmed":false}))?;
         }
         ObjectCmd::Url { bucket, object } => {
-            println!("{}", client.generate_absolute_object_url(bucket, object)?)
+            println!("{}", client.absolute_object_url(bucket, object)?)
         }
         ObjectCmd::Presign {
             bucket,
@@ -201,15 +204,15 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             metadata,
         } => {
             let duration = std::time::Duration::from_secs(*expires);
-            let request = GeneratePresignedURLRequest::expires_in(
-                bucket,
-                object,
-                parse_method(method)?,
-                duration,
-            )?
-            .cdn(*cdn)
-            .metadata(metadata.build()?);
-            println!("{}", request.generate(client)?);
+            let mut request = client
+                .presign_object(bucket, object)
+                .method(parse_method(method)?)
+                .expires_in(duration)
+                .metadata(metadata.build()?);
+            if *cdn {
+                request = request.cdn();
+            }
+            println!("{}", request.build()?);
         }
         ObjectCmd::SetAcl {
             bucket,
@@ -218,12 +221,13 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             action,
             version_id,
         } => {
-            let mut request =
-                SetObjectACLRequest::new(bucket, object, read_json(file)?).action(action.sdk());
+            let mut request = client
+                .set_object_acl(bucket, object, read_json(file)?)
+                .action(action.sdk());
             if let Some(version) = version_id {
                 request = request.version_id(version);
             }
-            request.send(client).await?;
+            request.send().await?;
             output::ok()?;
         }
         ObjectCmd::Get {
@@ -233,14 +237,11 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             out,
             show_headers,
         } => {
-            let output = client
-                .get_object(&GetObjectRequest {
-                    bucket_name: bucket.clone(),
-                    object_name: object.clone(),
-                    range: range.as_deref().map(str::parse).transpose()?,
-                    timeout: None,
-                })
-                .await?;
+            let mut request = client.get_object(bucket, object);
+            if let Some(range) = range.as_deref().map(str::parse).transpose()? {
+                request = request.range(range);
+            }
+            let output = request.send().await?;
             if *show_headers {
                 let headers: Vec<_> = output
                     .headers()
@@ -266,7 +267,7 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
         }
 
         ObjectCmd::Exists { bucket, object } => {
-            println!("{}", client.does_object_exist(bucket, object).await?)
+            println!("{}", client.object_exists(bucket, object).send().await?)
         }
         ObjectCmd::Copy {
             src_bucket,
@@ -275,21 +276,17 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             dst_object,
         } => {
             client
-                .copy_object(&CopyObjectRequest {
-                    source_bucket_name: src_bucket.clone(),
-                    source_object_name: src_object.clone(),
-                    target_bucket_name: dst_bucket.clone(),
-                    target_object_name: dst_object.clone(),
-                })
+                .copy_object((src_bucket, src_object), (dst_bucket, dst_object))
+                .send()
                 .await?;
             output::ok()?;
         }
         ObjectCmd::Rename { bucket, src, dst } => {
-            client.rename_object(bucket, src, dst).await?;
+            client.rename_object(bucket, src, dst).send().await?;
             output::ok()?;
         }
         ObjectCmd::Delete { bucket, object } => {
-            client.delete_object(bucket, object).await?;
+            client.delete_object(bucket, object).send().await?;
             output::ok()?;
         }
         ObjectCmd::DeleteMany {
@@ -346,14 +343,14 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
         }
 
         ObjectCmd::Restore { bucket, object } => {
-            client.restore_object(bucket, object).await?;
+            client.restore_object(bucket, object).send().await?;
             output::ok()?;
         }
         ObjectCmd::BasicInfo { bucket, object } => print_json(&output::basic(
-            &client.get_object_basic_info(bucket, object).await?,
+            &client.get_object_basic_info(bucket, object).send().await?,
         ))?,
         ObjectCmd::GetMetadata { bucket, object } => {
-            let md = client.get_object_metadata(bucket, object).await?;
+            let md = client.get_object_metadata(bucket, object).send().await?;
             print_json(md.as_map())?;
         }
         ObjectCmd::SetMetadata {
@@ -362,11 +359,8 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             metadata,
         } => {
             client
-                .set_object_metadata(&SetObjectMetadataRequest {
-                    bucket_name: bucket.clone(),
-                    object_name: object.clone(),
-                    metadata: metadata.build()?,
-                })
+                .set_object_metadata(bucket, object, metadata.build()?)
+                .send()
                 .await?;
             output::ok()?;
         }
@@ -375,17 +369,15 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             object,
             version_id,
         } => {
-            let acl = client
-                .get_object_acl(&GetObjectACLRequest {
-                    bucket_name: bucket.clone(),
-                    object_name: object.clone(),
-                    version_id: version_id.clone(),
-                })
-                .await?;
+            let mut request = client.get_object_acl(bucket, object);
+            if let Some(version) = version_id {
+                request = request.version_id(version);
+            }
+            let acl = request.send().await?;
             print_json(&acl)?;
         }
         ObjectCmd::SetPublic { bucket, object } => {
-            client.set_object_public(bucket, object).await?;
+            client.set_object_public(bucket, object).send().await?;
             output::ok()?;
         }
     }

@@ -25,9 +25,17 @@ async fn cache_operations_use_query_flags_and_accept_empty_or_numeric_acknowledg
                 .create_async()
                 .await;
             if operation == "prefetch" {
-                client.prefetch_object("b", "dir/a +%中").await.unwrap();
+                client
+                    .prefetch_object("b", "dir/a +%中")
+                    .send()
+                    .await
+                    .unwrap();
             } else {
-                client.refresh_object("b", "dir/a +%中").await.unwrap();
+                client
+                    .refresh_object("b", "dir/a +%中")
+                    .send()
+                    .await
+                    .unwrap();
             }
             mock.assert_async().await;
         }
@@ -61,9 +69,9 @@ async fn cache_failures_preserve_status_and_do_not_retry_mutations() {
                 .create_async()
                 .await;
             let error = if operation == "prefetch" {
-                client.prefetch_object("b", "o").await.unwrap_err()
+                client.prefetch_object("b", "o").send().await.unwrap_err()
             } else {
-                client.refresh_object("b", "o").await.unwrap_err()
+                client.refresh_object("b", "o").send().await.unwrap_err()
             };
             assert_eq!(error.status().map(|s| s.as_u16()), Some(status as u16));
             assert_eq!(error.request_id(), Some("cache-request"));

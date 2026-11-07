@@ -161,18 +161,14 @@ async fn oauth_operations_use_bound_app_token_and_reject_presigning() {
     for (path, body) in [("/", "{\"owner\":{\"id\":\"user\"},\"buckets\":[{\"name\":\"b\",\"orgId\":\"org\",\"creationTime\":123,\"usedSpace\":4,\"numObjects\":1}]}"), ("/b/dir%2Fa%20%2B%25%E4%B8%AD", "content")] {
         let mock = server.mock("GET", path).match_header("authorization", "OAuth").match_query(Matcher::AllOf(vec![Matcher::UrlEncoded("appId".into(),"app +&中".into()),Matcher::UrlEncoded("storageAccessToken".into(),"storage-secret +&%中".into())])).with_body(body).create_async().await;
         if path == "/" { let output = client.list_app_buckets().await.unwrap(); assert_eq!(output.buckets[0].org_id,"org"); }
-        else { let output = fds::object::GetObjectRequest::new("b","dir/a +%中").send(&client).await.unwrap(); assert!(!format!("{output:?}").contains("secret")); let raw = output.into_raw(); assert!(!format!("{raw:?}").contains("secret")); assert!(raw.url().query().is_none()); assert_eq!(raw.bytes().await.unwrap(),"content"); }
+        else { let output = client.get_object("b","dir/a +%中").send().await.unwrap(); assert!(!format!("{output:?}").contains("secret")); let raw = output.into_raw(); assert!(!format!("{raw:?}").contains("secret")); assert!(raw.url().query().is_none()); assert_eq!(raw.bytes().await.unwrap(),"content"); }
         mock.assert_async().await;
     }
-    let req = fds::object::GeneratePresignedURLRequest {
-        bucket_name: "b".into(),
-        object_name: "o".into(),
-        method: http::Method::GET,
-        expiration: Utc::now() + Duration::minutes(1),
-        cdn: false,
-        metadata: None,
-    };
-    assert!(client.generate_presigned_url(&req).is_err());
+    let presign = client
+        .presign_object("b", "o")
+        .expires_at(Utc::now() + Duration::minutes(1))
+        .build();
+    assert!(presign.is_err());
 }
 #[tokio::test]
 async fn token_errors_never_retain_response_secrets_and_exchange_is_not_retried() {

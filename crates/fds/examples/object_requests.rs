@@ -1,5 +1,5 @@
 //! Compiled against the real SDK; requires explicit endpoint and credentials to run.
-use fds::object::{ByteRange, GeneratePresignedURLRequest, GetObjectRequest, PutObjectRequest};
+use fds::object::ByteRange;
 use fds::Client;
 use http::Method;
 use std::time::Duration;
@@ -14,13 +14,15 @@ async fn main() -> fds::Result<()> {
         )
         .build()?;
     let bucket = std::env::var("FDS_BUCKET").expect("FDS_BUCKET");
-    PutObjectRequest::new(&bucket, "example.txt", b"hello".to_vec())
+    client
+        .put_object(&bucket, "example.txt", b"hello".to_vec())
         .content_type("text/plain")
-        .send(&client)
+        .send()
         .await?;
-    let mut output = GetObjectRequest::new(&bucket, "example.txt")
+    let mut output = client
+        .get_object(&bucket, "example.txt")
         .range(ByteRange::inclusive(0, 4)?)
-        .send(&client)
+        .send()
         .await?;
     println!(
         "status={}, content-type={:?}",
@@ -31,12 +33,10 @@ async fn main() -> fds::Result<()> {
         println!("received {} bytes", chunk.len());
     }
     // The URL is a credential: pass it to its intended consumer, do not log it.
-    let _url = GeneratePresignedURLRequest::expires_in(
-        &bucket,
-        "example.txt",
-        Method::GET,
-        Duration::from_secs(60),
-    )?
-    .generate(&client)?;
+    let _url = client
+        .presign_object(&bucket, "example.txt")
+        .method(Method::GET)
+        .expires_in(Duration::from_secs(60))
+        .build()?;
     Ok(())
 }

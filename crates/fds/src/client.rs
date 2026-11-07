@@ -71,6 +71,15 @@ impl<'a> ClientRequest<'a> {
         self
     }
 
+    /// Apply an operation builder's per-request deadline; zero or
+    /// unrepresentable values are an invalid-input error.
+    pub(crate) fn with_timeout(mut self, timeout: Option<Duration>) -> Result<Self> {
+        self.timeout = timeout
+            .map(|t| crate::config::validate_timeout(t, ErrorKind::InvalidInput))
+            .transpose()?;
+        Ok(self)
+    }
+
     /// A bare request with empty query/headers/metadata/body.
     pub(crate) fn new(bucket: &'a str, object: &'a str, method: Method) -> Self {
         Self {

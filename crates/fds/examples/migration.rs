@@ -1,36 +1,35 @@
 //! Compile-only migration contract against the real SDK; main performs no I/O.
 use fds::acl::{AccessControlList, AclAction};
 use fds::multipart::InitMultipartUploadRequest;
-use fds::object::{
-    ByteRange, GetObjectRequest, ListObjectsRequest, PutObjectRequest, SetObjectACLRequest,
-};
+use fds::object::{ByteRange, ListObjectsRequest};
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 
 #[allow(dead_code)]
 async fn migrate(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
-    PutObjectRequest::new(bucket, key, b"hello".to_vec())
+    client
+        .put_object(bucket, key, b"hello".to_vec())
         .content_type("text/plain")
-        .send(client)
+        .send()
         .await?;
-    let mut output = GetObjectRequest::new(bucket, key)
+    let mut output = client
+        .get_object(bucket, key)
         .range(ByteRange::inclusive(0, 4)?)
-        .send(client)
+        .send()
         .await?;
     while let Some(chunk) = output.chunk().await? {
         let _ = chunk;
     }
-    let _metadata = client.head_object(bucket, key).await?;
+    let _metadata = client.head_object(bucket, key).send().await?;
     let pages = ListObjectsRequest::new(bucket).prefix(key).pages(client);
     pin_mut!(pages);
     while let Some(page) = pages.next().await {
         let _ = page?;
     }
     client
-        .set_object_acl(
-            &SetObjectACLRequest::new(bucket, key, AccessControlList::default())
-                .action(AclAction::Add),
-        )
+        .set_object_acl(bucket, key, AccessControlList::default())
+        .action(AclAction::Add)
+        .send()
         .await?;
     let init = client
         .init_multipart_upload(&InitMultipartUploadRequest {

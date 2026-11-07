@@ -1,12 +1,87 @@
 //! Single-object operations, listing, bulk delete, presigned URLs and the
-//! object models. Requests expose constructors/options and delegate execution
-//! to [`Client`](crate::Client). Upload requests own their bodies.
+//! object models.
+//!
+//! Each single-object operation starts from a [`Client`](crate::Client)
+//! method that takes the required arguments and returns an operation builder
+//! defined here; optional settings are chained, and `send().await` runs it.
+//! See the crate-level "Operation builders" section for the convention.
+//!
+//! ```no_run
+//! # async fn example(client: &fds::Client) -> fds::Result<()> {
+//! use std::time::Duration;
+//!
+//! let head = client
+//!     .get_object("bucket", "key")
+//!     .range(fds::object::ByteRange::inclusive(0, 1023)?)
+//!     .timeout(Duration::from_secs(30))
+//!     .send()
+//!     .await?
+//!     .bytes()
+//!     .await?;
+//! # let _ = head;
+//! # Ok(()) }
+//! ```
 //!
 //! The low-level multipart requests live in [`crate::multipart`].
 
 use crate::{Error, Result};
 use reqwest::header::{HeaderMap, HeaderName};
 use serde::{Deserialize, Serialize};
+
+/// The `timeout` option shared by every operation builder; the builder needs a
+/// `timeout: Option<Duration>` field.
+macro_rules! timeout_option {
+    () => {
+        /// Set a total deadline for this request only, overriding the
+        /// client-wide [`request_timeout`](crate::ClientBuilder::request_timeout)
+        /// whether that is set or not.
+        ///
+        /// The deadline runs from connecting until the response has been read.
+        /// When the operation is retried it applies to each attempt
+        /// separately. The client's connect timeout and idle
+        /// [`read_timeout`](crate::ClientBuilder::read_timeout) still apply.
+        /// Must be nonzero and representable; otherwise `send` fails with
+        /// [`ErrorKind::InvalidInput`](crate::ErrorKind::InvalidInput).
+        pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+            self.timeout = Some(timeout);
+            self
+        }
+    };
+}
+
+/// The shape of a builder whose only required arguments are a bucket and an
+/// object: private fields, a crate-private constructor and `timeout`. Each
+/// operation writes its own `send`.
+macro_rules! object_builder {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug)]
+        #[must_use = "an operation builder does nothing until `send` is awaited"]
+        pub struct $name {
+            client: crate::Client,
+            bucket: String,
+            object: String,
+            timeout: Option<std::time::Duration>,
+        }
+
+        impl $name {
+            pub(crate) fn new(
+                client: &crate::Client,
+                bucket: impl Into<String>,
+                object: impl Into<String>,
+            ) -> Self {
+                Self {
+                    client: client.clone(),
+                    bucket: bucket.into(),
+                    object: object.into(),
+                    timeout: None,
+                }
+            }
+
+            timeout_option!();
+        }
+    };
+}
 
 mod acl;
 mod basic;
@@ -17,13 +92,16 @@ pub(crate) mod multipart;
 mod presign;
 mod put;
 
-pub use acl::{GetObjectACLRequest, SetObjectACLRequest};
-pub use basic::{CopyObjectRequest, CopyObjectResponse, GetObjectRequest};
-pub use delete::{DeleteObjectFailure, DeleteObjectsOutput};
+pub use acl::{GetObjectAcl, SetObjectAcl, SetObjectPublic};
+pub use basic::{
+    CopyObject, CopyObjectResponse, GetObject, HeadObject, ObjectExists, PrefetchObject,
+    RefreshObject, RenameObject, RestoreObject,
+};
+pub use delete::{DeleteObject, DeleteObjectFailure, DeleteObjectsOutput};
 pub use listing::{ListObjectsRequest, ObjectListing, ObjectSummary};
-pub use metadata::{ObjectBasicInfo, SetObjectMetadataRequest};
-pub use presign::GeneratePresignedURLRequest;
-pub use put::{PutObjectRequest, PutObjectResponse};
+pub use metadata::{GetObjectBasicInfo, GetObjectMetadata, ObjectBasicInfo, SetObjectMetadata};
+pub use presign::PresignObject;
+pub use put::{PutObject, PutObjectResponse};
 
 pub use crate::download::{ByteRange, GetObjectOutput};
 pub use crate::metadata::ObjectMetadata;

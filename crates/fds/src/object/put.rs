@@ -1,4 +1,4 @@
-//! Owned PUT requests and transport.
+//! Single-request object uploads.
 
 use super::{insert_header_opt, validate_object};
 use super::{ObjectMetadata, UploadBody};
@@ -8,15 +8,17 @@ use chrono::{DateTime, Utc};
 use http::Method;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
-use std::path::Path;
 use std::time::Duration;
 
-/// Single-use PUT request. The body owns bytes or a known-length stream.
+/// Builder for [`Client::put_object`]. It owns the body (bytes or a
+/// known-length stream), so it is single-use.
 #[derive(Debug)]
-pub struct PutObjectRequest {
-    bucket_name: String,
-    object_name: String,
-    body: crate::object::UploadBody,
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct PutObject {
+    client: Client,
+    bucket: String,
+    object: String,
+    body: UploadBody,
     cache_control: Option<String>,
     content_disposition: Option<String>,
     content_encoding: Option<String>,
@@ -43,42 +45,7 @@ crate::de::lenient! {
     }
 }
 
-impl PutObjectRequest {
-    pub fn new(
-        bucket: impl Into<String>,
-        object: impl Into<String>,
-        body: impl Into<UploadBody>,
-    ) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            cache_control: None,
-            content_disposition: None,
-            content_encoding: None,
-            content_type: None,
-            content_md5: None,
-            expect: None,
-            metadata: None,
-            body: body.into(),
-            expires: None,
-            timeout: None,
-        }
-    }
-    /// Open a regular file and build a single-use PUT, without sending it.
-    /// Keep the file unchanged until completion. Set `content_md5` before sending
-    /// if the client requires MD5; neither MIME type nor checksum is inferred.
-    pub async fn from_file(
-        bucket: impl Into<String>,
-        object: impl Into<String>,
-        path: impl AsRef<Path>,
-    ) -> Result<Self> {
-        Ok(Self::new(
-            bucket,
-            object,
-            UploadBody::from_file(path).await?,
-        ))
-    }
-
+impl PutObject {
     pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
         self.metadata = Some(metadata);
         self
@@ -99,74 +66,117 @@ impl PutObjectRequest {
     /// timeout and idle [`read_timeout`](crate::ClientBuilder::read_timeout)
     /// still apply; the latter is reset by upload progress, so it only fails an
     /// upload that stops moving. Must be nonzero and representable; otherwise
-    /// sending fails with an invalid-input error.
+    /// `send` fails with an invalid-input error.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
-    pub async fn send(self, client: &Client) -> Result<PutObjectResponse> {
-        client.put_object(self).await
-    }
 
+    /// Empty values are not sent.
     pub fn cache_control(mut self, value: impl Into<String>) -> Self {
         self.cache_control = Some(value.into());
         self
     }
 
+    /// Empty values are not sent.
     pub fn content_disposition(mut self, value: impl Into<String>) -> Self {
         self.content_disposition = Some(value.into());
         self
     }
 
+    /// Empty values are not sent.
     pub fn content_encoding(mut self, value: impl Into<String>) -> Self {
         self.content_encoding = Some(value.into());
         self
     }
 
+    /// Empty values are not sent. Not inferred from the object name or body.
     pub fn content_type(mut self, value: impl Into<String>) -> Self {
         self.content_type = Some(value.into());
         self
     }
 
+    /// Required for stream and file bodies when the client enables MD5
+    /// calculation; byte bodies are hashed automatically. Empty values are not
+    /// sent.
     pub fn content_md5(mut self, value: impl Into<String>) -> Self {
         self.content_md5 = Some(value.into());
         self
     }
 
+    /// Empty values are not sent.
     pub fn expect(mut self, value: impl Into<String>) -> Self {
         self.expect = Some(value.into());
         self
     }
-}
 
-impl Client {
-    /// Create/overwrite an object, consuming its body without copying or retrying it.
-    pub async fn put_object(&self, req: PutObjectRequest) -> Result<PutObjectResponse> {
-        validate_object(&req.bucket_name, &req.object_name)?;
+    /// PUT `/{bucket}/{object}`, consuming the body without copying or
+    /// retrying it.
+    pub async fn send(self) -> Result<PutObjectResponse> {
+        validate_object(&self.bucket, &self.object)?;
         let mut headers = HeaderMap::new();
         for (name, value) in [
-            ("cache-control", &req.cache_control),
-            ("content-disposition", &req.content_disposition),
-            ("content-encoding", &req.content_encoding),
-            ("content-type", &req.content_type),
-            ("content-md5", &req.content_md5),
-            ("expect", &req.expect),
+            ("cache-control", &self.cache_control),
+            ("content-disposition", &self.content_disposition),
+            ("content-encoding", &self.content_encoding),
+            ("content-type", &self.content_type),
+            ("content-md5", &self.content_md5),
+            ("expect", &self.expect),
         ] {
             insert_header_opt(&mut headers, name, value.as_deref())?;
         }
 
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
-        cr.timeout = req
-            .timeout
-            .map(|t| crate::config::validate_timeout(t, crate::ErrorKind::InvalidInput))
-            .transpose()?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .with_timeout(self.timeout)?;
         cr.headers = headers;
-        cr.metadata = req.metadata.as_ref();
-        cr.body = Some(req.body);
-        if let Some(expires) = req.expires {
+        cr.metadata = self.metadata.as_ref();
+        cr.body = Some(self.body);
+        if let Some(expires) = self.expires {
             cr.query
                 .add("expires", expires.timestamp_millis().to_string());
         }
-        self.do_json(cr).await
+        self.client.do_json(cr).await
+    }
+}
+
+impl Client {
+    /// Create or overwrite an object with an owned body: bytes, or a
+    /// known-length stream or file through [`UploadBody`].
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// use fds::object::UploadBody;
+    ///
+    /// client
+    ///     .put_object("bucket", "hello.txt", b"hello".to_vec())
+    ///     .content_type("text/plain")
+    ///     .send()
+    ///     .await?;
+    /// // Keep the file unchanged until the upload completes.
+    /// let file = UploadBody::from_file("local.bin").await?;
+    /// client.put_object("bucket", "local.bin", file).send().await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn put_object(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        body: impl Into<UploadBody>,
+    ) -> PutObject {
+        PutObject {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            body: body.into(),
+            cache_control: None,
+            content_disposition: None,
+            content_encoding: None,
+            content_type: None,
+            content_md5: None,
+            expect: None,
+            metadata: None,
+            expires: None,
+            timeout: None,
+        }
     }
 }

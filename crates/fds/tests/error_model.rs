@@ -1,5 +1,4 @@
 //! The unified error model: status mapping, kinds, dispatch and redaction.
-use fds::object::{CopyObjectRequest, PutObjectRequest};
 use fds::{Client, Dispatch, ErrorKind};
 use mockito::Matcher;
 use std::error::Error as _;
@@ -51,7 +50,7 @@ async fn rejected_statuses_map_to_kinds() {
             .with_body(r#"{"code":"SomeCode"}"#)
             .create_async()
             .await;
-        let error = c.delete_object("b", "o").await.unwrap_err();
+        let error = c.delete_object("b", "o").send().await.unwrap_err();
         assert_eq!(error.kind(), kind, "{status}: {error:?}");
         assert_eq!(error.status().map(|s| s.as_u16()), Some(status as u16));
         assert_eq!(error.dispatch(), Dispatch::Sent);
@@ -77,8 +76,9 @@ async fn protocol_violations_are_classified() {
             .with_body(body)
             .create_async()
             .await;
-        let error = PutObjectRequest::new("b", "o", b"x".to_vec())
-            .send(&client(server.url()))
+        let error = client(server.url())
+            .put_object("b", "o", b"x".to_vec())
+            .send()
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ProtocolViolation, "{error:?}");
@@ -93,8 +93,9 @@ async fn protocol_violations_are_classified() {
         .with_body(r#"{"bucketName":"dst","objectName":"other"}"#)
         .create_async()
         .await;
-    let error = CopyObjectRequest::new("src", "key", "dst", "key")
-        .send(&client(server.url()))
+    let error = client(server.url())
+        .copy_object(("src", "key"), ("dst", "key"))
+        .send()
         .await
         .unwrap_err();
     assert!(error.is_outcome_unknown());
@@ -110,7 +111,7 @@ async fn protocol_violations_are_classified() {
 #[tokio::test]
 async fn caller_and_configuration_errors_are_distinct() {
     let c = client("http://127.0.0.1:1");
-    let error = c.delete_object("", "o").await.unwrap_err();
+    let error = c.delete_object("", "o").send().await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
     assert_eq!(error.dispatch(), Dispatch::NotSent);
     assert!(error.response().is_none());
@@ -137,20 +138,22 @@ async fn caller_and_configuration_errors_are_distinct() {
 async fn dispatch_tracks_whether_the_request_was_sent() {
     // Local validation: nothing sent.
     let c = client(refused_endpoint());
-    let error = PutObjectRequest::new("", "o", b"x".to_vec())
-        .send(&c)
+    let error = c
+        .put_object("", "o", b"x".to_vec())
+        .send()
         .await
         .unwrap_err();
     assert_eq!(error.dispatch(), Dispatch::NotSent);
     // Connection refused: nothing sent, transport kind, retryable.
-    let error = c.delete_object("b", "o").await.unwrap_err();
+    let error = c.delete_object("b", "o").send().await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Transport, "{error:?}");
     assert_eq!(error.dispatch(), Dispatch::NotSent);
     assert!(error.is_retryable());
     assert!(error.source().is_some());
     // A refused copy is not outcome-unknown: it never reached the service.
-    let error = CopyObjectRequest::new("src", "k", "dst", "k")
-        .send(&c)
+    let error = c
+        .copy_object(("src", "k"), ("dst", "k"))
+        .send()
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Transport, "{error:?}");
@@ -171,6 +174,7 @@ async fn dispatch_tracks_whether_the_request_was_sent() {
         .await;
     let error = client(server.url())
         .delete_object("b", "o")
+        .send()
         .await
         .unwrap_err();
     assert_eq!(error.dispatch(), Dispatch::Sent);
@@ -205,7 +209,8 @@ async fn debug_is_diagnostic_and_omits_credentials() {
         .create_async()
         .await;
     let error = client(server.url())
-        .get_object(&fds::object::GetObjectRequest::new("b", "o"))
+        .get_object("b", "o")
+        .send()
         .await
         .unwrap_err();
     let text = chain(&error);
@@ -223,7 +228,8 @@ async fn debug_is_diagnostic_and_omits_credentials() {
 
     // Transport failure: the source chain is printed, the signed URL is not.
     let error = client(refused_endpoint())
-        .get_object(&fds::object::GetObjectRequest::new("b", "private-object"))
+        .get_object("b", "private-object")
+        .send()
         .await
         .unwrap_err();
     let debug = format!("{error:?}");
@@ -267,7 +273,8 @@ async fn debug_is_diagnostic_and_omits_credentials() {
         .build()
         .unwrap();
     let error = oauth
-        .get_object(&fds::object::GetObjectRequest::new("b", "private-object"))
+        .get_object("b", "private-object")
+        .send()
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Transport);

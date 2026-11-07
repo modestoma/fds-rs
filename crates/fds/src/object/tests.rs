@@ -1,5 +1,6 @@
 use crate::Client;
 use http::Method;
+use std::time::Duration;
 
 use super::*;
 
@@ -45,14 +46,9 @@ fn object_listing_tolerates_null_fields() {
 fn presigned_get_url_shape() {
     let ts = chrono::DateTime::from_timestamp_millis(1_752_400_000_000).unwrap();
     let url = client()
-        .generate_presigned_url(&GeneratePresignedURLRequest {
-            cdn: false,
-            bucket_name: "b".into(),
-            object_name: "o".into(),
-            method: Method::GET,
-            expiration: ts,
-            metadata: None,
-        })
+        .presign_object("b", "o")
+        .expires_at(ts)
+        .build()
         .unwrap();
     // Query is sorted: Expires < GalaxyAccessKeyId; Signature appended raw.
     assert!(url.starts_with(
@@ -66,24 +62,39 @@ fn presigned_get_url_shape() {
 fn presigned_head_url_has_metadata_subresource() {
     let ts = chrono::DateTime::from_timestamp_millis(1_752_400_000_000).unwrap();
     let url = client()
-        .generate_presigned_url(&GeneratePresignedURLRequest {
-            cdn: false,
-            bucket_name: "b".into(),
-            object_name: "o".into(),
-            method: Method::HEAD,
-            expiration: ts,
-            metadata: None,
-        })
+        .presign_object("b", "o")
+        .method(Method::HEAD)
+        .expires_at(ts)
+        .build()
         .unwrap();
     assert!(url.contains("metadata="));
     assert!(url.contains("&Signature="));
 }
 
 #[test]
-fn absolute_url() {
-    let u = client()
-        .generate_absolute_object_url("b", "dir/o.txt")
+fn presign_requires_a_valid_expiration() {
+    let missing = client().presign_object("b", "o").build().unwrap_err();
+    assert_eq!(missing.kind(), crate::ErrorKind::InvalidInput);
+    for lifetime in [Duration::ZERO, Duration::from_micros(999), Duration::MAX] {
+        let error = client()
+            .presign_object("b", "o")
+            .expires_in(lifetime)
+            .build()
+            .unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::InvalidInput, "{lifetime:?}");
+    }
+    let url = client()
+        .presign_object("b", "o")
+        .expires_in(Duration::from_secs(60))
+        .cdn()
+        .build()
         .unwrap();
+    assert!(url.starts_with("https://cdn.cnbj1.fds.api.mi-img.com/b/o?Expires="));
+}
+
+#[test]
+fn absolute_url() {
+    let u = client().absolute_object_url("b", "dir/o.txt").unwrap();
     assert_eq!(u, "https://cnbj1.fds.api.xiaomi.com/b/dir%2Fo.txt");
 }
 

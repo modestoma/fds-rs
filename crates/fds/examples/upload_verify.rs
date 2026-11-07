@@ -2,9 +2,7 @@
 //! 环境变量：FDS_ENDPOINT / FDS_ACCESS_KEY_ID / FDS_ACCESS_KEY_SECRET。
 //! 运行：cargo run --example upload_verify -- BUCKET UNIQUE_KEY LOCAL_FILE
 //! stdout 包含临时访问 URL；请交给受控接收方，不写入公开日志。
-use fds::object::{
-    GeneratePresignedURLRequest, GetObjectRequest, ObjectMetadata, PutObjectRequest,
-};
+use fds::object::{ObjectMetadata, UploadBody};
 use fds::Client;
 use http::Method;
 use md5::{Digest, Md5};
@@ -46,16 +44,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (expected_size, expected_md5) = file_digest(path).await?;
     let mut metadata = ObjectMetadata::new();
     metadata.set("x-xiaomi-meta-content-md5", &expected_md5)?;
-    PutObjectRequest::from_file(bucket, key, path)
-        .await?
+    client
+        .put_object(bucket, key, UploadBody::from_file(path).await?)
         .content_type("application/octet-stream")
         .metadata(metadata)
-        .send(&client)
+        .send()
         .await?;
 
     // 从此处开始的失败不回滚 PUT，也不自动删除远端对象。
     let head = client
         .head_object(bucket, key)
+        .send()
         .await?
         .ok_or("uploaded object was not found by HEAD")?;
     let size: u64 = head
@@ -65,7 +64,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if size != expected_size {
         return Err("uploaded object size differs from local file".into());
     }
-    let mut output = GetObjectRequest::new(bucket, key).send(&client).await?;
+    let mut output = client.get_object(bucket, key).send().await?;
     let mut hash = Md5::new();
     let mut received = 0;
     while let Some(chunk) = output.chunk().await? {
@@ -77,13 +76,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("downloaded content differs from local file".into());
     }
     // MD5 仅检测意外内容差异，不提供抗篡改认证。
-    let url = GeneratePresignedURLRequest::expires_in(
-        bucket,
-        key,
-        Method::GET,
-        Duration::from_secs(600),
-    )?
-    .generate(&client)?;
+    let url = client
+        .presign_object(bucket, key)
+        .method(Method::GET)
+        .expires_in(Duration::from_secs(600))
+        .build()?;
     eprintln!("上传及读取校验通过：{received} 字节");
     println!("{url}");
     Ok(())

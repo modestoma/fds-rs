@@ -3,7 +3,7 @@
 //! status-code handling — which the in-crate unit tests cannot reach.
 
 use fds::bucket::CreateBucketRequest;
-use fds::object::{GetObjectRequest, ListObjectsRequest, PutObjectRequest};
+use fds::object::ListObjectsRequest;
 use fds::Client;
 use mockito::Matcher;
 
@@ -33,7 +33,8 @@ async fn put_object_signs_and_sends_body() {
         .await;
 
     let resp = client_for(&server)
-        .put_object(PutObjectRequest::new("b", "o.txt", b"hello world".to_vec()))
+        .put_object("b", "o.txt", b"hello world".to_vec())
+        .send()
         .await
         .unwrap();
 
@@ -54,12 +55,9 @@ async fn get_object_range_explicitly_accepts_206() {
         .await;
 
     let bytes = client_for(&server)
-        .get_object(&GetObjectRequest {
-            bucket_name: "b".into(),
-            object_name: "o".into(),
-            range: Some("bytes=0-4".parse().unwrap()),
-            timeout: None,
-        })
+        .get_object("b", "o")
+        .range("bytes=0-4".parse().unwrap())
+        .send()
         .await
         .unwrap()
         .bytes()
@@ -71,7 +69,7 @@ async fn get_object_range_explicitly_accepts_206() {
 }
 
 #[tokio::test]
-async fn does_object_exist_maps_status() {
+async fn object_exists_maps_status() {
     let mut server = mockito::Server::new_async().await;
     let ok = server
         .mock("HEAD", "/b/present")
@@ -85,8 +83,8 @@ async fn does_object_exist_maps_status() {
         .await;
 
     let c = client_for(&server);
-    assert!(c.does_object_exist("b", "present").await.unwrap());
-    assert!(!c.does_object_exist("b", "missing").await.unwrap());
+    assert!(c.object_exists("b", "present").send().await.unwrap());
+    assert!(!c.object_exists("b", "missing").send().await.unwrap());
     ok.assert_async().await;
     missing.assert_async().await;
 }
@@ -157,12 +155,8 @@ async fn error_status_carries_body_and_code() {
         .await;
 
     let err = client_for(&server)
-        .get_object(&GetObjectRequest {
-            bucket_name: "b".into(),
-            object_name: "o".into(),
-            range: None,
-            timeout: None,
-        })
+        .get_object("b", "o")
+        .send()
         .await
         .unwrap_err();
 
@@ -186,12 +180,8 @@ async fn object_name_with_slash_is_percent_encoded_on_the_wire() {
         .await;
 
     let bytes = client_for(&server)
-        .get_object(&GetObjectRequest {
-            bucket_name: "b".into(),
-            object_name: "dir/sub/file.log".into(),
-            range: None,
-            timeout: None,
-        })
+        .get_object("b", "dir/sub/file.log")
+        .send()
         .await
         .unwrap()
         .bytes()
@@ -215,14 +205,7 @@ async fn explicit_status_matrix() {
             .with_body("payload")
             .create_async()
             .await;
-        let result = c
-            .get_object(&GetObjectRequest {
-                bucket_name: "b".into(),
-                object_name: "o".into(),
-                range: None,
-                timeout: None,
-            })
-            .await;
+        let result = c.get_object("b", "o").send().await;
         assert_eq!(result.is_ok(), status == 200, "GET {status}");
         if let Err(e) = result {
             assert_eq!(e.status().map(|s| s.as_u16()), Some(status as u16));
@@ -236,12 +219,9 @@ async fn explicit_status_matrix() {
             .create_async()
             .await;
         let result = c
-            .get_object(&GetObjectRequest {
-                bucket_name: "b".into(),
-                object_name: "o".into(),
-                range: Some("bytes=0-2".parse().unwrap()),
-                timeout: None,
-            })
+            .get_object("b", "o")
+            .range("bytes=0-2".parse().unwrap())
+            .send()
             .await;
         assert_eq!(
             result.is_ok(),
@@ -254,7 +234,7 @@ async fn explicit_status_matrix() {
             .with_status(status)
             .create_async()
             .await;
-        let result = c.does_object_exist("b", "o").await;
+        let result = c.object_exists("b", "o").send().await;
         match status {
             200 => assert!(result.unwrap()),
             404 => assert!(!result.unwrap()),
@@ -282,7 +262,7 @@ async fn explicit_status_matrix() {
             .create_async()
             .await;
         assert_eq!(
-            c.delete_object("b", "o").await.is_ok(),
+            c.delete_object("b", "o").send().await.is_ok(),
             status == 200,
             "DELETE {status}"
         );
@@ -294,9 +274,7 @@ async fn explicit_status_matrix() {
             .create_async()
             .await;
         assert_eq!(
-            c.put_object(PutObjectRequest::new("b", "o", Vec::new()))
-                .await
-                .is_ok(),
+            c.put_object("b", "o", Vec::new()).send().await.is_ok(),
             status == 200,
             "JSON {status}"
         );
@@ -317,7 +295,8 @@ async fn required_json_has_explicit_protocol_errors() {
             .create_async()
             .await;
         let error = client_for(&server)
-            .put_object(PutObjectRequest::new("b", "o", Vec::new()))
+            .put_object("b", "o", Vec::new())
+            .send()
             .await
             .unwrap_err();
         assert_eq!(error.status().map(|s| s.as_u16()), Some(200));
@@ -365,12 +344,8 @@ async fn signed_redirects_never_follow_same_or_cross_origin() {
                 .create_async()
                 .await;
             let error = client_for(&server)
-                .get_object(&GetObjectRequest {
-                    bucket_name: "b".into(),
-                    object_name: "o".into(),
-                    range: None,
-                    timeout: None,
-                })
+                .get_object("b", "o")
+                .send()
                 .await
                 .unwrap_err();
             assert_eq!(error.status().map(|s| s.as_u16()), Some(status as u16));
@@ -403,12 +378,8 @@ async fn diagnostics_are_bounded_and_formatting_omits_untrusted_strings() {
             .create_async()
             .await;
         let error = client_for(&server)
-            .get_object(&GetObjectRequest {
-                bucket_name: "b".into(),
-                object_name: "o".into(),
-                range: None,
-                timeout: None,
-            })
+            .get_object("b", "o")
+            .send()
             .await
             .unwrap_err();
         assert_eq!(error.status().map(|s| s.as_u16()), Some(506));
@@ -464,6 +435,7 @@ async fn optional_error_fields_are_best_effort() {
             .await;
         let e = client_for(&server)
             .delete_object("b", "o")
+            .send()
             .await
             .unwrap_err();
         assert_eq!(e.service_code(), code);
@@ -498,7 +470,8 @@ async fn body_read_failure_preserves_status_request_id_and_source() {
             .credentials("ak", "sk")
             .build()
             .unwrap()
-            .put_object(PutObjectRequest::new("b", "o", Vec::new()))
+            .put_object("b", "o", Vec::new())
+            .send()
             .await
             .unwrap_err();
         assert_eq!(e.status().map(|s| s.as_u16()), Some(status));

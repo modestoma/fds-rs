@@ -93,7 +93,7 @@
       "title": "建立流式 builder 模式并迁移对象基础操作",
       "type": "feat",
       "document": "tasks/fluent-object.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 3,
       "depends_on": [
         "internal-cleanup",

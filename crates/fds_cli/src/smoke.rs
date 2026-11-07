@@ -69,22 +69,17 @@ pub async fn smoke(
 
     // put + get + verify
     let put = client
-        .put_object(
-            PutObjectRequest::new(bucket, hello.clone(), content.to_vec())
-                .content_type("text/plain")
-                .metadata(parse_meta(&["x-xiaomi-meta-smoke=1".into()])?),
-        )
+        .put_object(bucket, hello.clone(), content.to_vec())
+        .content_type("text/plain")
+        .metadata(parse_meta(&["x-xiaomi-meta-smoke=1".into()])?)
+        .send()
         .await;
     rep.check("put_object", put);
 
     match async {
         client
-            .get_object(&GetObjectRequest {
-                bucket_name: bucket.into(),
-                object_name: hello.clone(),
-                range: None,
-                timeout: None,
-            })
+            .get_object(bucket, hello.clone())
+            .send()
             .await?
             .bytes()
             .await
@@ -98,12 +93,9 @@ pub async fn smoke(
     // range get
     match async {
         client
-            .get_object(&GetObjectRequest {
-                bucket_name: bucket.into(),
-                object_name: hello.clone(),
-                range: Some("bytes=0-4".parse().unwrap()),
-                timeout: None,
-            })
+            .get_object(bucket, hello.clone())
+            .range("bytes=0-4".parse().unwrap())
+            .send()
             .await?
             .bytes()
             .await
@@ -117,13 +109,14 @@ pub async fn smoke(
     rep.assert(
         "does_object_exist",
         client
-            .does_object_exist(bucket, &hello)
+            .object_exists(bucket, &hello)
+            .send()
             .await
             .unwrap_or(false),
     );
 
     // metadata read
-    match client.get_object_metadata(bucket, &hello).await {
+    match client.get_object_metadata(bucket, &hello).send().await {
         Ok(md) => rep.assert(
             "get_object_metadata (smoke=1)",
             md.get("x-xiaomi-meta-smoke") == Some("1"),
@@ -133,17 +126,18 @@ pub async fn smoke(
 
     // metadata write + read back
     let set_md = client
-        .set_object_metadata(&SetObjectMetadataRequest {
-            bucket_name: bucket.into(),
-            object_name: hello.clone(),
-            metadata: parse_meta(&[
+        .set_object_metadata(
+            bucket,
+            hello.clone(),
+            parse_meta(&[
                 "x-xiaomi-meta-smoke=2".into(),
                 "content-type=text/plain".into(),
             ])?,
-        })
+        )
+        .send()
         .await;
     rep.check("set_object_metadata", set_md);
-    match client.get_object_metadata(bucket, &hello).await {
+    match client.get_object_metadata(bucket, &hello).send().await {
         Ok(md) => rep.assert(
             "metadata updated (smoke=2)",
             md.get("x-xiaomi-meta-smoke") == Some("2"),
@@ -153,33 +147,32 @@ pub async fn smoke(
 
     // copy
     let cp = client
-        .copy_object(&CopyObjectRequest {
-            source_bucket_name: bucket.into(),
-            source_object_name: hello.clone(),
-            target_bucket_name: bucket.into(),
-            target_object_name: copy.clone(),
-        })
+        .copy_object((bucket, hello.clone()), (bucket, copy.clone()))
+        .send()
         .await;
     rep.check("copy_object", cp);
     rep.assert(
         "copy exists",
         client
-            .does_object_exist(bucket, &copy)
+            .object_exists(bucket, &copy)
+            .send()
             .await
             .unwrap_or(false),
     );
 
     // rename
-    let rn = client.rename_object(bucket, &copy, &renamed).await;
+    let rn = client.rename_object(bucket, &copy, &renamed).send().await;
     rep.check("rename_object", rn);
     rep.assert(
         "renamed exists & old gone",
         client
-            .does_object_exist(bucket, &renamed)
+            .object_exists(bucket, &renamed)
+            .send()
             .await
             .unwrap_or(false)
             && !client
-                .does_object_exist(bucket, &copy)
+                .object_exists(bucket, &copy)
+                .send()
                 .await
                 .unwrap_or(true),
     );
@@ -198,7 +191,7 @@ pub async fn smoke(
     }
 
     // basic info
-    match client.get_object_basic_info(bucket, &hello).await {
+    match client.get_object_basic_info(bucket, &hello).send().await {
         Ok(info) => rep.assert(
             "basic_info size matches",
             info.size as usize == content.len(),
@@ -207,29 +200,20 @@ pub async fn smoke(
     }
 
     // ACL: make public, then check a grant exists
-    let pub_res = client.set_object_public(bucket, &hello).await;
+    let pub_res = client.set_object_public(bucket, &hello).send().await;
     rep.check("set_object_public", pub_res);
-    match client
-        .get_object_acl(&GetObjectACLRequest {
-            bucket_name: bucket.into(),
-            object_name: hello.clone(),
-            version_id: None,
-        })
-        .await
-    {
+    match client.get_object_acl(bucket, hello.clone()).send().await {
         Ok(acl) => rep.assert("object acl has grants", !acl.grants.is_empty()),
         Err(e) => rep.fail("get_object_acl", e),
     }
 
     // presigned + absolute URL (local)
-    match client.generate_presigned_url(&GeneratePresignedURLRequest {
-        cdn: false,
-        bucket_name: bucket.into(),
-        object_name: hello.clone(),
-        method: Method::GET,
-        expiration: chrono::Utc::now() + chrono::Duration::hours(1),
-        metadata: None,
-    }) {
+    match client
+        .presign_object(bucket, hello.clone())
+        .method(Method::GET)
+        .expires_at(chrono::Utc::now() + chrono::Duration::hours(1))
+        .build()
+    {
         Ok(u) => rep.assert(
             "presigned url",
             u.starts_with("http") && u.contains("&Signature="),
@@ -239,7 +223,7 @@ pub async fn smoke(
     rep.assert(
         "absolute url",
         client
-            .generate_absolute_object_url(bucket, &hello)
+            .absolute_object_url(bucket, &hello)
             .map(|u| u.contains(&hello.replace('/', "%2F")))
             .unwrap_or(false),
     );
@@ -276,7 +260,11 @@ pub async fn smoke(
         let data = vec![7u8; 6 * 1024 * 1024];
         let mp = multipart_put(client, bucket, &multipart, &data, 5 * 1024 * 1024).await;
         rep.check("multipart_upload", mp);
-        match client.get_object_basic_info(bucket, &multipart).await {
+        match client
+            .get_object_basic_info(bucket, &multipart)
+            .send()
+            .await
+        {
             Ok(info) => rep.assert("multipart size == 6 MiB", info.size as usize == data.len()),
             Err(e) => rep.fail("multipart basic_info", e),
         }
@@ -296,7 +284,8 @@ pub async fn smoke(
         rep.assert(
             "hello gone after delete",
             !client
-                .does_object_exist(bucket, &hello)
+                .object_exists(bucket, &hello)
+                .send()
                 .await
                 .unwrap_or(true),
         );

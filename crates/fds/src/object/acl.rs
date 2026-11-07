@@ -1,4 +1,4 @@
-//! Object ACL requests and operations.
+//! Object ACL operations.
 
 use super::validate_object;
 use crate::acl::{AccessControlList, AclAction, Grant, GrantKey, GrantPermission, GrantType};
@@ -6,107 +6,98 @@ use crate::client::ClientRequest;
 use crate::{Client, Error, Result};
 use bytes::Bytes;
 use http::Method;
+use std::time::Duration;
 
-/// Input of `get_object_acl`.
-#[derive(Debug, Clone, Default)]
-pub struct GetObjectACLRequest {
-    pub bucket_name: String,
-    pub object_name: String,
-    /// `versionId` — omitempty.
-    pub version_id: Option<String>,
+/// Builder for [`Client::get_object_acl`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct GetObjectAcl {
+    client: Client,
+    bucket: String,
+    object: String,
+    version_id: Option<String>,
+    timeout: Option<Duration>,
 }
 
-/// Input of `set_object_acl`.
-#[derive(Debug, Clone, Default)]
-pub struct SetObjectACLRequest {
-    pub bucket_name: String,
-    pub object_name: String,
-    pub version_id: Option<String>,
-    pub acl: AccessControlList,
-    pub action: AclAction,
-}
+impl GetObjectAcl {
+    timeout_option!();
 
-impl GetObjectACLRequest {
-    pub fn new(bucket: impl Into<String>, object: impl Into<String>) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            version_id: None,
-        }
-    }
-    pub async fn send(self, client: &Client) -> Result<AccessControlList> {
-        client.get_object_acl(&self).await
-    }
-
+    /// Read the ACL of this object version. An empty value is not sent.
     pub fn version_id(mut self, value: impl Into<String>) -> Self {
         self.version_id = Some(value.into());
         self
     }
+
+    /// GET `/{bucket}/{object}?acl[&versionId]`.
+    pub async fn send(self) -> Result<AccessControlList> {
+        validate_object(&self.bucket, &self.object)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::GET)
+            .read_only()
+            .with_timeout(self.timeout)?;
+        cr.query.add("acl", "");
+        add_version_id(&mut cr, self.version_id.as_deref());
+        self.client.do_json(cr).await
+    }
 }
 
-impl SetObjectACLRequest {
-    /// Add grants by default; use `action` to request deletion.
-    pub fn new(
-        bucket: impl Into<String>,
-        object: impl Into<String>,
-        acl: AccessControlList,
-    ) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            acl,
-            action: AclAction::Add,
-            version_id: None,
-        }
-    }
-    pub async fn send(self, client: &Client) -> Result<()> {
-        client.set_object_acl(&self).await
-    }
+/// Builder for [`Client::set_object_acl`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct SetObjectAcl {
+    client: Client,
+    bucket: String,
+    object: String,
+    acl: AccessControlList,
+    action: AclAction,
+    version_id: Option<String>,
+    timeout: Option<Duration>,
+}
 
+impl SetObjectAcl {
+    timeout_option!();
+
+    /// Add the grants (the default) or delete them.
     pub fn action(mut self, action: AclAction) -> Self {
         self.action = action;
         self
     }
 
+    /// Change the ACL of this object version. An empty value is not sent.
     pub fn version_id(mut self, value: impl Into<String>) -> Self {
         self.version_id = Some(value.into());
         self
     }
+
+    /// PUT `/{bucket}/{object}?acl[&action=delete][&versionId]` with the ACL
+    /// as JSON body.
+    pub async fn send(self) -> Result<()> {
+        validate_object(&self.bucket, &self.object)?;
+        let body = serde_json::to_vec(&self.acl).map_err(Error::json_encode)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .with_timeout(self.timeout)?;
+        cr.query.add("acl", "");
+        self.action.apply(&mut cr.query);
+        add_version_id(&mut cr, self.version_id.as_deref());
+        cr.body = Some(Bytes::from(body).into());
+        self.client.do_discard(cr).await
+    }
 }
 
-impl Client {
-    /// Get object ACL (GET `/{b}/{o}?acl[&versionId]`).
-    pub async fn get_object_acl(&self, req: &GetObjectACLRequest) -> Result<AccessControlList> {
-        validate_object(&req.bucket_name, &req.object_name)?;
-        let mut cr =
-            ClientRequest::new(&req.bucket_name, &req.object_name, Method::GET).read_only();
-        cr.query.add("acl", "");
-        if let Some(v) = &req.version_id {
-            if !v.is_empty() {
-                cr.query.add("versionId", v);
-            }
-        }
-        self.do_json(cr).await
+fn add_version_id(cr: &mut ClientRequest<'_>, version_id: Option<&str>) {
+    if let Some(version_id) = version_id.filter(|v| !v.is_empty()) {
+        cr.query.add("versionId", version_id);
     }
+}
 
-    /// Set object ACL (PUT `/{b}/{o}?acl[&versionId]`, body = JSON ACL).
-    pub async fn set_object_acl(&self, req: &SetObjectACLRequest) -> Result<()> {
-        validate_object(&req.bucket_name, &req.object_name)?;
-        let body = serde_json::to_vec(&req.acl).map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
-        cr.query.add("acl", "");
-        req.action.apply(&mut cr.query);
-        if let Some(v) = &req.version_id {
-            if !v.is_empty() {
-                cr.query.add("versionId", v);
-            }
-        }
-        cr.body = Some(Bytes::from(body).into());
-        self.do_discard(cr).await
-    }
+object_builder! {
+    /// Builder for [`Client::set_object_public`].
+    SetObjectPublic
+}
 
-    /// Make an object public-readable (shortcut around `set_object_acl`).
-    pub async fn set_object_public(&self, bucket: &str, object: &str) -> Result<()> {
+impl SetObjectPublic {
+    /// The [`SetObjectAcl`] request adding a `READ` grant for the
+    /// `ALL_USERS` group.
+    pub async fn send(self) -> Result<()> {
         let mut acl = AccessControlList::default();
         acl.add_grant(Grant {
             grantee: GrantKey {
@@ -116,7 +107,66 @@ impl Client {
             permission: GrantPermission::Read,
             grant_type: GrantType::Group,
         });
-        self.set_object_acl(&SetObjectACLRequest::new(bucket, object, acl))
-            .await
+        let mut request = self.client.set_object_acl(self.bucket, self.object, acl);
+        request.timeout = self.timeout;
+        request.send().await
+    }
+}
+
+impl Client {
+    /// Get an object's ACL.
+    pub fn get_object_acl(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+    ) -> GetObjectAcl {
+        GetObjectAcl {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            version_id: None,
+            timeout: None,
+        }
+    }
+
+    /// Add grants to an object's ACL, or delete them with
+    /// [`SetObjectAcl::action`].
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client, acl: fds::acl::AccessControlList) -> fds::Result<()> {
+    /// use fds::acl::AclAction;
+    ///
+    /// client
+    ///     .set_object_acl("bucket", "key", acl)
+    ///     .action(AclAction::Delete)
+    ///     .send()
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn set_object_acl(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        acl: AccessControlList,
+    ) -> SetObjectAcl {
+        SetObjectAcl {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            acl,
+            action: AclAction::Add,
+            version_id: None,
+            timeout: None,
+        }
+    }
+
+    /// Make an object readable by everyone: a shortcut for
+    /// [`set_object_acl`](Self::set_object_acl) with a public `READ` grant.
+    pub fn set_object_public(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+    ) -> SetObjectPublic {
+        SetObjectPublic::new(self, bucket, object)
     }
 }

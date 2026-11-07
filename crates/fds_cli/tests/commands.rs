@@ -600,15 +600,13 @@ async fn read_retries_and_presign_metadata_reach_the_sdk() {
         .unwrap();
     let mut metadata = fds::object::ObjectMetadata::new();
     metadata.set("content-type", "text/plain").unwrap();
-    let expected = fds::object::GeneratePresignedURLRequest::new(
-        "b",
-        "k",
-        http::Method::PUT,
-        chrono::DateTime::from_timestamp_millis(expiration).unwrap(),
-    )
-    .metadata(metadata)
-    .generate(&client)
-    .unwrap();
+    let expected = client
+        .presign_object("b", "k")
+        .method(http::Method::PUT)
+        .expires_at(chrono::DateTime::from_timestamp_millis(expiration).unwrap())
+        .metadata(metadata)
+        .build()
+        .unwrap();
     assert_eq!(url.trim(), expected);
 }
 

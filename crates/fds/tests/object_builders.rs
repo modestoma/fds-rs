@@ -1,7 +1,5 @@
 use chrono::{TimeZone, Utc};
-use fds::object::{
-    ByteRange, GeneratePresignedURLRequest, GetObjectRequest, ObjectMetadata, PutObjectRequest,
-};
+use fds::object::{ByteRange, ObjectMetadata, UploadBody};
 use fds::Client;
 use http::Method;
 use std::time::Duration;
@@ -60,18 +58,18 @@ fn metadata_preserves_empty_normalizes_and_borrows() {
 }
 
 #[tokio::test]
-async fn invalid_names_fail_at_both_entry_points() {
+async fn invalid_names_fail_at_send() {
     let client = client("http://127.0.0.1:1");
     assert!(matches!(
-        client.get_object(&GetObjectRequest::new("", "o")).await,
+        client.get_object("", "o").send().await,
         Err(e) if e.kind() == fds::ErrorKind::InvalidInput
     ));
     assert!(matches!(
-        PutObjectRequest::new("", "o", vec![]).send(&client).await,
+        client.put_object("", "o", vec![]).send().await,
         Err(e) if e.kind() == fds::ErrorKind::InvalidInput
     ));
-    assert_send(GetObjectRequest::new("b", "o").send(&client));
-    assert_send(PutObjectRequest::new("b", "o", vec![]).send(&client));
+    assert_send(client.get_object("b", "o").send());
+    assert_send(client.put_object("b", "o", vec![]).send());
 }
 
 #[tokio::test]
@@ -103,18 +101,20 @@ async fn builders_preserve_encoded_keys_body_and_metadata() {
     let mut md = ObjectMetadata::new();
     md.set("X-Xiaomi-Meta-ID", "42").unwrap();
     assert_eq!(
-        PutObjectRequest::new("b", "a/b +", b"hello".to_vec())
+        client
+            .put_object("b", "a/b +", b"hello".to_vec())
             .metadata(md)
             .content_type("text/plain")
-            .send(&client)
+            .send()
             .await
             .unwrap()
             .object_name,
         "a/b +"
     );
-    let output = GetObjectRequest::new("b", "a/b +")
+    let output = client
+        .get_object("b", "a/b +")
         .range(ByteRange::inclusive(0, 4).unwrap())
-        .send(&client)
+        .send()
         .await
         .unwrap();
     assert_eq!(output.status(), 206);
@@ -144,7 +144,7 @@ async fn streamed_output_does_not_wait_for_remaining_body() {
         wait.await.unwrap();
         socket.write_all(b"world").await.unwrap();
     });
-    let mut output = GetObjectRequest::new("b", "o").send(&client).await.unwrap();
+    let mut output = client.get_object("b", "o").send().await.unwrap();
     let mut prefix = Vec::new();
     while prefix.len() < 5 {
         prefix.extend(
@@ -177,16 +177,10 @@ async fn output_preserves_errors_and_raw_escape_hatch() {
         .create_async()
         .await;
     let client = client(server.url());
-    let err = GetObjectRequest::new("b", "error")
-        .send(&client)
-        .await
-        .unwrap_err();
+    let err = client.get_object("b", "error").send().await.unwrap_err();
     assert_eq!(err.status(), Some(http::StatusCode::FORBIDDEN));
     assert_eq!(err.kind(), fds::ErrorKind::PermissionDenied);
-    let output = GetObjectRequest::new("b", "ok")
-        .send(&client)
-        .await
-        .unwrap();
+    let output = client.get_object("b", "ok").send().await.unwrap();
     // The idle-timed response body keeps the raw response's length and URL.
     let raw = output.into_raw();
     assert_eq!(raw.content_length(), Some(2));
@@ -197,23 +191,51 @@ async fn output_preserves_errors_and_raw_escape_hatch() {
 }
 
 #[test]
-fn typed_presign_keeps_wire_signature_and_milliseconds() {
+fn presign_builder_keeps_milliseconds_and_validates_lifetimes() {
     let client = client("https://cnbj1.fds.api.xiaomi.com");
     let expiry = Utc.timestamp_millis_opt(1_800_000_000_123).unwrap();
-    let request = GeneratePresignedURLRequest::new("b", "a/b +", Method::HEAD, expiry);
-    let old = client.generate_presigned_url(&request).unwrap();
-    assert_eq!(request.generate(&client).unwrap(), old);
-    assert!(old.contains("Expires=1800000000123"));
-    assert!(old.contains("metadata="));
+    let url = client
+        .presign_object("b", "a/b +")
+        .method(Method::HEAD)
+        .expires_at(expiry)
+        .build()
+        .unwrap();
+    assert!(url.contains("Expires=1800000000123"));
+    assert!(url.contains("metadata="));
     for ttl in [Duration::ZERO, Duration::from_nanos(1), Duration::MAX] {
-        assert!(GeneratePresignedURLRequest::expires_in("b", "o", Method::GET, ttl).is_err());
+        let error = client
+            .presign_object("b", "o")
+            .expires_in(ttl)
+            .build()
+            .unwrap_err();
+        assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
     }
-    let before = Utc::now();
-    let request =
-        GeneratePresignedURLRequest::expires_in("b", "o", Method::GET, Duration::from_secs(60))
-            .unwrap();
-    assert!(request.expiration >= before + chrono::Duration::seconds(60));
-    assert!(request.expiration <= Utc::now() + chrono::Duration::seconds(60));
+    let missing = client.presign_object("b", "o").build().unwrap_err();
+    assert_eq!(missing.kind(), fds::ErrorKind::InvalidInput);
+    // A relative lifetime is resolved when `build` runs.
+    let before = Utc::now().timestamp_millis();
+    let url = client
+        .presign_object("b", "o")
+        .expires_in(Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let after = Utc::now().timestamp_millis();
+    let expires: i64 = url
+        .split("Expires=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((before + 60_000..=after + 60_000).contains(&expires));
+    // The CDN host requires a configured CDN endpoint.
+    let error = client
+        .presign_object("b", "o")
+        .expires_at(expiry)
+        .cdn()
+        .build()
+        .unwrap_err();
+    assert_eq!(error.kind(), fds::ErrorKind::ConfigInvalid);
 }
 
 #[tokio::test]
@@ -233,7 +255,7 @@ async fn chunk_reports_truncated_body_and_eof_is_stable() {
             .unwrap();
         socket.shutdown().await.unwrap();
     });
-    let mut output = GetObjectRequest::new("b", "o").send(&client).await.unwrap();
+    let mut output = client.get_object("b", "o").send().await.unwrap();
     let error = loop {
         match output.chunk().await {
             Ok(Some(_)) => continue,
@@ -252,7 +274,7 @@ async fn chunk_reports_truncated_body_and_eof_is_stable() {
         .create_async()
         .await;
     let client = self::client(server.url());
-    let mut output = GetObjectRequest::new("b", "o").send(&client).await.unwrap();
+    let mut output = client.get_object("b", "o").send().await.unwrap();
     assert!(output.chunk().await.unwrap().is_none());
     assert!(output.chunk().await.unwrap().is_none());
     stub.assert_async().await;
@@ -269,9 +291,10 @@ async fn acl_builder_keeps_service_default_and_version() {
         .with_status(200)
         .create_async()
         .await;
-    fds::object::SetObjectACLRequest::new("b", "o", fds::acl::AccessControlList::default())
+    client(server.url())
+        .set_object_acl("b", "o", fds::acl::AccessControlList::default())
         .version_id("v1")
-        .send(&client(server.url()))
+        .send()
         .await
         .unwrap();
     stub.assert_async().await;
@@ -288,18 +311,18 @@ async fn copy_to_preserves_remaining_body_and_writer_errors() {
         .await;
     let client = client(server.url());
     let mut destination = b"prefix:".to_vec();
-    let output = GetObjectRequest::new("b", "o").send(&client).await.unwrap();
+    let output = client.get_object("b", "o").send().await.unwrap();
     assert_eq!(output.copy_to(&mut destination).await.unwrap(), 5);
     assert_eq!(destination, b"prefix:hello");
 
-    let mut output = GetObjectRequest::new("b", "o").send(&client).await.unwrap();
+    let mut output = client.get_object("b", "o").send().await.unwrap();
     let consumed = output.chunk().await.unwrap().unwrap();
     let mut remaining = Vec::new();
     let written = output.copy_to(&mut remaining).await.unwrap();
     assert_eq!(written as usize, 5 - consumed.len());
     assert_eq!([consumed.as_ref(), &remaining].concat(), b"hello");
 
-    let output = GetObjectRequest::new("b", "o").send(&client).await.unwrap();
+    let output = client.get_object("b", "o").send().await.unwrap();
     let (mut writer, reader) = tokio::io::duplex(1);
     drop(reader);
     assert!(matches!(
@@ -326,17 +349,16 @@ async fn file_upload_helper_keeps_body_and_options() {
         .with_body(r#"{"objectName":"o"}"#)
         .create_async()
         .await;
-    let upload = fds::object::PutObjectRequest::from_file("b", "o", &path)
-        .await
-        .unwrap();
-    let result = upload
+    let body = UploadBody::from_file(&path).await.unwrap();
+    let result = client(server.url())
+        .put_object("b", "o", body)
         .content_type("text/plain")
-        .send(&client(server.url()))
+        .send()
         .await;
     tokio::fs::remove_file(&path).await.unwrap();
     assert_eq!(result.unwrap().object_name, "o");
     assert!(matches!(
-        fds::object::PutObjectRequest::from_file("b", "o", &path).await,
+        UploadBody::from_file(&path).await,
         Err(e) if e.kind() == fds::ErrorKind::Io
     ));
     stub.assert_async().await;
@@ -402,14 +424,13 @@ async fn multipart_helpers_bind_identity_and_preserve_receipts() {
 async fn direct_client_entry_points_validate_before_transport() {
     let client = client("http://127.0.0.1:1");
     for result in [
-        client.head_object("", "o").await.map(|_| ()),
+        client.head_object("", "o").send().await.map(|_| ()),
         client
-            .copy_object(&fds::object::CopyObjectRequest::new("b", "", "b", "o"))
-            .await,
-        client
-            .put_object(PutObjectRequest::new("b", "", vec![]))
+            .copy_object(("b", ""), ("b", "o"))
+            .send()
             .await
             .map(|_| ()),
+        client.put_object("b", "", vec![]).send().await.map(|_| ()),
         client
             .list_objects(&fds::object::ListObjectsRequest::new("b").max_keys(0))
             .await
@@ -429,5 +450,124 @@ async fn direct_client_entry_points_validate_before_transport() {
             .await,
     ] {
         assert!(matches!(result, Err(e) if e.kind() == fds::ErrorKind::InvalidInput));
+    }
+}
+
+#[tokio::test]
+async fn every_object_builder_validates_names_and_timeout_before_sending() {
+    // Nothing listens here: any request that is sent fails with Transport.
+    let client = client("http://127.0.0.1:1");
+    let acl = fds::acl::AccessControlList::default;
+    for (bucket, object, timeout) in [
+        ("", "o", Duration::from_secs(1)),
+        ("b", "", Duration::from_secs(1)),
+        ("b", "o", Duration::ZERO),
+    ] {
+        let t = timeout;
+        let results = [
+            client
+                .get_object(bucket, object)
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .head_object(bucket, object)
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .object_exists(bucket, object)
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .put_object(bucket, object, vec![])
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .copy_object((bucket, object), ("b", "o"))
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .copy_object(("b", "o"), (bucket, object))
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .rename_object(bucket, object, "o")
+                .timeout(t)
+                .send()
+                .await,
+            client
+                .rename_object(bucket, "o", object)
+                .timeout(t)
+                .send()
+                .await,
+            client
+                .restore_object(bucket, object)
+                .timeout(t)
+                .send()
+                .await,
+            client
+                .prefetch_object(bucket, object)
+                .timeout(t)
+                .send()
+                .await,
+            client
+                .refresh_object(bucket, object)
+                .timeout(t)
+                .send()
+                .await,
+            client.delete_object(bucket, object).timeout(t).send().await,
+            client
+                .get_object_metadata(bucket, object)
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .set_object_metadata(bucket, object, ObjectMetadata::new())
+                .timeout(t)
+                .send()
+                .await,
+            client
+                .get_object_basic_info(bucket, object)
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .get_object_acl(bucket, object)
+                .timeout(t)
+                .send()
+                .await
+                .map(drop),
+            client
+                .set_object_acl(bucket, object, acl())
+                .timeout(t)
+                .send()
+                .await,
+            client
+                .set_object_public(bucket, object)
+                .timeout(t)
+                .send()
+                .await,
+        ];
+        for (index, result) in results.into_iter().enumerate() {
+            let error = result.unwrap_err();
+            assert_eq!(
+                (error.kind(), error.dispatch()),
+                (fds::ErrorKind::InvalidInput, fds::Dispatch::NotSent),
+                "operation #{index} with {bucket:?}/{object:?}/{timeout:?}"
+            );
+        }
     }
 }

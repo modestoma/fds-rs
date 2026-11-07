@@ -7,14 +7,7 @@ use crate::{Client, Result};
 use bytes::Bytes;
 use http::Method;
 use serde::Deserialize;
-
-/// Input of `set_object_metadata`.
-#[derive(Debug, Clone, Default)]
-pub struct SetObjectMetadataRequest {
-    pub bucket_name: String,
-    pub object_name: String,
-    pub metadata: ObjectMetadata,
-}
+use std::time::Duration;
 
 crate::de::lenient! {
     /// Result of `get_object_basic_info`. `metadata` uses the entry-list form
@@ -32,52 +25,104 @@ crate::de::lenient! {
     }
 }
 
-impl SetObjectMetadataRequest {
-    pub fn new(
-        bucket: impl Into<String>,
-        object: impl Into<String>,
-        metadata: ObjectMetadata,
-    ) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            metadata,
-        }
+object_builder! {
+    /// Builder for [`Client::get_object_basic_info`].
+    GetObjectBasicInfo
+}
+
+impl GetObjectBasicInfo {
+    /// GET `/{bucket}/{object}?basicInfo`.
+    pub async fn send(self) -> Result<ObjectBasicInfo> {
+        validate_object(&self.bucket, &self.object)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::GET)
+            .read_only()
+            .with_timeout(self.timeout)?;
+        cr.query.add("basicInfo", "");
+        self.client.do_json(cr).await
     }
-    pub async fn send(self, client: &Client) -> Result<()> {
-        client.set_object_metadata(&self).await
+}
+
+object_builder! {
+    /// Builder for [`Client::get_object_metadata`].
+    GetObjectMetadata
+}
+
+impl GetObjectMetadata {
+    /// GET `/{bucket}/{object}?metadata`; the metadata is parsed from the
+    /// response headers. A missing object is an error.
+    pub async fn send(self) -> Result<ObjectMetadata> {
+        validate_object(&self.bucket, &self.object)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::GET)
+            .read_only()
+            .with_timeout(self.timeout)?;
+        cr.query.add("metadata", "");
+        let resp = self.client.do_request(cr).await?;
+        Ok(ObjectMetadata::from_headers(resp.headers()))
+    }
+}
+
+/// Builder for [`Client::set_object_metadata`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct SetObjectMetadata {
+    client: Client,
+    bucket: String,
+    object: String,
+    metadata: ObjectMetadata,
+    timeout: Option<Duration>,
+}
+
+impl SetObjectMetadata {
+    timeout_option!();
+
+    /// PUT `/{bucket}/{object}?setMetaData` with the metadata map as body.
+    pub async fn send(self) -> Result<()> {
+        validate_object(&self.bucket, &self.object)?;
+        let body = self.metadata.serialize()?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .with_timeout(self.timeout)?;
+        cr.query.add("setMetaData", "");
+        cr.body = Some(Bytes::from(body).into());
+        self.client.do_discard(cr).await
     }
 }
 
 impl Client {
-    /// Get an object's basic info (GET `/{b}/{o}?basicInfo`).
-    pub async fn get_object_basic_info(
+    /// Get an object's basic information: size, upload time, storage class and
+    /// metadata.
+    pub fn get_object_basic_info(
         &self,
-        bucket: &str,
-        object: &str,
-    ) -> Result<ObjectBasicInfo> {
-        validate_object(bucket, object)?;
-        let mut cr = ClientRequest::new(bucket, object, Method::GET).read_only();
-        cr.query.add("basicInfo", "");
-        self.do_json(cr).await
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+    ) -> GetObjectBasicInfo {
+        GetObjectBasicInfo::new(self, bucket, object)
     }
 
-    /// Get object metadata (GET `/{b}/{o}?metadata`); parsed from response headers.
-    pub async fn get_object_metadata(&self, bucket: &str, object: &str) -> Result<ObjectMetadata> {
-        validate_object(bucket, object)?;
-        let mut cr = ClientRequest::new(bucket, object, Method::GET).read_only();
-        cr.query.add("metadata", "");
-        let resp = self.do_request(cr).await?;
-        Ok(ObjectMetadata::from_headers(resp.headers()))
+    /// Get an object's metadata with GET `?metadata`.
+    ///
+    /// [`head_object`](Self::head_object) sends a plain HEAD instead and
+    /// reports a missing object as `None`; this request fails for one.
+    pub fn get_object_metadata(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+    ) -> GetObjectMetadata {
+        GetObjectMetadata::new(self, bucket, object)
     }
 
-    /// Set object metadata (PUT `/{b}/{o}?setMetaData`, body = map form).
-    pub async fn set_object_metadata(&self, req: &SetObjectMetadataRequest) -> Result<()> {
-        validate_object(&req.bucket_name, &req.object_name)?;
-        let body = req.metadata.serialize()?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
-        cr.query.add("setMetaData", "");
-        cr.body = Some(Bytes::from(body).into());
-        self.do_discard(cr).await
+    /// Set an object's metadata.
+    pub fn set_object_metadata(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        metadata: ObjectMetadata,
+    ) -> SetObjectMetadata {
+        SetObjectMetadata {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            metadata,
+            timeout: None,
+        }
     }
 }

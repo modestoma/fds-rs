@@ -1,18 +1,18 @@
 //! # fds — async Rust SDK for XiaoMi FDS object storage
 //!
-//! Build a validated [`Client`], construct operation-specific requests, and
-//! consume streaming responses with Tokio. Galaxy-V2 signing is protected by
-//! saved golden vectors and local wire tests; these do not prove live-service
+//! Build a validated [`Client`], start an operation from it, and consume
+//! streaming responses with Tokio. Galaxy-V2 signing is protected by saved
+//! golden vectors and local wire tests; these do not prove live-service
 //! compatibility for every operation. OAuth exchange is explicit.
 //!
 //! ```no_run
-//! use fds::object::{GetObjectRequest, PutObjectRequest};
-//!
 //! # async fn example(client: &fds::Client) -> fds::Result<()> {
-//! PutObjectRequest::new("bucket", "hello.txt", b"hello".to_vec())
-//!     .content_type("text/plain").send(client).await?;
-//! let mut output = GetObjectRequest::new("bucket", "hello.txt")
-//!     .send(client).await?;
+//! client
+//!     .put_object("bucket", "hello.txt", b"hello".to_vec())
+//!     .content_type("text/plain")
+//!     .send()
+//!     .await?;
+//! let mut output = client.get_object("bucket", "hello.txt").send().await?;
 //! while let Some(chunk) = output.chunk().await? {
 //!     // Consume each chunk without collecting the entire object.
 //!     let _ = chunk;
@@ -51,6 +51,38 @@
 //! - The `cslb` feature adds no module: it only makes [`Client`] resolve hosts
 //!   through an internal client-side load-balancing DNS resolver, configured
 //!   by `ClientBuilder::cslb_max_nodes`.
+//!
+//! # Operation builders
+//!
+//! Every operation is written as
+//! `client.<operation>(required arguments).<option>(..).send().await`.
+//! Single-object operations follow this convention today; bucket, listing,
+//! bulk-delete and multipart operations still use request structs until they
+//! are migrated to it.
+//!
+//! - The [`Client`] method takes only the required arguments (bucket, object,
+//!   body, ACL, ...) and returns a builder type named after the operation,
+//!   defined in the operation's domain module (for example
+//!   [`object::GetObject`] for [`Client::get_object`]). Bucket and object
+//!   names are taken as `impl Into<String>`.
+//! - The builder owns a clone of the [`Client`] (cheap: clones share one
+//!   connection pool) and its arguments. Its fields are private and it does
+//!   not implement `Default`, so it can only be created from the [`Client`]
+//!   method, with every required argument present.
+//! - Optional settings are chained methods that take and return the builder
+//!   by value. A flag is a method without arguments (for example
+//!   [`object::PresignObject::cdn`]), never a `bool` parameter.
+//! - `send(self)` consumes the builder and returns a future. All local
+//!   validation (bucket and object names, header values, the timeout) happens
+//!   there, before anything is sent, and fails with
+//!   [`ErrorKind::InvalidInput`] and [`Dispatch::NotSent`].
+//! - Every builder that sends a request has `timeout(Duration)`, a total
+//!   deadline for that request overriding
+//!   [`ClientBuilder::request_timeout`].
+//! - An operation that makes no request ends in `build()` instead of `send()`
+//!   and has no timeout (for example [`Client::presign_object`]); one without
+//!   options is a plain method (for example [`Client::absolute_object_url`]).
+//! - Builders are `#[must_use]`: nothing happens until `send` is awaited.
 //!
 //! POST object creation, archive restoration and multipart copy remain deferred.
 //! See the repository's `docs/migration.md` for compatibility and validation.

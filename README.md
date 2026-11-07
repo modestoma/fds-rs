@@ -104,7 +104,7 @@ Client 内部共享配置、凭据和连接池，可廉价 `clone()` 后交给�
 | `cdn_endpoint(origin)` | 无 | 仅生成 CDN 预签名 URL 时使用，不改变普通 SDK 请求入口 |
 | `connect_timeout(Duration)` | 50 秒 | 建连，包括 TLS |
 | `read_timeout(Duration)` | 50 秒 | 所有请求的 I/O 空闲超时，只限制无进展的时长：上传时每传出一块 body（最多 64 KiB）重置；等待响应头从最后一次上传进展开始计时（无 body 的请求从请求开始计时）；读响应 body 时每次读到数据重置 |
-| `request_timeout(Duration)` | 无 | 显式开启单次请求总期限，覆盖响应 body 的流式消费；`GetObjectRequest` / `PutObjectRequest` 的 `.timeout(Duration)` 可按请求覆盖 |
+| `request_timeout(Duration)` | 无 | 显式开启单次请求总期限，覆盖响应 body 的流式消费；对象操作 builder 的 `.timeout(Duration)` 可按请求覆盖 |
 | `pool_idle_timeout(Duration)` | 90 秒 | 空闲连接在池中保留的时间 |
 | `tcp_keepalive(Duration)` | 30 秒 | 整数秒，1–32767；实际探测由操作系统调度 |
 | `pool_max_idle_per_host(usize)` | 100 | 连接池每主机最多保留的空闲连接数；0 表示不保留空闲连接；不是并发上限 |
@@ -195,18 +195,20 @@ async fn remove_empty_bucket(client: &Client, bucket: &str) -> fds::Result<()> {
 ```rust,no_run
 use bytes::Bytes;
 use fds::Client;
-use fds::object::{ObjectMetadata, PutObjectRequest};
+use fds::object::ObjectMetadata;
 
 async fn upload_text(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     let mut metadata = ObjectMetadata::new();
     metadata.set("x-xiaomi-meta-source", "report-job")?;
-    let output = PutObjectRequest::new(bucket, key, Bytes::from_static(b"hello FDS\n"))
+    let output = client
+        .put_object(bucket, key, Bytes::from_static(b"hello FDS\n"))
         .content_type("text/plain; charset=utf-8")
         .cache_control("private, max-age=60")
         .content_disposition("attachment; filename=report.txt")
         .metadata(metadata)
         .expires(chrono::Utc::now() + chrono::Duration::minutes(10))
-        .send(client).await?;
+        .send()
+        .await?;
     println!("写入对象：{}", output.object_name);
     Ok(())
 }
@@ -231,25 +233,28 @@ PUT 是创建或覆盖同名对象，不提供“不存在才写”的条件写�
 
 ```rust,no_run
 use fds::Client;
-use fds::object::PutObjectRequest;
+use fds::object::UploadBody;
 use std::path::Path;
 
 async fn upload_file(client: &Client, bucket: &str, key: &str, path: &Path) -> fds::Result<()> {
-    PutObjectRequest::from_file(bucket, key, path).await?
+    let body = UploadBody::from_file(path).await?;
+    client
+        .put_object(bucket, key, body)
         .content_type("application/octet-stream")
-        .send(client).await?;
+        .send()
+        .await?;
     Ok(())
 }
 ```
 
-`from_file().await` 打开普通文件并读取长度，此时还未发请求。发送时按 64 KiB 块读取；保持文件不变直到调用结束。它不计算文件 MD5，也不自动切换为分片上传。零字节文件可以普通 PUT，托管分片要求非空文件。
+`UploadBody::from_file().await` 打开普通文件并读取长度，此时还未发请求。发送时按 64 KiB 块读取；保持文件不变直到调用结束。它不计算文件 MD5，也不自动切换为分片上传。零字节文件可以普通 PUT，托管分片要求非空文件。
 
 ### 已知长度的异步流
 
 ```rust,no_run
 use bytes::Bytes;
 use fds::Client;
-use fds::object::{PutObjectRequest, UploadBody};
+use fds::object::UploadBody;
 
 async fn upload_stream(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     let stream = futures_util::stream::iter([
@@ -257,9 +262,11 @@ async fn upload_stream(client: &Client, bucket: &str, key: &str) -> fds::Result<
         Ok(Bytes::from_static(b"world")),
     ]);
     let body = UploadBody::from_stream(stream, 11);
-    PutObjectRequest::new(bucket, key, body)
+    client
+        .put_object(bucket, key, body)
         .content_type("text/plain")
-        .send(client).await?;
+        .send()
+        .await?;
     Ok(())
 }
 ```
@@ -278,10 +285,9 @@ async fn upload_stream(client: &Client, bucket: &str, key: &str) -> fds::Result<
 
 ```rust,no_run
 use fds::Client;
-use fds::object::GetObjectRequest;
 
 async fn read_text(client: &Client, bucket: &str, key: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let bytes = GetObjectRequest::new(bucket, key).send(client).await?.bytes().await?;
+    let bytes = client.get_object(bucket, key).send().await?.bytes().await?;
     Ok(String::from_utf8(bytes.to_vec())?)
 }
 ```
@@ -292,11 +298,10 @@ async fn read_text(client: &Client, bucket: &str, key: &str) -> Result<String, B
 
 ```rust,no_run
 use fds::Client;
-use fds::object::GetObjectRequest;
 use tokio::io::AsyncWriteExt;
 
 async fn stream_to_file(client: &Client, bucket: &str, key: &str, path: &std::path::Path) -> fds::Result<u64> {
-    let output = GetObjectRequest::new(bucket, key).send(client).await?;
+    let output = client.get_object(bucket, key).send().await?;
     println!("HTTP 状态：{}", output.status());
     let mut file = tokio::fs::File::create(path).await?;
     let written = output.copy_to(&mut file).await?;
@@ -305,7 +310,7 @@ async fn stream_to_file(client: &Client, bucket: &str, key: &str, path: &std::pa
 }
 
 async fn consume_chunks(client: &Client, bucket: &str, key: &str) -> fds::Result<u64> {
-    let mut output = GetObjectRequest::new(bucket, key).send(client).await?;
+    let mut output = client.get_object(bucket, key).send().await?;
     let mut total = 0;
     while let Some(chunk) = output.chunk().await? {
         total += chunk.len() as u64;
@@ -323,13 +328,15 @@ async fn consume_chunks(client: &Client, bucket: &str, key: &str) -> fds::Result
 
 ```rust,no_run
 use fds::{Client, Error, ErrorKind};
-use fds::object::{ByteRange, GetObjectRequest};
+use fds::object::ByteRange;
 
 async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result<bytes::Bytes> {
     // 此示例要求对象至少有 1024 字节，并要求服务返回对应范围。
-    let output = GetObjectRequest::new(bucket, key)
+    let output = client
+        .get_object(bucket, key)
         .range(ByteRange::inclusive(0, 1023)?)
-        .send(client).await?;
+        .send()
+        .await?;
     if output.status() != 206 {
         return Err(Error::new(ErrorKind::ProtocolViolation, "服务未返回范围响应"));
     }
@@ -360,31 +367,31 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
 
 | 入口 | 返回 | 含义 |
 | --- | --- | --- |
-| `head_object(bucket, key)` | `Result<Option<ObjectMetadata>>` | 真正 HEAD；404 → None，200 → 元数据 |
-| `get_object_metadata(bucket, key)` | `Result<ObjectMetadata>` | GET `?metadata`，从响应头提取元数据 |
-| `get_object_basic_info(bucket, key)` | `Result<ObjectBasicInfo>` | GET `?basicInfo`，JSON 包含 size、upload_time、存储类别、metadata 等 |
+| `head_object(bucket, key).send()` | `Result<Option<ObjectMetadata>>` | 真正 HEAD；404 → None，200 → 元数据；`object_exists` 是同一请求的 bool 形式 |
+| `get_object_metadata(bucket, key).send()` | `Result<ObjectMetadata>` | GET `?metadata`，从响应头提取元数据；404 是错误 |
+| `get_object_basic_info(bucket, key).send()` | `Result<ObjectBasicInfo>` | GET `?basicInfo`，JSON 包含 size、upload_time、存储类别、metadata 等 |
 
 ```rust,no_run
 use fds::{Client, Error, ErrorKind};
-use fds::object::{ObjectMetadata, SetObjectMetadataRequest};
+use fds::object::ObjectMetadata;
 
 async fn inspect_and_set_metadata(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
-    let Some(head) = client.head_object(bucket, key).await? else {
+    let Some(head) = client.head_object(bucket, key).send().await? else {
         return Err(Error::new(ErrorKind::NotFound, "对象不存在"));
     };
     let wire_length = head.get("content-length")
         .ok_or_else(|| Error::new(ErrorKind::ProtocolViolation, "HEAD 缺少 Content-Length"))?;
     println!("Content-Length：{wire_length}");
-    let info = client.get_object_basic_info(bucket, key).await?;
+    let info = client.get_object_basic_info(bucket, key).send().await?;
     println!("basicInfo 大小：{}", info.size);
-    let current = client.get_object_metadata(bucket, key).await?;
+    let current = client.get_object_metadata(bucket, key).send().await?;
     let _content_type = current.get_content_type();
 
     // 显式提交完整的目标元数据，不把 set 当作自动合并补丁。
     let mut desired = ObjectMetadata::new();
     desired.set_content_type("application/octet-stream");
     desired.set("x-xiaomi-meta-owner", "upload-service")?;
-    SetObjectMetadataRequest::new(bucket, key, desired).send(client).await?;
+    client.set_object_metadata(bucket, key, desired).send().await?;
     Ok(())
 }
 ```
@@ -468,24 +475,28 @@ async fn count_pages(client: &Client, bucket: &str) -> fds::Result<usize> {
 
 ```rust,no_run
 use fds::Client;
-use fds::object::CopyObjectRequest;
 
 async fn copy_and_rename(client: &Client, src_bucket: &str, dst_bucket: &str) -> fds::Result<()> {
-    let receipt = CopyObjectRequest::new(src_bucket, "incoming/a.bin", dst_bucket, "backup/a.bin")
-        .send_with_response(client).await?;
+    let receipt = client
+        .copy_object((src_bucket, "incoming/a.bin"), (dst_bucket, "backup/a.bin"))
+        .send()
+        .await?;
     assert_eq!(receipt.bucket_name, dst_bucket);
     assert_eq!(receipt.object_name, "backup/a.bin");
-    client.rename_object(dst_bucket, "backup/a.bin", "backup/final.bin").await?;
+    client
+        .rename_object(dst_bucket, "backup/a.bin", "backup/final.bin")
+        .send()
+        .await?;
     Ok(())
 }
 async fn restore_deleted(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
-    client.restore_object(bucket, key).await
+    client.restore_object(bucket, key).send().await
 }
 ```
 
 复制是服务端操作，不会把源文件下载到调用进程。支持分别指定源/目标 Bucket 和 key；仍使用此 Client 的目标服务入口，不能据此假设能跨地区或跨独立 FDS 服务复制。没有条件防覆盖保证，也没有把复制和 rename 包装为事务。
 
-`copy_object_with_response(&request)` / `send_with_response(client)` 返回 `CopyObjectResponse`。原 `copy_object` / `send` 仍返回 `Result<()>`，但同样执行完整回执校验：必须 HTTP 200、完整有效 JSON、必填 `bucketName` / `objectName` 与请求目标完全一致。回执最多 64 KiB（含额外字段和空白），空体、截断、缺字段、目标不符、超限及超时均失败；读取受 Client 的 `request_timeout` 和 `read_timeout` 约束。
+`copy_object(..).send()` 返回 `CopyObjectResponse`，并执行完整回执校验：必须 HTTP 200、完整有效 JSON、必填 `bucketName` / `objectName` 与请求目标完全一致。回执最多 64 KiB（含额外字段和空白），空体、截断、缺字段、目标不符、超限及超时均失败；读取受 Client 的 `request_timeout` 和 `read_timeout` 约束。
 
 Copy 不自动重试。请求可能已到达服务后的任何失败（错误状态、回执缺失或不符、响应体中断）都是 `ErrorKind::OutcomeUnknown`，表示未取得有效匹配回执，**目标可能已写入，不能据此认定复制未执行，也不能盲目重试**；可通过 `source()` 检查原因，HTTP 诊断仍可通过 `status()` / `response()` 读取。应由业务结合目标身份、版本或内容证据核对结果，仅检查目标存在不能证明它来自本次 Copy。`dispatch()` 为 `Dispatch::NotSent` 的失败（参数校验、签名、连接被拒）原样返回。
 
@@ -493,7 +504,7 @@ Copy 不自动重试。请求可能已到达服务后的任何失败（错误状
 
 ## 单对象、批量与前缀删除
 
-单个对象调用 `client.delete_object(bucket, key).await?`。批量删除接受 `&[String]` 和 `put_to_trash: bool`，发送一个批次；它不自动把任意长数组切成符合服务限制的小批次。
+单个对象调用 `client.delete_object(bucket, key).send().await?`。批量删除接受 `&[String]` 和 `put_to_trash: bool`，发送一个批次；它不自动把任意长数组切成符合服务限制的小批次。
 
 ```rust,no_run
 use fds::{Client, Dispatch};
@@ -550,7 +561,6 @@ ACL 的 `Add` 是默认增量添加，`Delete` 删除指定授权项；没有 Re
 use fds::Client;
 use fds::acl::{AccessControlList, AclAction, Grant, GrantKey, GrantPermission, GrantType};
 use fds::bucket::SetBucketAclRequest;
-use fds::object::{GetObjectACLRequest, SetObjectACLRequest};
 
 fn read_grant(user_id: &str) -> AccessControlList {
     let mut acl = AccessControlList::default();
@@ -564,21 +574,24 @@ fn read_grant(user_id: &str) -> AccessControlList {
 
 async fn grant_read(client: &Client, bucket: &str, key: &str, user_id: &str) -> fds::Result<()> {
     SetBucketAclRequest::new(bucket, read_grant(user_id)).send(client).await?;
-    SetObjectACLRequest::new(bucket, key, read_grant(user_id)).send(client).await?;
+    client.set_object_acl(bucket, key, read_grant(user_id)).send().await?;
     let _bucket_acl = client.get_bucket_acl(bucket).await?;
-    let _object_acl = GetObjectACLRequest::new(bucket, key).send(client).await?;
+    let _object_acl = client.get_object_acl(bucket, key).send().await?;
     Ok(())
 }
 
 async fn revoke_object_read(client: &Client, bucket: &str, key: &str, user_id: &str) -> fds::Result<()> {
-    SetObjectACLRequest::new(bucket, key, read_grant(user_id))
-        .action(AclAction::Delete).send(client).await
+    client
+        .set_object_acl(bucket, key, read_grant(user_id))
+        .action(AclAction::Delete)
+        .send()
+        .await
 }
 ```
 
 `GrantType` 为 User/Group；`GrantPermission` 为 Read、Write、ReadObjects、SsoWrite、FullControl。不同资源、用户、服务权限可能限制可用组合。ACL 结果还包含 owner。对象 GET/SET ACL 请求都有 `.version_id(...)`；其余对象读写入口不能因此推断支持版本寻址。服务文档中的“不能删除自身 ACL”限制仍需遵守。
 
-`client.set_object_public(bucket, key).await?` 添加 `ALL_USERS` Group 的 Read 授权，意味着公开可读。只有业务明确需要匿名访问时才使用。
+`client.set_object_public(bucket, key).send().await?` 添加 `ALL_USERS` Group 的 Read 授权，意味着公开可读。只有业务明确需要匿名访问时才使用。
 
 创建桶的 canned ACL 使用独立枚举，可设置多个值：
 
@@ -745,33 +758,39 @@ fn limited_download_options() -> fds::Result<DownloadOptions> {
 ## 预签名与普通 URL
 
 ```rust,no_run
-use fds::object::{GeneratePresignedURLRequest, ObjectMetadata};
+use fds::object::ObjectMetadata;
 use fds::Client;
 use http::Method;
 use std::time::Duration;
 
 fn download_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
-    GeneratePresignedURLRequest::expires_in(bucket, key, Method::GET, Duration::from_secs(600))?
-        .generate(client)
+    client
+        .presign_object(bucket, key)
+        .expires_in(Duration::from_secs(600))
+        .build()
 }
 
 fn upload_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
     let mut metadata = ObjectMetadata::new();
     metadata.set_content_type("application/octet-stream");
-    GeneratePresignedURLRequest::expires_in(bucket, key, Method::PUT, Duration::from_secs(600))?
-        .metadata(metadata).generate(client)
+    client
+        .presign_object(bucket, key)
+        .method(Method::PUT)
+        .expires_in(Duration::from_secs(600))
+        .metadata(metadata)
+        .build()
 }
 
 fn public_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> {
-    client.generate_absolute_object_url(bucket, key)
+    client.absolute_object_url(bucket, key)
 }
 ```
 
-预签名仅支持 access key Client，OAuth Client 返回错误。生成操作不联网、不验证对象存在或凭据是否有效。有效期从构造请求时计算，不是实际交付 URL 时；`expires_in` 至少 1 ms，绝对时间可用 `new(bucket, key, method, DateTime<Utc>)`。
+预签名仅支持 access key Client，OAuth Client 返回错误。生成操作不联网、不验证对象存在或凭据是否有效。`expires_in` 的有效期从调用 `build()` 时计算，不是实际交付 URL 时，至少 1 ms；绝对时间用 `.expires_at(DateTime<Utc>)`。两者必须设置其一，method 默认 GET。
 
 接收方必须使用签名时的 HTTP method 与参与签名的头；例如上传示例使用相同 Content-Type。SDK 返回完整 String，保留它原样使用，不自行重排 query 或重复编码 Signature。该协议 Expires 是毫秒时间戳，HEAD 预签名还附带 metadata 子资源。URL 包含临时访问凭证，应经受控渠道交付，不放公开日志。
 
-`.cdn(true)` 请求 CDN 地址，必须在构建 Client 时显式设置 `cdn_endpoint(origin)`；未配置会返回错误，不会从 FDS 主机自动推导。普通 SDK 数据请求始终使用 FDS endpoint。CDN 地址是否已开通由服务环境决定。
+`.cdn()` 请求 CDN 地址，必须在构建 Client 时显式设置 `cdn_endpoint(origin)`；未配置会返回错误，不会从 FDS 主机自动推导。普通 SDK 数据请求始终使用 FDS endpoint。CDN 地址是否已开通由服务环境决定。
 
 普通 URL 不含认证，也不会把对象设为公开；匿名访问仍需权限。空 object 可生成 Bucket URL，Bucket/object 都空可生成 endpoint 根 URL。
 
@@ -839,10 +858,10 @@ async fn disable_logs(client: &Client, bucket: &str) -> fds::Result<()> {
 use fds::Client;
 
 async fn request_prefetch(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
-    client.prefetch_object(bucket, key).await
+    client.prefetch_object(bucket, key).send().await
 }
 async fn request_refresh(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
-    client.refresh_object(bucket, key).await
+    client.refresh_object(bucket, key).send().await
 }
 ```
 
@@ -878,7 +897,6 @@ async fn discover_client(discovery_origin: &str, region: &str, service_name: &st
 ```rust,no_run
 use fds::Client;
 use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
-use fds::object::GetObjectRequest;
 
 async fn oauth_read(exchange_origin: &str, object_origin: &str, app_id: &str,
     oauth_app_id: &str, provider_token: &str, bucket: &str, key: &str) -> fds::Result<u64>
@@ -889,7 +907,7 @@ async fn oauth_read(exchange_origin: &str, object_origin: &str, app_id: &str,
     let expires_at = token.expires_at();
     let client = Client::builder().endpoint(object_origin).storage_token(token).build()?;
     let _app_buckets = client.list_app_buckets().await?;
-    let mut output = GetObjectRequest::new(bucket, key).send(&client).await?;
+    let mut output = client.get_object(bucket, key).send().await?;
     let mut count = 0;
     while let Some(chunk) = output.chunk().await? {
         count += chunk.len() as u64;
@@ -966,14 +984,13 @@ PUT、复制、rename、ACL 修改、删除、分片 init/part/complete/abort、
 
 ```rust,no_run
 use fds::Client;
-use fds::object::GetObjectRequest;
 use std::time::Duration;
 
 async fn read_with_deadline(client: &Client, bucket: &str, key: &str)
     -> Result<bytes::Bytes, Box<dyn std::error::Error>>
 {
     let bytes = tokio::time::timeout(Duration::from_secs(30), async {
-        GetObjectRequest::new(bucket, key).send(client).await?.bytes().await
+        client.get_object(bucket, key).send().await?.bytes().await
     }).await??;
     Ok(bytes)
 }

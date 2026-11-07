@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use chrono::{TimeZone, Utc};
 use fds::multipart::UploadPartRequest;
-use fds::object::{PutObjectRequest, UploadBody};
+use fds::object::UploadBody;
 use fds::Client;
 use futures_util::stream;
 use std::{
@@ -40,11 +40,12 @@ async fn owned_put_and_stream_preserve_wire_headers_and_expiry() {
         .await;
     let client = client(server.url(), true);
     let expiry = Utc.timestamp_millis_opt(1700000000000).unwrap();
-    let result = PutObjectRequest::new("bucket", "a/b +", b"hello".to_vec())
+    let result = client
+        .put_object("bucket", "a/b +", b"hello".to_vec())
         .content_type("text/plain")
         .cache_control("no-cache")
         .expires(expiry)
-        .send(&client)
+        .send()
         .await
         .unwrap();
     assert_eq!(result.object_name, "a/b +");
@@ -56,12 +57,13 @@ async fn owned_put_and_stream_preserve_wire_headers_and_expiry() {
         5,
     );
     assert!(body.try_clone().is_none());
-    PutObjectRequest::new("bucket", "a/b +", body)
+    client
+        .put_object("bucket", "a/b +", body)
         .content_type("text/plain")
         .content_md5("5d41402abc4b2a76b9719d911017c592")
         .cache_control("no-cache")
         .expires(expiry)
-        .send(&client)
+        .send()
         .await
         .unwrap();
     mock.assert_async().await;
@@ -100,12 +102,14 @@ async fn part_file_empty_and_owned_owned_send() {
         .unwrap();
     assert_eq!(result.part_number, 1);
     tokio::fs::remove_file(path).await.unwrap();
-    PutObjectRequest::new("b", "empty", Bytes::new())
-        .send(&client)
+    client
+        .put_object("b", "empty", Bytes::new())
+        .send()
         .await
         .unwrap();
-    PutObjectRequest::new("b", "owned", b"owned".to_vec())
-        .send(&client)
+    client
+        .put_object("b", "owned", b"owned".to_vec())
+        .send()
         .await
         .unwrap();
     part.assert_async().await;
@@ -121,8 +125,9 @@ async fn checksum_requirement_fails_before_polling_source() {
         }),
         5,
     );
-    let error = PutObjectRequest::new("b", "k", body)
-        .send(&client("http://127.0.0.1:1".into(), true))
+    let error = client("http://127.0.0.1:1".into(), true)
+        .put_object("b", "k", body)
+        .send()
         .await
         .unwrap_err();
     assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
@@ -144,10 +149,7 @@ async fn invalid_stream_lengths_and_source_errors_fail() {
         (vec![Err(io::Error::other("source failed"))], 2),
     ] {
         let body = UploadBody::from_stream(stream::iter(chunks), length);
-        assert!(PutObjectRequest::new("b", "k", body)
-            .send(&client)
-            .await
-            .is_err());
+        assert!(client.put_object("b", "k", body).send().await.is_err());
     }
     never.assert_async().await;
 }
@@ -185,8 +187,7 @@ async fn large_generated_upload_is_backpressured_and_cancellation_drops_source()
         },
         1_u64 << 40,
     );
-    let task =
-        tokio::spawn(async move { PutObjectRequest::new("b", "k", body).send(&client).await });
+    let task = tokio::spawn(async move { client.put_object("b", "k", body).send().await });
     let (mut socket, _) = listener.accept().await.unwrap();
     let mut buffer = [0; 4096];
     assert!(
@@ -252,10 +253,7 @@ async fn generated_upload_completes_without_collecting_body() {
         },
         length as u64,
     );
-    PutObjectRequest::new("b", "k", body)
-        .send(&client)
-        .await
-        .unwrap();
+    client.put_object("b", "k", body).send().await.unwrap();
     server.await.unwrap();
     assert_eq!(count.load(Ordering::SeqCst), length / (64 * 1024));
     assert!(dropped.load(Ordering::SeqCst));

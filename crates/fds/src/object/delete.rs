@@ -49,12 +49,29 @@ impl std::fmt::Debug for DeleteObjectFailure {
     }
 }
 
+object_builder! {
+    /// Builder for [`Client::delete_object`].
+    DeleteObject
+}
+
+impl DeleteObject {
+    /// DELETE `/{bucket}/{object}`.
+    pub async fn send(self) -> Result<()> {
+        validate_object(&self.bucket, &self.object)?;
+        let cr = ClientRequest::new(&self.bucket, &self.object, Method::DELETE)
+            .with_timeout(self.timeout)?;
+        self.client.do_discard(cr).await
+    }
+}
+
 impl Client {
-    /// Delete an object (DELETE `/{b}/{o}`).
-    pub async fn delete_object(&self, bucket: &str, object: &str) -> Result<()> {
-        validate_object(bucket, object)?;
-        self.do_discard(ClientRequest::new(bucket, object, Method::DELETE))
-            .await
+    /// Delete one object.
+    pub fn delete_object(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+    ) -> DeleteObject {
+        DeleteObject::new(self, bucket, object)
     }
 
     /// Delete one batch. Empty input makes no request and returns `Ok`.

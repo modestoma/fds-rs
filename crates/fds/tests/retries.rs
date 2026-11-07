@@ -1,5 +1,5 @@
 use fds::multipart::InitMultipartUploadRequest;
-use fds::object::{GetObjectRequest, PutObjectRequest, UploadBody};
+use fds::object::UploadBody;
 use fds::{Client, RetryPolicy};
 use std::{
     sync::{Arc, Mutex},
@@ -59,7 +59,8 @@ async fn disconnect_and_unavailable_retry_with_budget_backoff_and_fresh_signatur
         }
     });
     assert_eq!(
-        c.get_object(&GetObjectRequest::new("b", "a/b"))
+        c.get_object("b", "a/b")
+            .send()
             .await
             .unwrap()
             .bytes()
@@ -85,6 +86,7 @@ async fn status_budget_server_hint_and_non_transient_rejection() {
         .await;
     assert_eq!(
         c.head_object("b", "budget")
+            .send()
             .await
             .unwrap_err()
             .status()
@@ -106,7 +108,7 @@ async fn status_budget_server_hint_and_non_transient_rejection() {
             .create_async()
             .await;
         let start = std::time::Instant::now();
-        assert!(c.head_object("b", key).await.is_err());
+        assert!(c.head_object("b", key).send().await.is_err());
         if key == "hint" {
             assert!(start.elapsed() >= Duration::from_secs(2));
         }
@@ -149,10 +151,7 @@ async fn writes_streams_and_success_decode_errors_are_never_replayed() {
             .expect(1)
             .create_async()
             .await;
-        assert!(PutObjectRequest::new("b", key, body)
-            .send(&c)
-            .await
-            .is_err());
+        assert!(c.put_object("b", key, body).send().await.is_err());
         m.assert_async().await;
     }
     let decode = s
@@ -175,6 +174,6 @@ async fn writes_streams_and_success_decode_errors_are_never_replayed() {
         .credentials("ak", "sk")
         .build()
         .unwrap();
-    assert!(c.head_object("b", "off").await.is_err());
+    assert!(c.head_object("b", "off").send().await.is_err());
     disabled.assert_async().await;
 }

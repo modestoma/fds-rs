@@ -1,0 +1,286 @@
+=== get_object ===
+GET /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_object range timeout ===
+GET /b/o HTTP/1.1
+range: bytes=0-4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== head_object ===
+HEAD /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== object_exists missing ===
+HEAD /b/o HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_object_metadata ===
+GET /b/dir%2Fa%20b%2Bc.txt?metadata= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== put_object bytes all options ===
+PUT /b/dir%2Fa%20b%2Bc.txt?expires=1752400000123 HTTP/1.1
+cache-control: no-cache
+content-disposition: attachment
+content-encoding: identity
+content-type: text/plain
+content-md5: XrY7u+Ae7tCTyyK7j1rNww==
+expect: 100-continue
+x-xiaomi-meta-k: v
+content-length: 11
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+hello world
+
+=== put_object empty options ===
+PUT /b/o HTTP/1.1
+content-length: 0
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== put_object stream precomputed md5 ===
+PUT /b/o HTTP/1.1
+content-md5: precomputed-md5-value
+content-length: 12
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+hello stream
+
+=== put_object bytes md5 ===
+PUT /b/o HTTP/1.1
+content-md5: d5d17f8d58f03d18b8e50a5feba80abd
+content-length: 6
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+md5 me
+
+=== put_object from_file ===
+PUT /b/o HTTP/1.1
+content-type: text/plain
+content-length: 11
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+from a file
+
+=== copy_object ===
+PUT /tb/dir%2Fa%20b%2Bc.txt?cp= HTTP/1.1
+content-length: 48
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"srcBucketName":"sb","srcObjectName":"src/x y"}
+
+=== rename_object ===
+PUT /b/dir%2Fa%20b%2Bc.txt?renameTo=new%2Fx+y%2Bz HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== restore_object ===
+PUT /b/dir%2Fa%20b%2Bc.txt?restore= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== prefetch_object ===
+PUT /b/dir%2Fa%20b%2Bc.txt?prefetch= HTTP/1.1
+content-type: application/json; charset=UTF-8
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== refresh_object ===
+PUT /b/dir%2Fa%20b%2Bc.txt?refresh= HTTP/1.1
+content-type: application/json; charset=UTF-8
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== delete_object ===
+DELETE /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== set_object_metadata ===
+PUT /b/dir%2Fa%20b%2Bc.txt?setMetaData= HTTP/1.1
+content-length: 35
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"rawMeta":{"x-xiaomi-meta-k":"v"}}
+
+=== get_object_basic_info ===
+GET /b/dir%2Fa%20b%2Bc.txt?basicInfo= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_object_acl ===
+GET /b/dir%2Fa%20b%2Bc.txt?acl= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_object_acl version ===
+GET /b/o?acl=&versionId=v+1 HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_object_acl empty version ===
+GET /b/o?acl= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== set_object_acl add ===
+PUT /b/dir%2Fa%20b%2Bc.txt?acl= HTTP/1.1
+content-length: 144
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"accessControlList":[{"grantee":{"id":"user1","displayName":""},"permission":"FULL_CONTROL","type":"USER"}],"owner":{"id":"","displayName":""}}
+
+=== set_object_acl delete version ===
+PUT /b/o?acl=&action=delete&versionId=v1 HTTP/1.1
+content-length: 137
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"accessControlList":[{"grantee":{"id":"user1","displayName":""},"permission":"WRITE","type":"USER"}],"owner":{"id":"","displayName":""}}
+
+=== set_object_public ===
+PUT /b/dir%2Fa%20b%2Bc.txt?acl= HTTP/1.1
+content-length: 141
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"accessControlList":[{"grantee":{"id":"ALL_USERS","displayName":""},"permission":"READ","type":"GROUP"}],"owner":{"id":"","displayName":""}}
+
+=== presign GET ===
+https://cnbj1.fds.api.xiaomi.com/b/dir%2Fa%20b%2Bc.txt?Expires=1752400000123&GalaxyAccessKeyId=AKID&Signature=9fex3WP5M3zy+aMAi5aW0z8JC3w=
+
+=== presign HEAD ===
+https://cnbj1.fds.api.xiaomi.com/b/dir%2Fa%20b%2Bc.txt?Expires=1752400000123&GalaxyAccessKeyId=AKID&metadata=&Signature=18XgF9PlhVKmlE7K7GVpxJ73n58=
+
+=== presign GET cdn ===
+https://cdn.cnbj1.fds.api.mi-img.com/b/dir%2Fa%20b%2Bc.txt?Expires=1752400000123&GalaxyAccessKeyId=AKID&Signature=9fex3WP5M3zy+aMAi5aW0z8JC3w=
+
+=== presign PUT metadata ===
+https://cnbj1.fds.api.xiaomi.com/b/dir%2Fa%20b%2Bc.txt?Expires=1752400000123&GalaxyAccessKeyId=AKID&Signature=HslgJokEtb+UOAJ3Tj9SXY6KOeQ=
+
+=== presign DELETE cdn metadata ===
+https://cdn.cnbj1.fds.api.mi-img.com/b/dir%2Fa%20b%2Bc.txt?Expires=1752400000123&GalaxyAccessKeyId=AKID&Signature=OgexxoNLyTTVkG1zOQZE8qMxopU=
+
+=== absolute object ===
+https://cnbj1.fds.api.xiaomi.com/b/dir%2Fa%20b%2Bc.txt
+
+=== absolute bucket ===
+https://cnbj1.fds.api.xiaomi.com/b
+
+=== absolute root ===
+https://cnbj1.fds.api.xiaomi.com/

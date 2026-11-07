@@ -2,7 +2,7 @@ use chrono::{TimeZone, Utc};
 use fds::acl::{AccessControlList, AclAction, BucketCannedAcl};
 use fds::bucket::CreateBucketRequest;
 use fds::multipart::CompleteMultipartUploadRequest;
-use fds::object::{ListObjectsRequest, PutObjectRequest, SetObjectACLRequest};
+use fds::object::ListObjectsRequest;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 use mockito::{Matcher, Server};
@@ -239,13 +239,12 @@ async fn typed_acl_add_delete_and_bucket_creation_headers() {
             .match_body(Matcher::Json(body.clone()))
             .create_async()
             .await;
-        c.set_object_acl(
-            &SetObjectACLRequest::new("b", "a/b", acl.clone())
-                .version_id("v")
-                .action(action),
-        )
-        .await
-        .unwrap();
+        c.set_object_acl("b", "a/b", acl.clone())
+            .version_id("v")
+            .action(action)
+            .send()
+            .await
+            .unwrap();
         object.assert_async().await;
     }
     let create = s
@@ -292,11 +291,11 @@ async fn signature_expiry_is_milliseconds_and_omitted_by_default() {
             .with_body("{}")
             .create_async()
             .await;
-        let req = PutObjectRequest::new("b", "a/b", b"payload".to_vec());
+        let req = c.put_object("b", "a/b", b"payload".to_vec());
         if let Some(expiry) = expiry {
-            c.put_object(req.expires(expiry)).await.unwrap();
+            req.expires(expiry).send().await.unwrap();
         } else {
-            c.put_object(req).await.unwrap();
+            req.send().await.unwrap();
         }
         upload.assert_async().await;
         let query = if query.is_empty() {

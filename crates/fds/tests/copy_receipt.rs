@@ -1,4 +1,3 @@
-use fds::object::CopyObjectRequest;
 use fds::{Client, Dispatch, ErrorKind, RetryPolicy};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -63,8 +62,9 @@ async fn receipts_are_required_matching_bounded_and_never_retried() {
             .expect(1)
             .create_async()
             .await;
-        let result = CopyObjectRequest::new("src", "source", "dst", "中文 a.tar.gz")
-            .send_with_response(&client(server.url()))
+        let result = client(server.url())
+            .copy_object(("src", "source"), ("dst", "中文 a.tar.gz"))
+            .send()
             .await;
         if succeeds {
             let receipt = result.unwrap();
@@ -85,7 +85,7 @@ async fn receipts_are_required_matching_bounded_and_never_retried() {
 }
 
 #[tokio::test]
-async fn legacy_entry_point_validates_body() {
+async fn empty_receipt_is_outcome_unknown() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
         .mock("PUT", "/dst/key?cp=")
@@ -93,8 +93,9 @@ async fn legacy_entry_point_validates_body() {
         .expect(1)
         .create_async()
         .await;
-    let error = CopyObjectRequest::new("src", "key", "dst", "key")
-        .send(&client(server.url()))
+    let error = client(server.url())
+        .copy_object(("src", "key"), ("dst", "key"))
+        .send()
         .await
         .unwrap_err();
     assert!(error.is_outcome_unknown(), "{error:?}");
@@ -124,7 +125,8 @@ async fn truncated_transport_and_stalled_body_are_unknown_without_retry() {
             );
         });
         let error = c
-            .copy_object_with_response(&CopyObjectRequest::new("src", "key", "dst", "key"))
+            .copy_object(("src", "key"), ("dst", "key"))
+            .send()
             .await
             .unwrap_err();
         assert!(error.is_outcome_unknown(), "{error:?}");

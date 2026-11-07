@@ -46,12 +46,12 @@
 | 文件 | 功能 | 原始方法、路径与参数 | SDK 状态 | SDK 入口与差异 |
 | --- | --- | --- | --- | --- |
 | [list-objects.yaml](list-objects.yaml) | 获取某个Bucket下的Object列表 | `GET /{bucketname}`；`?prefix`、`?delimiter`、`?marker`、`?maxKeys` | implemented | 同一 ListObjectsRequest 支持 marker、单页与惰性 pages / objects |
-| [put-object.yaml](put-object.yaml) | 上传object，如果有同名Object，将会覆盖 | `PUT /{bucketname}/{objectname}`；`H:content-type`、`H:x-xiaomi-meta-`、`?expires`、`B:body` | implemented | `PutObjectRequest` / `UploadBody` 支持消耗式 bytes/file/stream 与 expires；Client 和 send 均消耗请求 |
+| [put-object.yaml](put-object.yaml) | 上传object，如果有同名Object，将会覆盖 | `PUT /{bucketname}/{objectname}`；`H:content-type`、`H:x-xiaomi-meta-`、`?expires`、`B:body` | implemented | `put_object(..)` builder 与 `UploadBody` 支持消耗式 bytes/file/stream 与 expires；`send` 消耗 builder |
 | [post-object.yaml](post-object.yaml) | POST 创建对象；指定 key 与覆盖语义未明确 | `POST /{bucketname}/`；`?expires`、`B:body`、`form-data:contentType`、`form-data:cannedAcl`、`form:key` | missing | 无 POST 创建对象 |
-| [get-object.yaml](get-object.yaml) | 获取object | `GET /{bucketname}/{objectname}`；`H:Range` | implemented | `GetObjectRequest::send` 返回 `GetObjectOutput`，支持 `ByteRange`；Client 返回相同 SDK 结果 |
-| [head-object.yaml](head-object.yaml) | 获取object的meta信息 | `HEAD /{bucketname}/{objectname}`；— | implemented | `head_object` 返回 `Option<ObjectMetadata>`；`does_object_exist` 保留 |
+| [get-object.yaml](get-object.yaml) | 获取object | `GET /{bucketname}/{objectname}`；`H:Range` | implemented | `get_object(..).send()` 返回 `GetObjectOutput`，支持 `ByteRange` |
+| [head-object.yaml](head-object.yaml) | 获取object的meta信息 | `HEAD /{bucketname}/{objectname}`；— | implemented | `head_object` 返回 `Option<ObjectMetadata>`；`object_exists` 是同一请求的 bool 形式 |
 | [get-object-metadata.yaml](get-object-metadata.yaml) | 获取object的meta信息 | `HEAD /{bucketname}/{objectname}`；— | duplicate | 与 head-object 同为 HEAD；权限文案不同。映射 `head_object`；同名 `get_object_metadata` 仍是独立 GET `?metadata` |
-| [copy-object.yaml](copy-object.yaml) | 将一个src_objectname从src_bucketname复制到dst_bucketname，并重命名为dst_objectname | `PUT /{dst_bucketname}/{dst_objectname}`；`?cp`、`B:body` | implemented | `copy_object`；409 文案不能作为防覆盖保证 |
+| [copy-object.yaml](copy-object.yaml) | 将一个src_objectname从src_bucketname复制到dst_bucketname，并重命名为dst_objectname | `PUT /{dst_bucketname}/{dst_objectname}`；`?cp`、`B:body` | implemented | `copy_object` 返回校验后的回执；409 文案不能作为防覆盖保证 |
 | [rename-object.yaml](rename-object.yaml) | 重命名文件 | `PUT /{bucketname}/{objectname}`；`?renameTo` | implemented | `rename_object` |
 | [delete-object.yaml](delete-object.yaml) | 删除指定object | `DELETE /{bucketname}/{objectname}`；— | implemented | `delete_object` |
 | [delete-multiple-objects.yaml](delete-multiple-objects.yaml) | 删除指定Bucket下多个object | `PUT /{bucketname}`；`?deleteObjects`、`B:body` | implemented | `delete_objects` 返回逐项失败；prefix helper 保留已确认进度与失败 |
@@ -62,7 +62,7 @@
 | 文件 | 功能 | 原始方法、路径与参数 | SDK 状态 | SDK 入口与差异 |
 | --- | --- | --- | --- | --- |
 | [get-object-acl.yaml](get-object-acl.yaml) | 读取对象 ACL | `GET /{bucketname}/{objectname}`；`?acl` | implemented | `get_object_acl`，额外支持 versionId |
-| [put-object-acl.yaml](put-object-acl.yaml) | 修改Object的ACL | `PUT /{bucketname}/{objectname}`；`?acl`、`?action`、`B:body` | implemented | `SetObjectACLRequest::action` 支持 add/delete |
+| [put-object-acl.yaml](put-object-acl.yaml) | 修改Object的ACL | `PUT /{bucketname}/{objectname}`；`?acl`、`?action`、`B:body` | implemented | `set_object_acl(..).action(..)` 支持 add/delete |
 | [delete-object-acl.yaml](delete-object-acl.yaml) | 删除object的ACL信息 | `PUT /{bucketname}/{objectname}`；`?acl`、`?action`、`B:body` | duplicate | 与 put-object-acl 的 action=delete 重叠，已支持类型化 Delete；保留不能删除自身 ACL 的前提 |
 
 ### 分片上传与复制
@@ -103,7 +103,7 @@
 | basicInfo | `get_object_basic_info` GET `?basicInfo` |
 | Metadata GET/SET | `get_object_metadata` GET `?metadata`；`set_object_metadata` PUT `?setMetaData` |
 | Metadata codec | `ObjectMetadata::serialize` 输出 rawMeta map；Deserialize 输入 rawMeta.entry 数组；`from_headers` 解析头 |
-| Presign / URL | `generate_presigned_url`、`generate_absolute_object_url`，HEAD 签名附 metadata，expires 毫秒，Signature 原样追加 |
+| Presign / URL | `presign_object`、`absolute_object_url`，HEAD 签名附 metadata，expires 毫秒，Signature 原样追加 |
 | Prefix delete | `delete_objects_with_prefix` 列举后逐页批删 |
 | Download manager | `Downloader` / `DownloadRequest`，默认 manager feature |
 | CSLB | `cslb` feature 下 Client 使用内部 DNS resolver（`cslb_max_nodes`），不提供公开类型 |

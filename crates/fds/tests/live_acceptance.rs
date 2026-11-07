@@ -1,5 +1,5 @@
 //! Explicit, isolated real-service acceptance. Never part of the default suite.
-use fds::object::{ByteRange, GetObjectRequest, ListObjectsRequest, PutObjectRequest};
+use fds::object::{ByteRange, ListObjectsRequest};
 use fds::Client;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,18 +28,20 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     // This identifier is safe to retain for cleanup if the process is killed.
     eprintln!("scratch object: {key}");
     let result: fds::Result<()> = async {
-        PutObjectRequest::new(&bucket, &key, b"hello fds".to_vec())
+        client
+            .put_object(&bucket, &key, b"hello fds".to_vec())
             .content_type("text/plain")
-            .send(&client)
+            .send()
             .await?;
-        if client.head_object(&bucket, &key).await?.is_none() {
+        if client.head_object(&bucket, &key).send().await?.is_none() {
             return Err(fds::Error::new(
                 fds::ErrorKind::Unexpected,
                 "uploaded object missing from HEAD",
             ));
         }
-        let full = GetObjectRequest::new(&bucket, &key)
-            .send(&client)
+        let full = client
+            .get_object(&bucket, &key)
+            .send()
             .await?
             .bytes()
             .await?;
@@ -49,9 +51,10 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
                 "roundtrip bytes differ",
             ));
         }
-        let ranged = GetObjectRequest::new(&bucket, &key)
+        let ranged = client
+            .get_object(&bucket, &key)
             .range(ByteRange::inclusive(1, 4)?)
-            .send(&client)
+            .send()
             .await?;
         if ranged.status() != 206 || ranged.bytes().await?.as_ref() != b"ello" {
             return Err(fds::Error::new(
@@ -84,7 +87,7 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     .await;
     // Delete only this run's exact key, even after ambiguous upload failure.
     // Keep both outcomes visible; no prefix deletion or Bucket mutation.
-    let cleanup = client.delete_object(&bucket, &key).await;
+    let cleanup = client.delete_object(&bucket, &key).send().await;
     if cleanup.is_err() {
         eprintln!("scratch cleanup failed; delete the recorded exact object manually");
     }
@@ -139,14 +142,15 @@ async fn live_oauth_discovery_and_read() -> Result<(), Box<dyn std::error::Error
         .storage_token(token)
         .build()?;
     let _ = client.list_app_buckets().await?;
-    let actual = GetObjectRequest::new(
-        std::env::var("FDS_LIVE_BUCKET")?,
-        std::env::var("FDS_OAUTH_FIXTURE_KEY")?,
-    )
-    .send(&client)
-    .await?
-    .bytes()
-    .await?;
+    let actual = client
+        .get_object(
+            std::env::var("FDS_LIVE_BUCKET")?,
+            std::env::var("FDS_OAUTH_FIXTURE_KEY")?,
+        )
+        .send()
+        .await?
+        .bytes()
+        .await?;
     assert!(
         actual.as_ref() == std::env::var("FDS_OAUTH_FIXTURE_TEXT")?.as_bytes(),
         "OAuth fixture content differs"

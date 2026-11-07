@@ -1,5 +1,4 @@
 //! Local transport checks; no live FDS credentials or service are used.
-use fds::object::{GetObjectRequest, PutObjectRequest};
 use fds::Client;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -166,7 +165,7 @@ async fn cslb_client_resolves_hostname_endpoints() {
         .build()
         .unwrap();
     for _ in 0..3 {
-        let md = c.head_object("b", "o").await.unwrap().unwrap();
+        let md = c.head_object("b", "o").send().await.unwrap().unwrap();
         assert_eq!(md.get("content-length"), Some("5"));
     }
     m.assert_async().await;
@@ -187,27 +186,22 @@ async fn explicit_cdn_and_md5_keep_wire_behavior() {
         .enable_md5_calculate(true)
         .build()
         .unwrap();
-    c.put_object(PutObjectRequest::new("b", "o", b"hello".to_vec()))
+    c.put_object("b", "o", b"hello".to_vec())
+        .send()
         .await
         .unwrap();
     m.assert_async().await;
-    let req = fds::object::GeneratePresignedURLRequest {
-        bucket_name: "b".into(),
-        object_name: "a/b +".into(),
-        cdn: true,
-        method: http::Method::GET,
-        expiration: chrono::Utc::now(),
-        metadata: None,
+    let presign = |client: &Client| {
+        client
+            .presign_object("b", "a/b +")
+            .expires_at(chrono::Utc::now())
+            .cdn()
+            .build()
     };
-    assert!(c
-        .generate_presigned_url(&req)
+    assert!(presign(&c)
         .unwrap()
         .starts_with("https://cdn.example.com/b/a%2Fb%20%2B?"));
-    assert!(builder()
-        .build()
-        .unwrap()
-        .generate_presigned_url(&req)
-        .is_err());
+    assert!(presign(&builder().build().unwrap()).is_err());
 }
 
 async fn stalled_server(tls: bool, headers: bool) -> (String, tokio::task::JoinHandle<()>) {
@@ -266,14 +260,7 @@ async fn read_timeout_enforces_header_and_stream_body_stalls() {
             .unwrap();
         assert_eq!(c.configuration().request_timeout(), None);
         let result = tokio::time::timeout(Duration::from_secs(3), async {
-            let resp = c
-                .get_object(&GetObjectRequest {
-                    bucket_name: "b".into(),
-                    object_name: "o".into(),
-                    range: None,
-                    timeout: None,
-                })
-                .await?;
+            let resp = c.get_object("b", "o").send().await?;
             resp.bytes().await
         })
         .await
@@ -319,7 +306,7 @@ async fn slow_body_server() -> (String, tokio::task::JoinHandle<()>) {
 /// outer deadline so a regression cannot hang the test suite.
 async fn get_slow_body(
     client_builder: fds::ClientBuilder,
-    request: GetObjectRequest,
+    timeout: Option<Duration>,
 ) -> (fds::Result<bytes::Bytes>, Duration) {
     let (endpoint, server) = slow_body_server().await;
     let c = client_builder
@@ -329,7 +316,11 @@ async fn get_slow_body(
         .unwrap();
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(Duration::from_secs(5), async {
-        c.get_object(&request).await?.bytes().await
+        let mut request = c.get_object("b", "o");
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
+        request.send().await?.bytes().await
     })
     .await
     .expect("outer guard elapsed");
@@ -348,41 +339,33 @@ fn assert_timeout(result: fds::Result<bytes::Bytes>) {
 
 #[tokio::test]
 async fn default_client_reads_slow_body_beyond_total_threshold() {
-    let (result, elapsed) = get_slow_body(builder(), GetObjectRequest::new("b", "o")).await;
+    let (result, elapsed) = get_slow_body(builder(), None).await;
     assert_eq!(result.unwrap().len(), SLOW_BODY_LEN);
     assert!(elapsed > THRESHOLD, "body finished too fast: {elapsed:?}");
 }
 
 #[tokio::test]
 async fn total_timeout_expires_despite_continuing_body_progress() {
-    let (result, _) = get_slow_body(
-        builder().request_timeout(THRESHOLD),
-        GetObjectRequest::new("b", "o"),
-    )
-    .await;
+    let (result, _) = get_slow_body(builder().request_timeout(THRESHOLD), None).await;
     assert_timeout(result);
 }
 
 #[tokio::test]
 async fn per_request_timeout_overrides_client_configuration() {
     // Applies on a default client, which has no total deadline of its own.
-    let (result, _) = get_slow_body(
-        builder(),
-        GetObjectRequest::new("b", "o").timeout(THRESHOLD),
-    )
-    .await;
+    let (result, _) = get_slow_body(builder(), Some(THRESHOLD)).await;
     assert_timeout(result);
     // A shorter per-request deadline wins over a longer client deadline.
     let (result, _) = get_slow_body(
         builder().request_timeout(Duration::from_secs(30)),
-        GetObjectRequest::new("b", "o").timeout(THRESHOLD),
+        Some(THRESHOLD),
     )
     .await;
     assert_timeout(result);
     // A longer per-request deadline also wins over a shorter client deadline.
     let (result, elapsed) = get_slow_body(
         builder().request_timeout(THRESHOLD),
-        GetObjectRequest::new("b", "o").timeout(Duration::from_secs(30)),
+        Some(Duration::from_secs(30)),
     )
     .await;
     assert_eq!(result.unwrap().len(), SLOW_BODY_LEN);
@@ -399,9 +382,9 @@ async fn put_object_request_timeout_applies_while_awaiting_response() {
         .unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        PutObjectRequest::new("b", "o", b"hello".to_vec())
+        c.put_object("b", "o", b"hello".to_vec())
             .timeout(THRESHOLD)
-            .send(&c),
+            .send(),
     )
     .await
     .expect("outer guard elapsed");
@@ -523,12 +506,9 @@ async fn put_with_idle_threshold(
         .unwrap();
     assert_eq!(c.configuration().request_timeout(), None);
     let started = std::time::Instant::now();
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        c.put_object(PutObjectRequest::new("b", "o", body)),
-    )
-    .await
-    .expect("outer guard elapsed");
+    let result = tokio::time::timeout(Duration::from_secs(10), c.put_object("b", "o", body).send())
+        .await
+        .expect("outer guard elapsed");
     let elapsed = started.elapsed();
     server.abort();
     (result, elapsed)
@@ -576,13 +556,16 @@ async fn per_request_timeout_is_validated() {
     let c = builder().build().unwrap();
     for duration in [Duration::ZERO, Duration::MAX] {
         let e = c
-            .get_object(&GetObjectRequest::new("b", "o").timeout(duration))
+            .get_object("b", "o")
+            .timeout(duration)
+            .send()
             .await
             .unwrap_err();
         assert_eq!(e.kind(), fds::ErrorKind::InvalidInput, "{e:?}");
-        let e = PutObjectRequest::new("b", "o", b"x".to_vec())
+        let e = c
+            .put_object("b", "o", b"x".to_vec())
             .timeout(duration)
-            .send(&c)
+            .send()
             .await
             .unwrap_err();
         assert_eq!(e.kind(), fds::ErrorKind::InvalidInput, "{e:?}");

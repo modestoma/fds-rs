@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use fds::object::{GeneratePresignedURLRequest, ObjectMetadata};
+use fds::object::ObjectMetadata;
 use fds::Client;
 use http::Method;
 use serde::Deserialize;
@@ -89,9 +89,7 @@ fn golden_absolute_urls() {
     let c = client(&fx);
     assert!(!fx.absolute_urls.is_empty());
     for case in &fx.absolute_urls {
-        let got = c
-            .generate_absolute_object_url(&case.bucket, &case.object)
-            .unwrap();
+        let got = c.absolute_object_url(&case.bucket, &case.object).unwrap();
         assert_eq!(
             got, case.expected,
             "absolute url mismatch for object {:?}",
@@ -108,16 +106,17 @@ fn golden_presigned_urls() {
     for case in &fx.presigned_urls {
         let expiration = chrono::DateTime::from_timestamp_millis(case.expiration_millis).unwrap();
         let metadata = case.metadata.as_ref().map(build_metadata);
-        let got = c
-            .generate_presigned_url(&GeneratePresignedURLRequest {
-                cdn: case.cdn,
-                bucket_name: case.bucket.clone(),
-                object_name: case.object.clone(),
-                method: parse_method(&case.method),
-                expiration,
-                metadata,
-            })
-            .unwrap();
+        let mut request = c
+            .presign_object(&case.bucket, &case.object)
+            .method(parse_method(&case.method))
+            .expires_at(expiration);
+        if case.cdn {
+            request = request.cdn();
+        }
+        if let Some(metadata) = metadata {
+            request = request.metadata(metadata);
+        }
+        let got = request.build().unwrap();
         assert_eq!(
             got, case.expected,
             "presigned url mismatch for {} {}/{}",
