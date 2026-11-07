@@ -65,7 +65,7 @@ async fn cache_failures_preserve_status_and_do_not_retry_mutations() {
             } else {
                 client.refresh_object("b", "o").await.unwrap_err()
             };
-            assert_eq!(error.status(), Some(status as u16));
+            assert_eq!(error.status().map(|s| s.as_u16()), Some(status as u16));
             assert_eq!(error.request_id(), Some("cache-request"));
             mock.assert_async().await;
         }

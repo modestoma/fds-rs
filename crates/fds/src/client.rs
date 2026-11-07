@@ -11,7 +11,7 @@ use crate::auth;
 use crate::config::{ClientBuilder, ClientConfiguration};
 use crate::constant::{HttpMethod, HTTP_HEADER_AUTHORIZATION, HTTP_HEADER_DATE};
 use crate::encoding::{go_query_escape, QueryValues};
-use crate::error::{FdsError, JsonResponseSource, ResponseError, ResponseErrorKind, Result};
+use crate::error::{Dispatch, Error, ErrorKind, JsonResponseSource, ResponseDetails, Result};
 use crate::metadata::ObjectMetadata;
 use std::{fmt, sync::Arc, time::Duration};
 
@@ -106,7 +106,7 @@ impl Client {
         if matches!(self.inner.credentials, crate::oauth::Credentials::OAuth(_)) {
             Ok(())
         } else {
-            Err(FdsError::invalid(
+            Err(Error::config_invalid(
                 "app bucket listing requires an exchanged storage token",
             ))
         }
@@ -115,7 +115,7 @@ impl Client {
     pub(crate) fn access_keys(&self) -> Result<(&str, &str)> {
         match &self.inner.credentials {
             crate::oauth::Credentials::AccessKey(id, secret) => Ok((id, secret)),
-            _ => Err(FdsError::invalid(
+            _ => Err(Error::config_invalid(
                 "Galaxy-V2 presigning requires access key credentials",
             )),
         }
@@ -146,7 +146,10 @@ impl Client {
         }
         Ok(Self {
             inner: Arc::new(ClientInner {
-                http: builder.build()?,
+                http: builder.build().map_err(|error| {
+                    Error::unexpected("failed to build HTTP client")
+                        .with_source(error.without_url())
+                })?,
                 configuration: conf,
                 credentials,
             }),
@@ -169,8 +172,9 @@ impl Client {
         if let Some(md) = req.metadata {
             for (k, v) in md.iter() {
                 let name = HeaderName::from_bytes(k.as_bytes())
-                    .map_err(|e| FdsError::invalid(e.to_string()))?;
-                let val = HeaderValue::from_str(v).map_err(|e| FdsError::invalid(e.to_string()))?;
+                    .map_err(|e| Error::invalid_input(e.to_string()))?;
+                let val =
+                    HeaderValue::from_str(v).map_err(|e| Error::invalid_input(e.to_string()))?;
                 headers.append(name, val);
             }
         }
@@ -203,7 +207,7 @@ impl Client {
                     {
                         policy.delay(retries, Some(resp.headers()))
                     }
-                    Err(FdsError::Http(error))
+                    Err(SendFailure::Transport(error))
                         if !error.is_body()
                             && (error.is_connect() || error.is_timeout() || error.is_request()) =>
                     {
@@ -220,7 +224,8 @@ impl Client {
                 body = replay;
                 retries += 1;
             } else {
-                return check_response_status(result?, req.accepted_statuses)
+                let resp = result.map_err(SendFailure::into_error)?;
+                return check_response_status(resp, req.accepted_statuses)
                     .await
                     .map_err(|error| self.redact_error(error));
             }
@@ -241,45 +246,39 @@ impl Client {
         limit: usize,
     ) -> Result<T> {
         let mut resp = self.do_request(req).await?;
-        let mut error = response_error(&resp, ResponseErrorKind::BodyRead);
-        if !matches!(
-            self.inner.credentials,
-            crate::oauth::Credentials::AccessKey(..)
-        ) {
-            error.request_id = None;
-        }
+        let details = response_details(&resp);
         let mut bytes = Vec::new();
         while let Some(chunk) = match resp.chunk().await {
             Ok(chunk) => chunk,
             Err(source) => {
-                error.source = Some(Box::new(source.without_url()));
-                return Err(error.into());
+                return Err(self.redact_error(Error::body_failure(source).with_response(details)));
             }
         } {
             if chunk.len() > limit.saturating_sub(bytes.len()) {
-                error.kind = ResponseErrorKind::BodyTooLarge;
-                return Err(error.into());
+                return Err(self.redact_error(
+                    Error::protocol("response body exceeds the operation's limit")
+                        .with_response(details),
+                ));
             }
             bytes.extend_from_slice(&chunk);
         }
         if bytes.is_empty() {
-            error.kind = ResponseErrorKind::EmptyJson;
-            return Err(error.into());
+            return Err(self.redact_error(
+                Error::protocol("required JSON response body is empty").with_response(details),
+            ));
         }
         serde_json::from_slice(&bytes).map_err(|source| {
-            error.kind = ResponseErrorKind::InvalidJson;
-            if matches!(
-                self.inner.credentials,
-                crate::oauth::Credentials::AccessKey(..)
-            ) {
-                set_diagnostic_body(&mut error, &bytes, bytes.len() > DIAGNOSTIC_LIMIT);
-            }
-            error.source = Some(Box::new(JsonResponseSource {
-                category: source.classify(),
-                line: source.line(),
-                column: source.column(),
-            }));
-            error.into()
+            let mut details = details;
+            set_diagnostic_body(&mut details, &bytes, bytes.len() > DIAGNOSTIC_LIMIT);
+            self.redact_error(
+                Error::protocol("invalid JSON response body")
+                    .with_response(details)
+                    .with_source(JsonResponseSource {
+                        category: source.classify(),
+                        line: source.line(),
+                        column: source.column(),
+                    }),
+            )
         })
     }
 
@@ -298,7 +297,7 @@ impl Client {
         mut headers: HeaderMap,
         body: Option<UploadBody>,
         timeout: Option<Duration>,
-    ) -> Result<reqwest::Response> {
+    ) -> std::result::Result<reqwest::Response, SendFailure> {
         // (3) body: optional Content-MD5 (must be set BEFORE signing).
         let body = body
             .map(|body| body.prepare(&mut headers, self.inner.configuration.enable_md5_calculate))
@@ -310,14 +309,14 @@ impl Client {
             .to_string();
         headers.insert(
             HeaderName::from_static(HTTP_HEADER_DATE),
-            HeaderValue::from_str(&date).map_err(|e| FdsError::invalid(e.to_string()))?,
+            HeaderValue::from_str(&date).map_err(|e| Error::unexpected(e.to_string()))?,
         );
 
         match &self.inner.credentials {
             crate::oauth::Credentials::AccessKey(id, secret) => {
                 let sig = auth::sign(secret, method.as_str(), url.as_str(), &headers)?;
                 let mut value = HeaderValue::from_str(&format!("Galaxy-V2 {id}:{sig}"))
-                    .map_err(|_| FdsError::invalid("invalid authorization header"))?;
+                    .map_err(|_| Error::config_invalid("invalid authorization header"))?;
                 value.set_sensitive(true);
                 headers.insert(HeaderName::from_static(HTTP_HEADER_AUTHORIZATION), value);
             }
@@ -343,7 +342,7 @@ impl Client {
         if let Some(timeout) = timeout {
             rb = rb.timeout(timeout);
         }
-        let mut resp = rb.send().await?;
+        let mut resp = rb.send().await.map_err(SendFailure::Transport)?;
         if !matches!(
             self.inner.credentials,
             crate::oauth::Credentials::AccessKey(..)
@@ -370,13 +369,15 @@ impl Client {
         Ok(resp)
     }
 
-    fn redact_error(&self, mut error: FdsError) -> FdsError {
+    /// Server-controlled response strings are retained only with access keys.
+    fn redact_error(&self, mut error: Error) -> Error {
         if !matches!(
             self.inner.credentials,
             crate::oauth::Credentials::AccessKey(..)
         ) {
-            if let FdsError::Response(response) = &mut error {
+            if let Some(response) = error.response_mut() {
                 response.body.clear();
+                response.truncated = false;
                 response.service_code = None;
                 response.request_id = None;
             }
@@ -400,7 +401,7 @@ impl Client {
                 .configuration
                 .cdn_endpoint
                 .as_ref()
-                .ok_or_else(|| FdsError::invalid("CDN endpoint is not configured"))?
+                .ok_or_else(|| Error::config_invalid("CDN endpoint is not configured"))?
         } else {
             &self.inner.configuration.endpoint
         };
@@ -420,44 +421,58 @@ impl Client {
             s.push_str(params);
         }
 
-        url::Url::parse(&s).map_err(|e| FdsError::invalid(format!("build_request_url: {e}")))
+        url::Url::parse(&s).map_err(|e| Error::invalid_input(format!("build_request_url: {e}")))
     }
 }
 
 const DIAGNOSTIC_LIMIT: usize = 8192;
 
-fn response_error(resp: &reqwest::Response, kind: ResponseErrorKind) -> ResponseError {
-    ResponseError {
-        status: resp.status().as_u16(),
-        kind,
-        service_code: None,
-        // Best-effort header conventions, not a required FDS response schema.
-        request_id: ["x-xiaomi-request-id", "x-request-id"]
-            .iter()
-            .find_map(|name| {
-                resp.headers()
-                    .get(*name)?
-                    .to_str()
-                    .ok()
-                    .map(|s| s.chars().take(256).collect())
-            }),
-        body: String::new(),
-        truncated: false,
-        source: None,
+/// A failed attempt: local preparation errors are final, transport errors may
+/// be retried by `do_request` for eligible requests.
+pub(crate) enum SendFailure {
+    Local(Error),
+    Transport(reqwest::Error),
+}
+impl From<Error> for SendFailure {
+    fn from(error: Error) -> Self {
+        Self::Local(error)
+    }
+}
+impl SendFailure {
+    fn into_error(self) -> Error {
+        match self {
+            Self::Local(error) => error,
+            Self::Transport(error) => Error::send_failure(error),
+        }
     }
 }
 
-fn set_diagnostic_body(error: &mut ResponseError, bytes: &[u8], truncated: bool) {
+fn response_details(resp: &reqwest::Response) -> ResponseDetails {
+    let mut details = ResponseDetails::new(resp.status());
+    // Best-effort header conventions, not a required FDS response schema.
+    details.request_id = ["x-xiaomi-request-id", "x-request-id"]
+        .iter()
+        .find_map(|name| {
+            resp.headers()
+                .get(*name)?
+                .to_str()
+                .ok()
+                .map(|s| s.chars().take(256).collect())
+        });
+    details
+}
+
+fn set_diagnostic_body(details: &mut ResponseDetails, bytes: &[u8], truncated: bool) {
     let end = bytes.len().min(DIAGNOSTIC_LIMIT);
-    error.body = String::from_utf8_lossy(&bytes[..end]).into_owned();
+    details.body = String::from_utf8_lossy(&bytes[..end]).into_owned();
     // Lossy UTF-8 replacement can expand the byte count.
-    let mut end = error.body.len().min(DIAGNOSTIC_LIMIT);
-    while !error.body.is_char_boundary(end) {
+    let mut end = details.body.len().min(DIAGNOSTIC_LIMIT);
+    while !details.body.is_char_boundary(end) {
         end -= 1;
     }
-    error.truncated = truncated || end < error.body.len();
-    error.body.truncate(end);
-    if !error.truncated {
+    details.truncated = truncated || end < details.body.len();
+    details.body.truncate(end);
+    if !details.truncated {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
             let text = |key: &str| {
                 value.get(key).and_then(|v| match v {
@@ -466,15 +481,16 @@ fn set_diagnostic_body(error: &mut ResponseError, bytes: &[u8], truncated: bool)
                     _ => None,
                 })
             };
-            error.service_code = text("code").or_else(|| text("errorCode"));
-            if error.request_id.is_none() {
-                error.request_id = text("requestId");
+            details.service_code = text("code").or_else(|| text("errorCode"));
+            if details.request_id.is_none() {
+                details.request_id = text("requestId");
             }
         }
     }
 }
 
-/// Only an operation's explicit allowlist may produce success.
+/// Only an operation's explicit allowlist may produce success. A rejected
+/// status maps to its [`ErrorKind`]; the request was dispatched.
 async fn check_response_status(
     mut resp: reqwest::Response,
     allowed: &[u16],
@@ -482,8 +498,10 @@ async fn check_response_status(
     if allowed.contains(&resp.status().as_u16()) {
         return Ok(resp);
     }
-    let mut error = response_error(&resp, ResponseErrorKind::UnexpectedStatus);
+    let status = resp.status();
+    let mut details = response_details(&resp);
     let mut bytes = Vec::new();
+    let mut read_failure = None;
     // Read only a bounded prefix, including one byte to detect truncation.
     while bytes.len() <= DIAGNOSTIC_LIMIT {
         match resp.chunk().await {
@@ -493,14 +511,25 @@ async fn check_response_status(
             }
             Ok(None) => break,
             Err(source) => {
-                error.source = Some(Box::new(source.without_url()));
+                read_failure = Some(source.without_url());
                 break;
             }
         }
     }
-    let incomplete = bytes.len() > DIAGNOSTIC_LIMIT || error.source.is_some();
-    set_diagnostic_body(&mut error, &bytes, incomplete);
-    Err(error.into())
+    let incomplete = bytes.len() > DIAGNOSTIC_LIMIT || read_failure.is_some();
+    set_diagnostic_body(&mut details, &bytes, incomplete);
+    let message = if status.as_u16() >= 400 {
+        "FDS rejected the request"
+    } else {
+        "unexpected HTTP status for this operation"
+    };
+    let mut error = Error::new(ErrorKind::from_status(status), message)
+        .with_dispatch(Dispatch::Sent)
+        .with_response(details);
+    if let Some(source) = read_failure {
+        error = error.with_source(source);
+    }
+    Err(error)
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ use url::Url;
 use crate::constant::{
     HTTP_HEADER_CONTENT_MD5, HTTP_HEADER_CONTENT_TYPE, HTTP_HEADER_DATE, XIAOMI_PREFIX,
 };
-use crate::error::{FdsError, Result};
+use crate::error::{Error, Result};
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -104,7 +104,7 @@ pub fn sign(
 ) -> Result<String> {
     let sts = string_to_sign(method, url_str, headers)?;
     let mut mac = HmacSha1::new_from_slice(secret.as_bytes())
-        .map_err(|_| FdsError::invalid("invalid signing key"))?;
+        .map_err(|_| Error::config_invalid("invalid signing key"))?;
     mac.update(sts.as_bytes());
     Ok(STANDARD.encode(mac.finalize().into_bytes()))
 }
@@ -140,7 +140,7 @@ fn canonical_xiaomi_headers(headers: &impl HeaderLookup) -> String {
 /// CanonicalizedResource (auth.go:resource): the PERCENT-DECODED path plus the
 /// filtered/sorted subresource query.
 fn canonical_resource(url_str: &str) -> Result<String> {
-    let u = Url::parse(url_str).map_err(|_| FdsError::invalid("invalid signing URL"))?;
+    let u = Url::parse(url_str).map_err(|_| Error::invalid_input("invalid signing URL"))?;
 
     // Go's `url.Parse().Path` is percent-decoded; Rust's `Url::path()` is not,
     // so decode it (space/`%2F`/etc. → literals) to match the signed resource.

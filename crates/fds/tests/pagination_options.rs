@@ -114,7 +114,7 @@ async fn missing_and_repeated_markers_end_with_one_error() {
         pin_mut!(pages);
         assert!(matches!(
             pages.next().await.unwrap(),
-            Err(fds::FdsError::Invalid(_))
+            Err(e) if e.kind() == fds::ErrorKind::ProtocolViolation
         ));
         assert!(pages.next().await.is_none());
         m.assert_async().await;
@@ -347,7 +347,7 @@ async fn transport_and_local_validation_errors_terminate() {
     pin_mut!(pages);
     assert!(matches!(
         pages.next().await.unwrap(),
-        Err(fds::FdsError::Invalid(_))
+        Err(e) if e.kind() == fds::ErrorKind::InvalidInput
     ));
     assert!(pages.next().await.is_none());
     assert!(ListObjectsRequest::new("b")

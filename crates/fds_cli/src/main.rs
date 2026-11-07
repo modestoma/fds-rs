@@ -69,13 +69,13 @@ async fn run() -> Result<()> {
     if diagnostics {
         if let Err(error) = &result {
             for cause in error.chain() {
-                if let Some(response) = cause
-                    .downcast_ref::<fds::FdsError>()
-                    .and_then(fds::FdsError::response)
+                if let Some((error, response)) = cause
+                    .downcast_ref::<fds::Error>()
+                    .and_then(|error| Some((error, error.response()?)))
                 {
                     eprintln!(
                         "{}",
-                        serde_json::json!({"status": response.status(), "kind": format!("{:?}", response.kind()), "service_code": response.service_code(), "request_id": response.request_id(), "body": response.diagnostic_body(), "truncated": response.body_truncated()})
+                        serde_json::json!({"status": response.status().as_u16(), "kind": error.kind().as_str(), "service_code": response.service_code(), "request_id": response.request_id(), "body": response.diagnostic_body(), "truncated": response.body_truncated()})
                     );
                     break;
                 }

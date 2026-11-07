@@ -18,6 +18,9 @@
 //! # Ok(()) }
 //! ```
 //!
+//! Every fallible call returns [`Result`]; failures are a single opaque
+//! [`Error`], classified by [`ErrorKind`] and [`Dispatch`]. See [`error`].
+//!
 //! POST object creation, archive restoration and multipart copy remain deferred.
 //! See the repository's `docs/migration.md` for compatibility and validation.
 
@@ -55,18 +58,16 @@ pub use client::Client;
 pub use config::{ClientBuilder, ClientConfiguration};
 pub use constant::{HttpMethod, StorageClass};
 pub use download::{ByteRange, GetObjectOutput};
-pub use error::{FdsError, ResponseError, ResponseErrorKind, Result};
+pub use error::{Dispatch, Error, ErrorKind, ResponseDetails, Result};
 #[cfg(feature = "manager")]
-pub use manager::{
-    DownloadOptions, DownloadOptionsBuilder, DownloadRequest, Downloader, ManagerError,
-};
+pub use manager::{DownloadOptions, DownloadOptionsBuilder, DownloadRequest, Downloader};
 pub use metadata::ObjectMetadata;
 pub use object::{
     CompleteMultipartUploadRequest, CopyObjectRequest, CopyObjectResponse, DeleteObjectFailure,
-    DeleteObjectsError, DeleteObjectsOutput, GeneratePresignedURLRequest, GetObjectACLRequest,
-    GetObjectRequest, InitMultipartUploadRequest, InitMultipartUploadResponse, ListObjectsRequest,
-    ObjectBasicInfo, ObjectListing, ObjectSummary, PutObjectRequest, PutObjectResponse,
-    SetObjectACLRequest, SetObjectMetadataRequest, UploadPartRequest, UploadPartResponse,
+    DeleteObjectsOutput, GeneratePresignedURLRequest, GetObjectACLRequest, GetObjectRequest,
+    InitMultipartUploadRequest, InitMultipartUploadResponse, ListObjectsRequest, ObjectBasicInfo,
+    ObjectListing, ObjectSummary, PutObjectRequest, PutObjectResponse, SetObjectACLRequest,
+    SetObjectMetadataRequest, UploadPartRequest, UploadPartResponse,
 };
 
 pub use upload::UploadBody;
@@ -75,7 +76,7 @@ pub use retry::RetryPolicy;
 
 pub use multipart::{
     CancellationToken, CleanupPolicy, MultipartOptions, MultipartProgress, MultipartState,
-    MultipartUpload, MultipartUploadError,
+    MultipartUpload,
 };
 
 pub use oauth::{

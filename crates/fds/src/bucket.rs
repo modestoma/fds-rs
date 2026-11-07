@@ -9,7 +9,7 @@ use crate::acl::{AccessControlList, Owner};
 use crate::client::{Client, ClientRequest};
 use crate::constant::{HttpMethod, StorageClass};
 use crate::encoding::QueryValues;
-use crate::error::{FdsError, Result};
+use crate::error::{Error, Result};
 
 // ---- Request/response types ------------------------------------------------
 
@@ -185,7 +185,7 @@ pub struct LifecycleRule {
 
 impl LifecycleRule {
     pub fn from_json(content: &[u8]) -> Result<Self> {
-        Ok(serde_json::from_slice(content)?)
+        serde_json::from_slice(content).map_err(Error::json_input)
     }
 }
 
@@ -202,7 +202,7 @@ pub struct LifecycleConfig {
 
 impl LifecycleConfig {
     pub fn from_json(content: &[u8]) -> Result<Self> {
-        Ok(serde_json::from_slice(content)?)
+        serde_json::from_slice(content).map_err(Error::json_input)
     }
 }
 
@@ -277,7 +277,7 @@ impl GetLifecycleConfigRequest {
 
 pub(crate) fn validate_bucket(bucket: &str) -> Result<()> {
     if bucket.is_empty() {
-        return Err(FdsError::invalid("bucket must be non-empty"));
+        return Err(Error::invalid_input("bucket must be non-empty"));
     }
     Ok(())
 }
@@ -305,7 +305,7 @@ impl Client {
                 value
                     .parse()
                     .map_err(|e: reqwest::header::InvalidHeaderValue| {
-                        FdsError::invalid(e.to_string())
+                        Error::invalid_input(e.to_string())
                     })?,
             );
         }
@@ -380,8 +380,7 @@ impl Client {
         let bucket = &req.bucket_name;
         let acl = &req.acl;
         let action = req.action;
-        let body = serde_json::to_vec(acl)
-            .map_err(|_| FdsError::invalid("fds client: can't marshal acl"))?;
+        let body = serde_json::to_vec(acl).map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
         cr.query.add("acl", "");
         action.apply(&mut cr.query);
@@ -403,7 +402,7 @@ impl Client {
     /// Set lifecycle config (PUT `/{b}?lifecycle`, body = JSON config).
     pub async fn set_lifecycle_config(&self, bucket: &str, config: &LifecycleConfig) -> Result<()> {
         validate_bucket(bucket)?;
-        let body = serde_json::to_vec(config)?;
+        let body = serde_json::to_vec(config).map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
         cr.query.add("lifecycle", "");
         cr.body = Some(Bytes::from(body).into());
@@ -413,7 +412,7 @@ impl Client {
     /// Set a single lifecycle rule (PUT `/{b}?lifecycle=rule`, body = JSON rule).
     pub async fn set_lifecycle_rule(&self, bucket: &str, rule: &LifecycleRule) -> Result<()> {
         validate_bucket(bucket)?;
-        let body = serde_json::to_vec(rule)?;
+        let body = serde_json::to_vec(rule).map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
         cr.query.add("lifecycle", "rule");
         cr.body = Some(Bytes::from(body).into());
@@ -431,7 +430,7 @@ impl Client {
     /// Set access log (PUT `/{b}?accessLog`, body = JSON access log).
     pub async fn set_access_log(&self, bucket: &str, access_log: &AccessLog) -> Result<()> {
         validate_bucket(bucket)?;
-        let body = serde_json::to_vec(access_log)?;
+        let body = serde_json::to_vec(access_log).map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(bucket, "", HttpMethod::Put);
         cr.query.add("accessLog", "");
         cr.body = Some(Bytes::from(body).into());

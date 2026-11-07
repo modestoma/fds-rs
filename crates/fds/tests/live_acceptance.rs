@@ -32,7 +32,10 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
             .send(&client)
             .await?;
         if client.head_object(&bucket, &key).await?.is_none() {
-            return Err(fds::FdsError::invalid("uploaded object missing from HEAD"));
+            return Err(fds::Error::new(
+                fds::ErrorKind::Unexpected,
+                "uploaded object missing from HEAD",
+            ));
         }
         let full = GetObjectRequest::new(&bucket, &key)
             .send(&client)
@@ -40,14 +43,20 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
             .bytes()
             .await?;
         if full.as_ref() != b"hello fds" {
-            return Err(fds::FdsError::invalid("roundtrip bytes differ"));
+            return Err(fds::Error::new(
+                fds::ErrorKind::Unexpected,
+                "roundtrip bytes differ",
+            ));
         }
         let ranged = GetObjectRequest::new(&bucket, &key)
             .range(ByteRange::inclusive(1, 4)?)
             .send(&client)
             .await?;
         if ranged.status() != 206 || ranged.bytes().await?.as_ref() != b"ello" {
-            return Err(fds::FdsError::invalid("range response differs"));
+            return Err(fds::Error::new(
+                fds::ErrorKind::Unexpected,
+                "range response differs",
+            ));
         }
         // Distinguish bare Bucket GET from explicit empty/nonempty prefix requests.
         let _ = client.get_bucket_info(&bucket).await?;
@@ -64,7 +73,8 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .any(|o| o.object_name == key)
         {
-            return Err(fds::FdsError::invalid(
+            return Err(fds::Error::new(
+                fds::ErrorKind::Unexpected,
                 "listing did not return uploaded object",
             ));
         }

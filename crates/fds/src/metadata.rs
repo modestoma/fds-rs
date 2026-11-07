@@ -20,7 +20,7 @@ use crate::constant::{
     HTTP_HEADER_SERVER_SIDE_ENCRYPTION, HTTP_HEADER_STORAGE_CLASS, HTTP_HEADER_UPLOAD_TIME,
     XIAOMI_META_PREFIX,
 };
-use crate::error::{FdsError, Result};
+use crate::error::{Error, Result};
 
 /// The allowed "predefined" metadata keys (object.go:302-322, all lowercase).
 const PREDEFINED: &[&str] = &[
@@ -80,7 +80,7 @@ impl ObjectMetadata {
             self.metadata.insert(key, v.into());
             Ok(())
         } else {
-            Err(FdsError::invalid(format!("Invalid metadata: {k}")))
+            Err(Error::invalid_input(format!("Invalid metadata: {k}")))
         }
     }
 
@@ -99,9 +99,9 @@ impl ObjectMetadata {
 
     pub fn get_content_length(&self) -> Result<i64> {
         self.get(HTTP_HEADER_CONTENT_METADATA_LENGTH)
-            .ok_or_else(|| FdsError::invalid("missing content metadata length"))?
+            .ok_or_else(|| Error::invalid_input("missing content metadata length"))?
             .parse::<i64>()
-            .map_err(|e| FdsError::invalid(e.to_string()))
+            .map_err(|e| Error::invalid_input(e.to_string()))
     }
 
     pub fn set_content_type(&mut self, content_type: impl Into<String>) {
@@ -120,9 +120,10 @@ impl ObjectMetadata {
             #[serde(rename = "rawMeta")]
             raw_meta: &'a HashMap<String, String>,
         }
-        Ok(serde_json::to_vec(&Wrap {
+        serde_json::to_vec(&Wrap {
             raw_meta: &self.metadata,
-        })?)
+        })
+        .map_err(Error::json_encode)
     }
 
     /// Build from HTTP response headers (Go `parseObjectMetadataFromHeader`),
@@ -188,7 +189,8 @@ mod tests {
     fn set_rejects_unknown_key() {
         let mut m = ObjectMetadata::new();
         let err = m.set("foo", "1").unwrap_err();
-        assert_eq!(err.to_string(), "Invalid metadata: foo");
+        assert_eq!(err.kind(), crate::ErrorKind::InvalidInput);
+        assert_eq!(err.message(), "Invalid metadata: foo");
     }
 
     #[test]

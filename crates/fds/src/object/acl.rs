@@ -3,7 +3,7 @@
 use super::validate_object;
 use crate::client::ClientRequest;
 use crate::{
-    AccessControlList, AclAction, Client, FdsError, Grant, GrantKey, GrantPermission, GrantType,
+    AccessControlList, AclAction, Client, Error, Grant, GrantKey, GrantPermission, GrantType,
     HttpMethod, Result,
 };
 use bytes::Bytes;
@@ -93,8 +93,7 @@ impl Client {
     /// Set object ACL (PUT `/{b}/{o}?acl[&versionId]`, body = JSON ACL).
     pub async fn set_object_acl(&self, req: &SetObjectACLRequest) -> Result<()> {
         validate_object(&req.bucket_name, &req.object_name)?;
-        let body = serde_json::to_vec(&req.acl)
-            .map_err(|_| FdsError::invalid("fds client: can't marshal acl"))?;
+        let body = serde_json::to_vec(&req.acl).map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
         cr.query.add("acl", "");
         req.action.apply(&mut cr.query);

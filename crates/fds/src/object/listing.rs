@@ -3,7 +3,7 @@
 use crate::acl::Owner;
 use crate::client::ClientRequest;
 use crate::constant::DEFAULT_LIST_OBJECTS_MAX_KEYS;
-use crate::{Client, FdsError, HttpMethod, Result};
+use crate::{Client, Error, HttpMethod, Result};
 use chrono::{DateTime, Utc};
 use futures_util::{stream, Stream, TryStreamExt};
 use serde::Deserialize;
@@ -165,9 +165,7 @@ impl ListObjectsRequest {
                         || options.marker.as_ref() == Some(next)
                         || checkpoint.as_ref() == Some(next)
                     {
-                        return Err(FdsError::invalid(
-                            "listing has missing or cyclic nextMarker",
-                        ));
+                        return Err(Error::protocol("listing has missing or cyclic nextMarker"));
                     }
                     distance += 1;
                     if distance == power {
@@ -196,7 +194,7 @@ impl Client {
     pub async fn list_objects(&self, req: &ListObjectsRequest) -> Result<ObjectListing> {
         crate::bucket::validate_bucket(&req.bucket_name)?;
         if req.max_keys <= 0 {
-            return Err(FdsError::invalid("max_keys must be positive"));
+            return Err(Error::invalid_input("max_keys must be positive"));
         }
         let mut cr = ClientRequest::new(&req.bucket_name, "", HttpMethod::Get).read_only();
         if let Some(marker) = &req.marker {

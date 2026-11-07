@@ -1,94 +1,194 @@
-//! Structured response errors with opt-in, bounded diagnostics.
-//! HTTP status, service code and bounded response diagnostics remain distinct.
+//! The single SDK error type: [`Error`], classified by [`ErrorKind`].
+//!
+//! The type is named `fds::Error` (like `std::io::Error`), not `FdsError`: the
+//! crate path already says which SDK it belongs to. There are no other public
+//! error types for SDK operations: bulk deletion, managed multipart uploads and
+//! the downloader all return this one.
+//!
+//! Every fallible SDK operation returns [`Result<T>`]. An [`Error`] is opaque:
+//! inspect it through [`Error::kind`], [`Error::dispatch`], the optional HTTP
+//! [`ResponseDetails`] and the standard [`std::error::Error::source`] chain.
+//!
+//! ```
+//! fn report(error: &fds::Error) {
+//!     match error.kind() {
+//!         fds::ErrorKind::NotFound => eprintln!("missing object or bucket"),
+//!         fds::ErrorKind::OutcomeUnknown => eprintln!("reconcile before retrying: {error}"),
+//!         _ if error.is_retryable() => eprintln!("transient: {error}"),
+//!         _ => eprintln!("failed: {error}"),
+//!     }
+//! }
+//! # report(&fds::Error::new(fds::ErrorKind::NotFound, "example"));
+//! ```
+//!
+//! # Redaction
+//!
+//! `Display` and `Debug` never contain credentials, signatures, storage tokens,
+//! credential-bearing URLs or raw response bodies. They print the kind, the
+//! SDK's own message, the HTTP status, a service code that looks like a plain
+//! identifier, attached context and the `Display` text of each source (transport
+//! sources have their URL removed). The request ID and the bounded diagnostic
+//! body are only available through explicit accessors because they are
+//! untrusted, server-controlled text. With OAuth or anonymous credentials the
+//! service code, request ID and body are not retained at all.
 
-use thiserror::Error;
+use std::borrow::Cow;
+use std::error::Error as StdError;
+use std::fmt;
+
+use http::StatusCode;
+
+use crate::object::DeleteObjectsOutput;
 
 /// Crate-wide result type.
-pub type Result<T> = std::result::Result<T, FdsError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
-/// The unified error type for the FDS SDK.
-#[derive(Error)]
+/// What went wrong, independent of the message text.
+///
+/// The enum is `non_exhaustive`: matches need a wildcard arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum FdsError {
-    /// Corresponds to Go `ErrorEndpoint` ("wrong endpoint").
-    #[error("wrong endpoint")]
-    Endpoint,
-
-    /// Transport-layer error (connect/timeout/TLS/…), from `reqwest`.
-    #[error("http transport error: {0}")]
-    Http(#[source] reqwest::Error),
-
-    /// Rejected HTTP status or invalid success response.
-    #[error("{0}")]
-    Response(#[from] ResponseError),
-
-    /// Copy was attempted but no valid matching receipt was obtained.
-    /// The destination may have been written; do not blindly retry.
-    #[error(
-        "Copy outcome may be unknown; destination may have been written; do not blindly retry: {0}"
-    )]
-    CopyOutcomeUnknown(#[source] Box<FdsError>),
-
-    /// Local IO (download file writes, breakpoint files, …).
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// JSON (de)serialization.
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    /// Invalid argument/format (Range format, invalid metadata key, marshal
-    /// failure, …).
-    #[error("{0}")]
-    Invalid(String),
-
-    /// The request was cancelled (corresponds to Go `ctx.Err()`). In practice
-    /// timeouts/cancellations usually surface as `FdsError::Http`.
-    #[error("request cancelled")]
+pub enum ErrorKind {
+    /// A caller-supplied argument or option is invalid; nothing was sent.
+    InvalidInput,
+    /// The client configuration (endpoint, credentials, timeouts, retry policy,
+    /// CDN endpoint, credential type for the operation) is invalid or unsuitable.
+    ConfigInvalid,
+    /// HTTP 404: the bucket, object or upload does not exist.
+    NotFound,
+    /// HTTP 403: the credentials are not allowed to perform the operation.
+    PermissionDenied,
+    /// HTTP 401: the request was not authenticated.
+    Unauthenticated,
+    /// The storage access token has expired locally; exchange a new one.
+    CredentialsExpired,
+    /// HTTP 409: the request conflicts with the current resource state.
+    Conflict,
+    /// HTTP 412, or the object changed between requests (for example its ETag
+    /// changed during a ranged download).
+    PreconditionFailed,
+    /// HTTP 429: the service is throttling requests.
+    RateLimited,
+    /// HTTP 5xx.
+    ServerError,
+    /// The service answered with a response that breaks the protocol contract:
+    /// empty or invalid JSON, an oversized body, or a receipt/listing that does
+    /// not match the request.
+    ProtocolViolation,
+    /// A connect, total-request or read deadline elapsed.
+    Timeout,
+    /// The connection failed or broke (DNS, TCP, TLS, reset) without a timeout.
+    Transport,
+    /// A local file-system or reader error.
+    Io,
+    /// The operation was cancelled cooperatively.
     Cancelled,
+    /// A mutation may or may not have taken effect (copy, multipart completion,
+    /// bulk deletion). Reconcile with the service; never retry blindly.
+    OutcomeUnknown,
+    /// A batch completed but some items failed. The per-item outcome is in
+    /// [`Error::partial_delete_output`]. Bulk deletion is the only producer.
+    PartialFailure,
+    /// Any other failure, including HTTP statuses without a dedicated kind
+    /// (other 4xx, unexpected 2xx/3xx) and internal SDK failures.
+    Unexpected,
 }
 
-impl FdsError {
-    /// Build an `Invalid` error.
-    pub fn invalid(msg: impl Into<String>) -> Self {
-        FdsError::Invalid(msg.into())
+impl ErrorKind {
+    /// The variant name, e.g. `"NotFound"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "InvalidInput",
+            Self::ConfigInvalid => "ConfigInvalid",
+            Self::NotFound => "NotFound",
+            Self::PermissionDenied => "PermissionDenied",
+            Self::Unauthenticated => "Unauthenticated",
+            Self::CredentialsExpired => "CredentialsExpired",
+            Self::Conflict => "Conflict",
+            Self::PreconditionFailed => "PreconditionFailed",
+            Self::RateLimited => "RateLimited",
+            Self::ServerError => "ServerError",
+            Self::ProtocolViolation => "ProtocolViolation",
+            Self::Timeout => "Timeout",
+            Self::Transport => "Transport",
+            Self::Io => "Io",
+            Self::Cancelled => "Cancelled",
+            Self::OutcomeUnknown => "OutcomeUnknown",
+            Self::PartialFailure => "PartialFailure",
+            Self::Unexpected => "Unexpected",
+        }
+    }
+
+    /// Classify a rejected HTTP status.
+    pub(crate) fn from_status(status: StatusCode) -> Self {
+        match status.as_u16() {
+            401 => Self::Unauthenticated,
+            403 => Self::PermissionDenied,
+            404 => Self::NotFound,
+            409 => Self::Conflict,
+            412 => Self::PreconditionFailed,
+            429 => Self::RateLimited,
+            500..=599 => Self::ServerError,
+            _ => Self::Unexpected,
+        }
     }
 }
 
-/// The reason an HTTP response was rejected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ResponseErrorKind {
-    UnexpectedStatus,
-    EmptyJson,
-    InvalidJson,
-    BodyRead,
-    BodyTooLarge,
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
-/// Response diagnostics. Display/Debug deliberately omit all server-controlled
-/// strings: even a request ID or service code can echo credentials.
-/// Explicit string accessors return untrusted data and must not be logged blindly.
-pub struct ResponseError {
-    pub(crate) status: u16,
-    pub(crate) kind: ResponseErrorKind,
+/// Whether the request the error is about reached the service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Dispatch {
+    /// Nothing was sent: local validation, signing, request construction or
+    /// connection establishment failed. Retrying cannot duplicate a mutation.
+    NotSent,
+    /// The service received the request and answered (an HTTP status line was
+    /// received), including when the response body was later rejected.
+    Sent,
+    /// The request may have reached the service: the connection broke or timed
+    /// out while sending or before a response arrived, or the local future was
+    /// cancelled while the request was in flight.
+    Unknown,
+}
+
+/// HTTP response facts retained on an [`Error`].
+///
+/// The request ID, service code and diagnostic body are untrusted strings
+/// taken from the response. They are retained only with access-key
+/// credentials; with OAuth or anonymous credentials they are always empty.
+#[derive(Clone)]
+pub struct ResponseDetails {
+    pub(crate) status: StatusCode,
     pub(crate) service_code: Option<String>,
     pub(crate) request_id: Option<String>,
     pub(crate) body: String,
     pub(crate) truncated: bool,
-    pub(crate) source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
-impl ResponseError {
-    pub fn status(&self) -> u16 {
+impl ResponseDetails {
+    pub(crate) fn new(status: StatusCode) -> Self {
+        Self {
+            status,
+            service_code: None,
+            request_id: None,
+            body: String::new(),
+            truncated: false,
+        }
+    }
+    /// The HTTP status. It can be a success status when the body was rejected.
+    pub fn status(&self) -> StatusCode {
         self.status
     }
-    pub fn kind(&self) -> ResponseErrorKind {
-        self.kind
-    }
+    /// Best-effort `code` / `errorCode` from a JSON error body (at most 256 characters).
     pub fn service_code(&self) -> Option<&str> {
         self.service_code.as_deref()
     }
+    /// Best-effort request ID from response headers or the JSON error body
+    /// (at most 256 characters).
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
     }
@@ -96,69 +196,507 @@ impl ResponseError {
     pub fn diagnostic_body(&self) -> &str {
         &self.body
     }
+    /// Whether [`diagnostic_body`](Self::diagnostic_body) is incomplete.
     pub fn body_truncated(&self) -> bool {
         self.truncated
     }
-}
-impl std::fmt::Display for ResponseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FDS response {}: {:?}", self.status, self.kind)
+    /// The service code when it looks like a plain identifier; anything else
+    /// (which could echo request material) is withheld from formatting.
+    fn printable_service_code(&self) -> Option<&str> {
+        self.service_code.as_deref().filter(|code| {
+            code.len() <= 64
+                && code
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        })
     }
 }
-impl std::fmt::Debug for ResponseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self, f)
+
+impl fmt::Debug for ResponseDetails {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("ResponseDetails");
+        s.field("status", &self.status.as_u16());
+        match (self.printable_service_code(), &self.service_code) {
+            (Some(code), _) => s.field("service_code", &code),
+            (None, Some(_)) => s.field("service_code", &format_args!("<withheld>")),
+            (None, None) => &mut s,
+        };
+        s.field("body_len", &self.body.len())
+            .field("body_truncated", &self.truncated)
+            .finish_non_exhaustive()
     }
 }
-impl std::error::Error for ResponseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_deref().map(|e| e as _)
+
+/// The error returned by every fallible SDK operation.
+///
+/// The value is a single pointer wide; all details live behind it.
+pub struct Error(Box<Inner>);
+
+struct Inner {
+    kind: ErrorKind,
+    message: Cow<'static, str>,
+    dispatch: Dispatch,
+    response: Option<ResponseDetails>,
+    context: Vec<(&'static str, String)>,
+    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+    delete_output: Option<DeleteObjectsOutput>,
+}
+
+impl Error {
+    /// Create an error. Dispatch defaults to [`Dispatch::NotSent`].
+    pub fn new(kind: ErrorKind, message: impl Into<Cow<'static, str>>) -> Self {
+        Self(Box::new(Inner {
+            kind,
+            message: message.into(),
+            dispatch: Dispatch::NotSent,
+            response: None,
+            context: Vec::new(),
+            source: None,
+            delete_output: None,
+        }))
+    }
+
+    /// Attach a key/value context entry. The value is formatted with
+    /// `Display` and must not contain secrets.
+    pub fn with_context(mut self, key: &'static str, value: impl fmt::Display) -> Self {
+        self.0.context.push((key, value.to_string()));
+        self
+    }
+
+    /// Set the underlying cause, exposed through [`std::error::Error::source`].
+    pub fn with_source(mut self, source: impl Into<Box<dyn StdError + Send + Sync>>) -> Self {
+        self.0.source = Some(source.into());
+        self
+    }
+
+    /// The classification of this error.
+    pub fn kind(&self) -> ErrorKind {
+        self.0.kind
+    }
+
+    /// The SDK's description, without kind, status or source.
+    pub fn message(&self) -> &str {
+        &self.0.message
+    }
+
+    /// Whether the request reached the service.
+    pub fn dispatch(&self) -> Dispatch {
+        self.0.dispatch
+    }
+
+    /// HTTP response details, when a response was received.
+    pub fn response(&self) -> Option<&ResponseDetails> {
+        self.0.response.as_ref()
+    }
+
+    /// HTTP status, when a response was received.
+    pub fn status(&self) -> Option<StatusCode> {
+        self.response().map(ResponseDetails::status)
+    }
+
+    /// Untrusted service error code; see [`ResponseDetails::service_code`].
+    pub fn service_code(&self) -> Option<&str> {
+        self.response()?.service_code()
+    }
+
+    /// Untrusted request ID; see [`ResponseDetails::request_id`].
+    pub fn request_id(&self) -> Option<&str> {
+        self.response()?.request_id()
+    }
+
+    /// Attached key/value context, in insertion order.
+    pub fn context(&self) -> &[(&'static str, String)] {
+        &self.0.context
+    }
+
+    /// `kind() == ErrorKind::NotFound`.
+    pub fn is_not_found(&self) -> bool {
+        self.kind() == ErrorKind::NotFound
+    }
+
+    /// Whether repeating the same request may succeed and cannot be harmful
+    /// beyond the operation's own idempotency: rate limiting, HTTP 502/503/504
+    /// (the statuses the SDK's read retry policy uses), timeouts, and transport
+    /// failures before anything was sent. Never true for `OutcomeUnknown`.
+    pub fn is_retryable(&self) -> bool {
+        match self.kind() {
+            ErrorKind::RateLimited | ErrorKind::Timeout => true,
+            ErrorKind::ServerError => self
+                .status()
+                .is_some_and(|s| matches!(s.as_u16(), 502..=504)),
+            ErrorKind::Transport => self.dispatch() == Dispatch::NotSent,
+            _ => false,
+        }
+    }
+
+    /// `kind() == ErrorKind::OutcomeUnknown`.
+    pub fn is_outcome_unknown(&self) -> bool {
+        self.kind() == ErrorKind::OutcomeUnknown
+    }
+
+    /// Outcomes confirmed by bulk deletion before it stopped: deleted names,
+    /// per-object failures and names whose outcome is unknown. Present on
+    /// errors returned by `delete_objects` / `delete_objects_with_prefix` once
+    /// at least one batch was attempted.
+    pub fn partial_delete_output(&self) -> Option<&DeleteObjectsOutput> {
+        self.0.delete_output.as_ref()
+    }
+
+    // ---- crate-internal construction ---------------------------------------
+
+    pub(crate) fn invalid_input(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(ErrorKind::InvalidInput, message)
+    }
+
+    pub(crate) fn config_invalid(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(ErrorKind::ConfigInvalid, message)
+    }
+
+    /// A response violated the protocol; the request was sent.
+    pub(crate) fn protocol(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(ErrorKind::ProtocolViolation, message).with_dispatch(Dispatch::Sent)
+    }
+
+    pub(crate) fn unexpected(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(ErrorKind::Unexpected, message)
+    }
+
+    pub(crate) fn with_dispatch(mut self, dispatch: Dispatch) -> Self {
+        self.0.dispatch = dispatch;
+        self
+    }
+
+    pub(crate) fn with_response(mut self, response: ResponseDetails) -> Self {
+        self.0.response = Some(response);
+        self
+    }
+
+    pub(crate) fn response_mut(&mut self) -> Option<&mut ResponseDetails> {
+        self.0.response.as_mut()
+    }
+
+    pub(crate) fn with_delete_output(mut self, output: DeleteObjectsOutput) -> Self {
+        self.0.delete_output = Some(output);
+        self
+    }
+
+    pub(crate) fn take_delete_output(&mut self) -> Option<DeleteObjectsOutput> {
+        self.0.delete_output.take()
+    }
+
+    /// Wrap a post-dispatch failure of a mutation whose effect is unknown.
+    /// Keeps dispatch and response details visible on the outer error.
+    pub(crate) fn into_outcome_unknown(self, message: impl Into<Cow<'static, str>>) -> Self {
+        let mut outer =
+            Self::new(ErrorKind::OutcomeUnknown, message).with_dispatch(match self.dispatch() {
+                Dispatch::NotSent => Dispatch::Unknown,
+                other => other,
+            });
+        outer.0.response = self.0.response.clone();
+        outer.with_source(self)
+    }
+
+    /// A `reqwest` failure while sending a request (before any response).
+    pub(crate) fn send_failure(error: reqwest::Error) -> Self {
+        let (kind, dispatch, message) = if error.is_builder() {
+            (
+                ErrorKind::InvalidInput,
+                Dispatch::NotSent,
+                "failed to build HTTP request",
+            )
+        } else if error.is_connect() {
+            let kind = if error.is_timeout() {
+                ErrorKind::Timeout
+            } else {
+                ErrorKind::Transport
+            };
+            (kind, Dispatch::NotSent, "failed to connect")
+        } else if error.is_timeout() {
+            (
+                ErrorKind::Timeout,
+                Dispatch::Unknown,
+                "request timed out before a response arrived",
+            )
+        } else {
+            (
+                ErrorKind::Transport,
+                Dispatch::Unknown,
+                "request failed before a response arrived",
+            )
+        };
+        Self::new(kind, message)
+            .with_dispatch(dispatch)
+            .with_source(error.without_url())
+    }
+
+    /// A `reqwest` failure while reading a received response body.
+    pub(crate) fn body_failure(error: reqwest::Error) -> Self {
+        let kind = if error.is_timeout() {
+            ErrorKind::Timeout
+        } else {
+            ErrorKind::Transport
+        };
+        Self::new(kind, "failed to read response body")
+            .with_dispatch(Dispatch::Sent)
+            .with_source(error.without_url())
+    }
+
+    /// Caller-supplied JSON could not be decoded. Only the parser position is
+    /// kept: serde's message can echo input values.
+    pub(crate) fn json_input(error: serde_json::Error) -> Self {
+        Self::invalid_input("invalid JSON input")
+            .with_context("category", format_args!("{:?}", error.classify()))
+            .with_context("line", error.line())
+            .with_context("column", error.column())
+    }
+
+    /// Local JSON serialization of a request body or checkpoint failed.
+    pub(crate) fn json_encode(error: serde_json::Error) -> Self {
+        let kind = if error.is_io() {
+            ErrorKind::Io
+        } else {
+            ErrorKind::Unexpected
+        };
+        // serde's message can echo serialized values; keep only the category.
+        Self::new(kind, "JSON serialization failed")
+            .with_context("category", format_args!("{:?}", error.classify()))
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(ErrorKind::Io, "local IO failed").with_source(error)
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.0.kind, self.0.message)?;
+        if let Some(response) = &self.0.response {
+            write!(f, " (HTTP {}", response.status.as_u16())?;
+            if let Some(code) = response.printable_service_code() {
+                write!(f, ", service code {code}")?;
+            }
+            f.write_str(")")?;
+        }
+        if !self.0.context.is_empty() {
+            f.write_str(" [")?;
+            for (index, (key, value)) in self.0.context.iter().enumerate() {
+                if index > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{key}: {value}")?;
+            }
+            f.write_str("]")?;
+        }
+        Ok(())
+    }
+}
+
+/// Formats each source in the chain with `Display`, never `Debug`: foreign
+/// `Debug` output (for example a transport error) is not redaction-reviewed.
+struct SourceChain<'a>(Option<&'a (dyn StdError + 'static)>);
+impl fmt::Debug for SourceChain<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut list = f.debug_list();
+        let mut next = self.0;
+        while let Some(error) = next {
+            list.entry(&format_args!("{error}"));
+            next = error.source();
+        }
+        list.finish()
+    }
+}
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let inner = &*self.0;
+        let mut s = f.debug_struct("Error");
+        s.field("kind", &inner.kind)
+            .field("message", &inner.message)
+            .field("dispatch", &inner.dispatch);
+        if let Some(response) = &inner.response {
+            s.field("response", response);
+        }
+        if !inner.context.is_empty() {
+            s.field("context", &inner.context);
+        }
+        if let Some(output) = &inner.delete_output {
+            s.field("delete_output", output);
+        }
+        if let Some(source) = StdError::source(self) {
+            s.field("source", &SourceChain(Some(source)));
+        }
+        s.finish()
+    }
+}
+
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.0.source.as_deref().map(|e| e as _)
     }
 }
 
 // serde's error text may echo an unknown variant containing a token. Retain
 // parser location/category as the source without retaining that unsafe message.
-#[derive(Debug, Error)]
-#[error("JSON response decoding failed ({category:?}) at line {line}, column {column}")]
+#[derive(Debug)]
 pub(crate) struct JsonResponseSource {
     pub category: serde_json::error::Category,
     pub line: usize,
     pub column: usize,
 }
-impl From<reqwest::Error> for FdsError {
-    fn from(error: reqwest::Error) -> Self {
-        Self::Http(error.without_url())
+impl fmt::Display for JsonResponseSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "JSON response decoding failed ({:?}) at line {}, column {}",
+            self.category, self.line, self.column
+        )
     }
 }
-impl std::fmt::Debug for FdsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::CopyOutcomeUnknown(e) => f.debug_tuple("CopyOutcomeUnknown").field(e).finish(),
-            Self::Response(e) => std::fmt::Debug::fmt(e, f),
-            Self::Http(_) => f.write_str("FdsError::Http"),
-            Self::Json(_) => f.write_str("FdsError::Json"),
-            Self::Invalid(_) => f.write_str("FdsError::Invalid"),
-            Self::Io(_) => f.write_str("FdsError::Io"),
-            Self::Endpoint => f.write_str("FdsError::Endpoint"),
-            Self::Cancelled => f.write_str("FdsError::Cancelled"),
+impl StdError for JsonResponseSource {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_is_pointer_sized() {
+        assert_eq!(std::mem::size_of::<Error>(), std::mem::size_of::<usize>());
+        assert_eq!(
+            std::mem::size_of::<Result<()>>(),
+            std::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
+    fn status_mapping() {
+        for (status, kind) in [
+            (401, ErrorKind::Unauthenticated),
+            (403, ErrorKind::PermissionDenied),
+            (404, ErrorKind::NotFound),
+            (409, ErrorKind::Conflict),
+            (412, ErrorKind::PreconditionFailed),
+            (429, ErrorKind::RateLimited),
+            (500, ErrorKind::ServerError),
+            (503, ErrorKind::ServerError),
+            (599, ErrorKind::ServerError),
+            (400, ErrorKind::Unexpected),
+            (405, ErrorKind::Unexpected),
+            (201, ErrorKind::Unexpected),
+            (302, ErrorKind::Unexpected),
+        ] {
+            assert_eq!(
+                ErrorKind::from_status(StatusCode::from_u16(status).unwrap()),
+                kind,
+                "{status}"
+            );
         }
     }
-}
-impl FdsError {
-    pub fn response(&self) -> Option<&ResponseError> {
-        match self {
-            Self::CopyOutcomeUnknown(e) => e.response(),
-            Self::Response(e) => Some(e),
-            _ => None,
+
+    fn with_status(kind: ErrorKind, status: u16) -> Error {
+        Error::new(kind, "x")
+            .with_dispatch(Dispatch::Sent)
+            .with_response(ResponseDetails::new(StatusCode::from_u16(status).unwrap()))
+    }
+
+    #[test]
+    fn retryability() {
+        assert!(with_status(ErrorKind::RateLimited, 429).is_retryable());
+        for status in [502, 503, 504] {
+            assert!(with_status(ErrorKind::ServerError, status).is_retryable());
         }
+        assert!(!with_status(ErrorKind::ServerError, 500).is_retryable());
+        assert!(!with_status(ErrorKind::NotFound, 404).is_retryable());
+        assert!(Error::new(ErrorKind::Timeout, "t")
+            .with_dispatch(Dispatch::Unknown)
+            .is_retryable());
+        assert!(Error::new(ErrorKind::Transport, "t").is_retryable());
+        assert!(!Error::new(ErrorKind::Transport, "t")
+            .with_dispatch(Dispatch::Unknown)
+            .is_retryable());
+        let unknown = with_status(ErrorKind::ServerError, 503).into_outcome_unknown("u");
+        assert!(unknown.is_outcome_unknown() && !unknown.is_retryable());
+        assert_eq!(unknown.status(), Some(StatusCode::SERVICE_UNAVAILABLE));
+        assert_eq!(unknown.dispatch(), Dispatch::Sent);
+        assert!(Error::new(ErrorKind::NotFound, "n").is_not_found());
     }
-    pub fn status(&self) -> Option<u16> {
-        self.response().map(ResponseError::status)
+
+    #[test]
+    fn formatting_is_diagnostic_and_redacted() {
+        let mut response = ResponseDetails::new(StatusCode::FORBIDDEN);
+        response.service_code = Some("AccessDenied".into());
+        response.request_id = Some("private-request-id".into());
+        response.body = "private-body Galaxy-V2 private-ak:private-signature".into();
+        let error = Error::new(ErrorKind::PermissionDenied, "FDS rejected the request")
+            .with_dispatch(Dispatch::Sent)
+            .with_response(response)
+            .with_context("bucket", "b")
+            .with_source(std::io::Error::other("inner cause"));
+        let display = error.to_string();
+        assert_eq!(
+            display,
+            "PermissionDenied: FDS rejected the request (HTTP 403, service code AccessDenied) [bucket: b]"
+        );
+        let debug = format!("{error:?} {error:#?}");
+        for expected in [
+            "PermissionDenied",
+            "403",
+            "AccessDenied",
+            "Sent",
+            "inner cause",
+        ] {
+            assert!(debug.contains(expected), "{debug}");
+        }
+        for secret in ["private-", "Galaxy-V2"] {
+            assert!(!format!("{display} {debug}").contains(secret), "{debug}");
+        }
+        // A service code that is not a plain identifier is withheld.
+        let mut response = ResponseDetails::new(StatusCode::FORBIDDEN);
+        response.service_code = Some("Galaxy-V2 AK:private-signature".into());
+        let error = Error::new(ErrorKind::PermissionDenied, "x").with_response(response);
+        let formatted = format!("{error} {error:?}");
+        assert!(!formatted.contains("private-") && formatted.contains("withheld"));
+        assert_eq!(error.service_code(), Some("Galaxy-V2 AK:private-signature"));
     }
-    pub fn service_code(&self) -> Option<&str> {
-        self.response()?.service_code()
+
+    #[test]
+    fn json_encode_error_omits_serde_message() {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(vec![1u8], "private-value");
+        let error = Error::json_encode(serde_json::to_vec(&map).unwrap_err());
+        assert_eq!(error.kind(), ErrorKind::Unexpected);
+        assert!(!format!("{error} {error:?}").contains("private-"));
     }
-    pub fn request_id(&self) -> Option<&str> {
-        self.response()?.request_id()
+
+    #[tokio::test]
+    async fn connection_refused_is_not_sent_and_removes_url() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/secret-object?storageAccessToken=private-token&Signature=private-signature",
+            listener.local_addr().unwrap()
+        );
+        drop(listener);
+        let raw = reqwest::Client::new().get(url).send().await.unwrap_err();
+        assert!(raw.url().is_some());
+        let error = Error::send_failure(raw);
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.dispatch(), Dispatch::NotSent);
+        assert!(error.is_retryable());
+        let mut diagnostics = format!("{error} {error:?}");
+        let mut source = error.source();
+        while let Some(e) = source {
+            diagnostics.push_str(&format!("{e} {e:?}"));
+            source = e.source();
+        }
+        for secret in [
+            "secret-object",
+            "private-token",
+            "private-signature",
+            "storageAccessToken",
+            "Signature",
+        ] {
+            assert!(!diagnostics.contains(secret), "{diagnostics}");
+        }
     }
 }

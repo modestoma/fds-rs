@@ -2,7 +2,7 @@
 //! Requests expose constructors/options and delegate execution to Client.
 //! Upload requests own their bodies; no compatibility request wrappers exist.
 
-use crate::{FdsError, Result};
+use crate::{Error, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 mod acl;
@@ -16,7 +16,7 @@ mod put;
 
 pub use acl::{GetObjectACLRequest, SetObjectACLRequest};
 pub use basic::{CopyObjectRequest, CopyObjectResponse, GetObjectRequest};
-pub use delete::{DeleteObjectFailure, DeleteObjectsError, DeleteObjectsOutput};
+pub use delete::{DeleteObjectFailure, DeleteObjectsOutput};
 pub use listing::{ListObjectsRequest, ObjectListing, ObjectSummary};
 pub use metadata::{ObjectBasicInfo, SetObjectMetadataRequest};
 pub use multipart::{
@@ -36,7 +36,7 @@ fn insert_header_opt(
         if !v.is_empty() {
             headers.insert(
                 HeaderName::from_static(name),
-                HeaderValue::from_str(v).map_err(|e| FdsError::invalid(e.to_string()))?,
+                HeaderValue::from_str(v).map_err(|e| Error::invalid_input(e.to_string()))?,
             );
         }
     }
@@ -46,7 +46,7 @@ fn insert_header_opt(
 pub(crate) fn validate_object(bucket: &str, object: &str) -> Result<()> {
     crate::bucket::validate_bucket(bucket)?;
     if object.is_empty() {
-        return Err(FdsError::invalid("bucket and object must be non-empty"));
+        return Err(Error::invalid_input("bucket and object must be non-empty"));
     }
     Ok(())
 }

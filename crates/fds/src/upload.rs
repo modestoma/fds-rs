@@ -6,7 +6,7 @@ use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue};
 use tokio_util::io::ReaderStream;
 
-use crate::{FdsError, Result};
+use crate::{Error, Result};
 
 type ByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send>>;
 
@@ -68,7 +68,7 @@ impl UploadBody {
         let file = tokio::fs::File::open(path).await?;
         let metadata = file.metadata().await?;
         if !metadata.is_file() {
-            return Err(FdsError::invalid("upload requires a regular file"));
+            return Err(Error::invalid_input("upload requires a regular file"));
         }
         Ok(Self::from_stream(
             ReaderStream::with_capacity(file, 64 * 1024),
@@ -97,19 +97,19 @@ impl UploadBody {
     ) -> Result<reqwest::Body> {
         // Finalize body headers before signing. Never permit metadata to replace framing.
         if headers.contains_key("transfer-encoding") || headers.contains_key("content-length") {
-            return Err(FdsError::invalid(
+            return Err(Error::invalid_input(
                 "upload framing headers are derived from the body",
             ));
         }
         if calculate_md5 && !headers.contains_key("content-md5") {
             let Source::Bytes(bytes) = &self.source else {
-                return Err(FdsError::invalid("stream/file upload requires precomputed content-md5 when MD5 calculation is enabled"));
+                return Err(Error::invalid_input("stream/file upload requires precomputed content-md5 when MD5 calculation is enabled"));
             };
             use md5::{Digest, Md5};
             headers.insert(
                 "content-md5",
                 HeaderValue::from_str(&hex::encode(Md5::digest(bytes)))
-                    .map_err(|_| FdsError::invalid("invalid checksum"))?,
+                    .map_err(|_| Error::invalid_input("invalid checksum"))?,
             );
         }
         headers.insert("content-length", HeaderValue::from(self.length));

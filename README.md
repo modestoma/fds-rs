@@ -312,7 +312,7 @@ async fn consume_chunks(client: &Client, bucket: &str, key: &str) -> fds::Result
 ### Range
 
 ```rust,no_run
-use fds::{ByteRange, Client, FdsError, GetObjectRequest};
+use fds::{ByteRange, Client, Error, ErrorKind, GetObjectRequest};
 
 async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result<bytes::Bytes> {
     // 此示例要求对象至少有 1024 字节，并要求服务返回对应范围。
@@ -320,15 +320,15 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
         .range(ByteRange::inclusive(0, 1023)?)
         .send(client).await?;
     if output.status() != 206 {
-        return Err(FdsError::invalid("服务未返回范围响应"));
+        return Err(Error::new(ErrorKind::ProtocolViolation, "服务未返回范围响应"));
     }
     let range = output.headers().get("content-range").and_then(|v| v.to_str().ok());
     if !range.is_some_and(|v| v.starts_with("bytes 0-1023/")) {
-        return Err(FdsError::invalid("Content-Range 与请求不匹配"));
+        return Err(Error::new(ErrorKind::ProtocolViolation, "Content-Range 与请求不匹配"));
     }
     let bytes = output.bytes().await?;
     if bytes.len() != 1024 {
-        return Err(FdsError::invalid("范围响应长度不匹配"));
+        return Err(Error::new(ErrorKind::ProtocolViolation, "范围响应长度不匹配"));
     }
     Ok(bytes)
 }
@@ -354,14 +354,14 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
 | `get_object_basic_info(bucket, key)` | `Result<ObjectBasicInfo>` | GET `?basicInfo`，JSON 包含 size、upload_time、存储类别、metadata 等 |
 
 ```rust,no_run
-use fds::{Client, FdsError, ObjectMetadata, SetObjectMetadataRequest};
+use fds::{Client, Error, ErrorKind, ObjectMetadata, SetObjectMetadataRequest};
 
 async fn inspect_and_set_metadata(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     let Some(head) = client.head_object(bucket, key).await? else {
-        return Err(FdsError::invalid("对象不存在"));
+        return Err(Error::new(ErrorKind::NotFound, "对象不存在"));
     };
     let wire_length = head.get("content-length")
-        .ok_or_else(|| FdsError::invalid("HEAD 缺少 Content-Length"))?;
+        .ok_or_else(|| Error::new(ErrorKind::ProtocolViolation, "HEAD 缺少 Content-Length"))?;
     println!("Content-Length：{wire_length}");
     let info = client.get_object_basic_info(bucket, key).await?;
     println!("basicInfo 大小：{}", info.size);
@@ -429,9 +429,9 @@ async fn sum_prefix(client: &Client, bucket: &str, prefix: &str) -> fds::Result<
     while let Some(object) = objects.next().await {
         let object = object?;
         let size = u64::try_from(object.size)
-            .map_err(|_| fds::FdsError::invalid("服务返回负数大小"))?;
+            .map_err(|_| fds::Error::new(fds::ErrorKind::ProtocolViolation, "服务返回负数大小"))?;
         total = total.checked_add(size)
-            .ok_or_else(|| fds::FdsError::invalid("累计大小溢出"))?;
+            .ok_or_else(|| fds::Error::new(fds::ErrorKind::Unexpected, "累计大小溢出"))?;
     }
     Ok(total)
 }
@@ -472,7 +472,7 @@ async fn restore_deleted(client: &Client, bucket: &str, key: &str) -> fds::Resul
 
 `copy_object_with_response(&request)` / `send_with_response(client)` 返回 `CopyObjectResponse`。原 `copy_object` / `send` 仍返回 `Result<()>`，但同样执行完整回执校验：必须 HTTP 200、完整有效 JSON、必填 `bucketName` / `objectName` 与请求目标完全一致。回执最多 64 KiB（含额外字段和空白），空体、截断、缺字段、目标不符、超限及超时均失败；读取受 Client 的 `request_timeout` 和 `read_timeout` 约束。
 
-Copy 不自动重试。`FdsError::CopyOutcomeUnknown` 表示未取得有效匹配回执，**目标可能已写入，不能据此认定复制未执行，也不能盲目重试**；可通过 `source()` 检查原因，HTTP 诊断仍可通过 `status()` / `response()` 读取。应由业务结合目标身份、版本或内容证据核对结果，仅检查目标存在不能证明它来自本次 Copy。参数校验失败仍返回原本的本地错误。
+Copy 不自动重试。请求可能已到达服务后的任何失败（错误状态、回执缺失或不符、响应体中断）都是 `ErrorKind::OutcomeUnknown`，表示未取得有效匹配回执，**目标可能已写入，不能据此认定复制未执行，也不能盲目重试**；可通过 `source()` 检查原因，HTTP 诊断仍可通过 `status()` / `response()` 读取。应由业务结合目标身份、版本或内容证据核对结果，仅检查目标存在不能证明它来自本次 Copy。`dispatch()` 为 `Dispatch::NotSent` 的失败（参数校验、签名、连接被拒）原样返回。
 
 `rename_object` 在同一 Bucket 中改名。`restore_object` 是误删恢复（`?restore`），是否仍可恢复取决于服务保留策略；它不是归档解冻。
 
@@ -481,17 +481,20 @@ Copy 不自动重试。`FdsError::CopyOutcomeUnknown` 表示未取得有效匹�
 单个对象调用 `client.delete_object(bucket, key).await?`。批量删除接受 `&[String]` 和 `put_to_trash: bool`，发送一个批次；它不自动把任意长数组切成符合服务限制的小批次。
 
 ```rust,no_run
-use fds::{Client, DeleteObjectsError, DeleteObjectsOutput, ListObjectsRequest};
+use fds::{Client, DeleteObjectsOutput, Dispatch, ListObjectsRequest};
 
 async fn delete_selected(client: &Client, bucket: &str, keys: &[String])
-    -> Result<DeleteObjectsOutput, DeleteObjectsError>
+    -> fds::Result<DeleteObjectsOutput>
 {
     match client.delete_objects(bucket, keys, true).await {
         Ok(output) => Ok(output),
         Err(error) => {
-            eprintln!("已确认删除 {}，明确失败 {}，结果未知 {}，未提交 {}",
-                error.output.deleted.len(), error.output.failures.len(),
-                error.unconfirmed.len(), error.not_submitted.len());
+            if let Some(output) = error.partial_delete_output() {
+                eprintln!("{:?}：已确认删除 {}，明确失败 {}，结果未知 {}", error.kind(),
+                    output.deleted.len(), output.failures.len(), output.unconfirmed.len());
+            } else if error.dispatch() == Dispatch::NotSent {
+                eprintln!("批次未提交：{error}");
+            }
             // 将完整 error 交还上层保存和决策，不在这里盲目重发。
             Err(error)
         }
@@ -512,14 +515,14 @@ async fn delete_prefix(client: &Client, bucket: &str, prefix: &str)
 
 `put_to_trash = true` 发送 `enableTrash=true`，false 发送 false；不要把 true 理解成 SDK 提供可恢复保证。空 names 不发请求。
 
-| 结果字段 | 如何使用 |
+| 结果 | 如何使用 |
 | --- | --- |
 | `Ok(output).deleted` | 按合法服务失败数组推导的成功项，并非逐个 HEAD 再检查 |
-| `Err(error).output.deleted` | 错误发生前已确认删除的项 |
-| `output.failures` | 服务返回的 object_name、error_code、error_description；HTTP 200 也可能有失败 |
-| `unconfirmed` | 已尝试传输但结果未确认的批次，可能实际已删除 |
-| `not_submitted` | 本地校验拒绝而未发送的项 |
-| `source` | 可选底层 FdsError；只有逐项失败时可以为 None |
+| `error.partial_delete_output()` | 错误发生前已确认的结果（`deleted`、`failures`、`unconfirmed`）；批次未提交时为 None |
+| `output.failures` | 服务返回的 object_name、error_code、error_description；HTTP 200 也可能有失败，此时 kind 为 `PartialFailure` |
+| `output.unconfirmed` | 已尝试传输但结果未确认的批次（kind 为 `OutcomeUnknown`），可能实际已删除 |
+| `error.dispatch()` | `NotSent` 表示失败的批次没有发出（本地校验、连接被拒） |
+| `source()` | 底层原因；逐项失败时为 None |
 
 前缀删除逐页列举、逐页删除，首次部分失败或错误即停止；后续尚未列举的对象不会出现在错误清单中。它会累计已确认结果，因此结果内存随删除数量增长；海量清理可由应用分页、分批持久记录进度。
 
@@ -578,14 +581,14 @@ async fn create_public_read_bucket(client: &Client, bucket: &str) -> fds::Result
 适合调用者自行管理分片来源、调度、回执和恢复流程。步骤是 init → 一个或多个 part → complete；放弃已知会话时显式 abort。普通文件上传优先考虑下一节托管接口。
 
 ```rust,no_run
-use fds::{Client, FdsError, InitMultipartUploadRequest, InitMultipartUploadResponse,
+use fds::{Client, Error, ErrorKind, InitMultipartUploadRequest, InitMultipartUploadResponse,
     PutObjectResponse, UploadPartResponse};
 
 // 返回会话给调用者保存；随后执行分片，不把会话藏在一个会丢失上下文的函数内。
 async fn begin(client: &Client, bucket: &str, key: &str) -> fds::Result<InitMultipartUploadResponse> {
     let mut session = InitMultipartUploadRequest::new(bucket, key).send(client).await?;
     if session.upload_id.is_empty() {
-        return Err(FdsError::invalid("未收到 upload ID，初始化结果需核对"));
+        return Err(Error::new(ErrorKind::OutcomeUnknown, "未收到 upload ID，初始化结果需核对"));
     }
     // 手动入口保留服务响应字段；后续地址显式绑定调用者输入。
     session.bucket_name = bucket.into();
@@ -627,7 +630,7 @@ init 与 complete 支持 `.metadata(...)`，complete 另支持 `.expires(...)`�
 
 ```rust,no_run
 use fds::{CancellationToken, CleanupPolicy, Client, InitMultipartUploadRequest,
-    MultipartOptions, MultipartUpload, MultipartUploadError, PutObjectResponse};
+    MultipartOptions, MultipartUpload, PutObjectResponse};
 
 async fn prepare_large_file(client: &Client, bucket: &str, key: &str, path: &std::path::Path)
     -> fds::Result<MultipartUpload>
@@ -639,7 +642,7 @@ async fn prepare_large_file(client: &Client, bucket: &str, key: &str, path: &std
 
 // session 由上层持有；错误返回后仍可读取 progress，不会随本函数丢失。
 async fn run_upload(session: &mut MultipartUpload, cancel: &CancellationToken)
-    -> Result<PutObjectResponse, MultipartUploadError>
+    -> fds::Result<PutObjectResponse>
 {
     let result = session.upload(cancel).await;
     if result.is_err() {
@@ -666,7 +669,7 @@ async fn run_upload(session: &mut MultipartUpload, cancel: &CancellationToken)
 
 `progress()` 包含 `upload`（bucket/key/upload_id）、`parts`、`total_parts`、`file_size`、`state`。这是会话快照，不是可直接导入的自动恢复格式。`upload(&mut self, ...)` 只允许运行一次；失败后不能再次调用它来隐式续传。
 
-`CleanupPolicy::AbortOnFailure` 仅在完成前错误/合作式取消时尝试一次 abort；主错误为 `MultipartUploadError.cause`，清理的第二个错误为 `cleanup_error`。`Preserve` 是默认策略。合作式取消要调用 token.cancel() 后继续 await；直接 timeout/drop future 不执行异步清理，整个 session Drop 也不发请求。源文件在全会话期间必须保持不变。
+`CleanupPolicy::AbortOnFailure` 仅在完成前错误/合作式取消时尝试一次 abort；返回的是原始错误，abort 也失败时其文本附加在 `error.context()` 的 `cleanup_error` 项中。complete 可能已发出后的失败统一为 `ErrorKind::OutcomeUnknown`。`Preserve` 是默认策略。合作式取消要调用 token.cancel() 后继续 await；直接 timeout/drop future 不执行异步清理，整个 session Drop 也不发请求。源文件在全会话期间必须保持不变。
 
 可运行基础示例见 [upload_multipart.rs](crates/fds/examples/upload_multipart.rs)，详细状态行为见 [重试与分片](docs/runtime.md#分片会话与恢复)。
 
@@ -678,7 +681,7 @@ async fn run_upload(session: &mut MultipartUpload, cancel: &CancellationToken)
 use fds::{Client, DownloadOptions, DownloadRequest, Downloader};
 
 async fn download_safely(client: &Client, bucket: &str, key: &str, path: &std::path::Path)
-    -> Result<(), fds::ManagerError>
+    -> fds::Result<()>
 {
     let options = DownloadOptions::builder()
         .part_size(4 * 1024 * 1024)
@@ -701,11 +704,11 @@ async fn download_safely(client: &Client, bucket: &str, key: &str, path: &std::p
 ### 请求启动限流
 
 ```rust,no_run
-use fds::{DownloadOptions, ManagerError};
+use fds::DownloadOptions;
 use governor::{Quota, RateLimiter};
 use std::{num::NonZeroU32, sync::Arc};
 
-fn limited_download_options() -> Result<DownloadOptions, ManagerError> {
+fn limited_download_options() -> fds::Result<DownloadOptions> {
     let limiter = Arc::new(RateLimiter::direct(
         Quota::per_second(NonZeroU32::new(5).unwrap()),
     ));
@@ -822,7 +825,7 @@ async fn request_refresh(client: &Client, bucket: &str, key: &str) -> fds::Resul
 ### 显式发现 endpoint
 
 ```rust,no_run
-use fds::{Client, FdsError, FdsServiceClient};
+use fds::{Client, Error, ErrorKind, FdsServiceClient};
 
 async fn discover_client(discovery_origin: &str, region: &str, service_name: &str,
     allowed_hosts: &[String], id: &str, secret: &str) -> fds::Result<Client>
@@ -830,7 +833,7 @@ async fn discover_client(discovery_origin: &str, region: &str, service_name: &st
     let discovery = FdsServiceClient::new(discovery_origin)?;
     let host = discovery.get_endpoint(region, service_name).await?;
     if !allowed_hosts.contains(&host) {
-        return Err(FdsError::invalid("发现主机不在应用允许列表"));
+        return Err(Error::new(ErrorKind::ConfigInvalid, "发现主机不在应用允许列表"));
     }
     Client::builder().endpoint(format!("https://{host}"))
         .credentials(id, secret).build()
@@ -877,34 +880,48 @@ token 传输要求 HTTPS，仅 HTTP loopback IP 允许本地测试。OAuth 错�
 
 ### 区分错误种类
 
-多数 API 返回 `fds::Result<T>`；批量删除返回 `DeleteObjectsError`，下载管理器返回 `ManagerError`，托管上传执行返回 `MultipartUploadError`。
+所有 API 都返回 `fds::Result<T>`，错误类型只有一个 `fds::Error`。它是不透明结构体：`kind()` 给出 `ErrorKind` 分类，`dispatch()` 说明请求是否已到达服务，`response()` 给出 HTTP 状态和诊断信息，`source()` 链保留底层原因。
 
 ```rust,no_run
-use fds::FdsError;
+use fds::{Dispatch, ErrorKind};
 
-fn report_error(error: &FdsError) {
-    if let Some(response) = error.response() {
-        eprintln!("FDS 状态 {}，错误类别 {:?}，诊断截断 {}",
-            response.status(), response.kind(), response.body_truncated());
-        // service_code/request_id/diagnostic_body 是服务原文，按应用规则脱敏后再使用。
-        return;
+fn report_error(error: &fds::Error) {
+    match error.kind() {
+        ErrorKind::NotFound => eprintln!("对象或 Bucket 不存在"),
+        ErrorKind::PermissionDenied | ErrorKind::Unauthenticated => eprintln!("权限或认证失败"),
+        ErrorKind::CredentialsExpired => eprintln!("storage token 已过期，需重新交换"),
+        ErrorKind::InvalidInput | ErrorKind::ConfigInvalid => eprintln!("本地参数或配置无效"),
+        ErrorKind::OutcomeUnknown => eprintln!("结果未知，先核对再决定是否重试"),
+        _ if error.is_retryable() => eprintln!("暂时性失败，可以重试：{error}"),
+        _ => eprintln!("其他失败：{error}"),
     }
-    match error {
-        FdsError::Http(source) if source.is_timeout() => eprintln!("传输超时"),
-        FdsError::Http(_) => eprintln!("连接或传输失败"),
-        FdsError::Io(_) => eprintln!("本地文件 IO 失败"),
-        FdsError::Invalid(_) | FdsError::Endpoint => eprintln!("本地参数或 endpoint 无效"),
-        FdsError::Cancelled => eprintln!("调用取消"),
-        _ => eprintln!("其他 SDK 错误"),
+    if let Some(response) = error.response() {
+        // service_code/request_id/diagnostic_body 是服务原文，按应用规则脱敏后再使用。
+        eprintln!("HTTP {}，诊断截断 {}", response.status(), response.body_truncated());
+    }
+    if error.dispatch() == Dispatch::NotSent {
+        eprintln!("请求没有发出");
     }
 }
 ```
 
-`FdsError` 为 non_exhaustive，match 必须留兜底分支。`status()`、`service_code()`、`request_id()` 是便利访问器；ResponseError 还含 `kind()`、最多 8 KiB 的 `diagnostic_body()`、`body_truncated()`。类别包括 UnexpectedStatus、EmptyJson、InvalidJson、BodyRead。
+| ErrorKind | 含义 |
+| --- | --- |
+| `InvalidInput` / `ConfigInvalid` | 调用参数无效 / Client 配置（endpoint、凭证、超时、重试策略、CDN）无效或不适用于该操作 |
+| `NotFound` / `Unauthenticated` / `PermissionDenied` / `Conflict` / `PreconditionFailed` / `RateLimited` | HTTP 404 / 401 / 403 / 409 / 412 / 429；对象在下载中途变化也是 `PreconditionFailed` |
+| `ServerError` | HTTP 5xx |
+| `CredentialsExpired` | storage token 在本地检查时已过期 |
+| `ProtocolViolation` | 服务响应不合约定：空 JSON、非法 JSON、超限响应、回执或分页 marker 与请求不符 |
+| `Timeout` / `Transport` / `Io` / `Cancelled` | 超时 / 连接或传输失败 / 本地 IO / 合作式取消 |
+| `OutcomeUnknown` | Copy、分片 complete、批量删除等变更可能已生效，禁止盲目重试 |
+| `PartialFailure` | 批量删除部分对象失败，逐项结果见 `partial_delete_output()` |
+| `Unexpected` | 其他 HTTP 状态（其余 4xx、未列入成功的 2xx/3xx）和 SDK 内部错误 |
+
+`ErrorKind` 为 non_exhaustive，match 必须留兜底分支。`is_retryable()` 对 RateLimited、HTTP 502/503/504、Timeout 和未发出的 Transport 返回 true；`is_not_found()`、`is_outcome_unknown()` 是对应 kind 的简写。`status()`（`http::StatusCode`）、`service_code()`、`request_id()` 是便利访问器；`ResponseDetails` 还含最多 8 KiB 的 `diagnostic_body()` 和 `body_truncated()`。
 
 HTTP status 与服务 error code 是两套字段。JSON 操作即使 HTTP 200，也可能因空体或非法 JSON 失败；权限错误不能转换成“对象不存在”。SDK 禁止自动跟随重定向，未列入操作成功状态的 2xx 也会失败。更多状态规则见 [响应处理](docs/runtime.md#响应与错误)。
 
-SDK 错误与响应 Debug 做了部分脱敏，但调用者自己的错误文本、metadata、ACL、key、原始响应和 PutObjectResponse 等并非统一脱敏对象。不要把任意 SDK 模型整体打印当成安全日志策略。
+`fds::Error` 的 Display 包含 kind、消息、HTTP 状态和形如标识符的 service code；Debug 另含 dispatch、上下文和 source 链（逐项按 Display 输出）。两者都不输出 AK/SK、签名、storage token、带凭证的 URL、request ID 或原始响应体；OAuth/匿名模式下不保留 service code、request ID 和响应体。但调用者自己的错误文本、metadata、ACL、key、原始响应和 PutObjectResponse 等并非统一脱敏对象。不要把任意 SDK 模型整体打印当成安全日志策略。
 
 ### 重试和整体期限
 

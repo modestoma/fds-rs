@@ -2,12 +2,15 @@
 
 use super::validate_object;
 use crate::client::ClientRequest;
-use crate::{ByteRange, Client, FdsError, GetObjectOutput, HttpMethod, ObjectMetadata, Result};
+use crate::{ByteRange, Client, Error, GetObjectOutput, HttpMethod, ObjectMetadata, Result};
 use bytes::Bytes;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+const COPY_UNKNOWN: &str =
+    "copy outcome unknown; the destination may have been written, do not retry blindly";
 
 /// Input of `get_object` (Go `GetObjectRequest`).
 #[derive(Debug, Clone, Default)]
@@ -114,7 +117,7 @@ impl Client {
             headers.insert(
                 "range",
                 HeaderValue::from_str(&range.to_string())
-                    .map_err(|e| FdsError::invalid(e.to_string()))?,
+                    .map_err(|e| Error::invalid_input(e.to_string()))?,
             );
         }
         let mut cr =
@@ -125,7 +128,7 @@ impl Client {
         cr.headers = headers;
         cr.timeout = req
             .timeout
-            .map(crate::config::validate_timeout)
+            .map(|t| crate::config::validate_timeout(t, crate::ErrorKind::InvalidInput))
             .transpose()?;
         Ok(crate::GetObjectOutput::new(self.do_request(cr).await?))
     }
@@ -151,8 +154,14 @@ impl Client {
     }
 
     /// Copy with a required matching JSON receipt (maximum 64 KiB).
-    /// No automatic retries. Errors after dispatch may mean the destination was
-    /// written; reconcile with the service before deciding whether to retry.
+    ///
+    /// No automatic retries. A failure whose [`Dispatch`](crate::Dispatch) is
+    /// `NotSent` (local validation, signing, connection) is returned as is.
+    /// Every failure after the request may have reached the service, including
+    /// an error status, a missing or mismatched receipt and a broken response
+    /// body, is [`ErrorKind::OutcomeUnknown`](crate::ErrorKind::OutcomeUnknown):
+    /// the destination may have been written. `status()` and the source chain
+    /// keep the underlying cause; reconcile before deciding whether to retry.
     pub async fn copy_object_with_response(
         &self,
         req: &CopyObjectRequest,
@@ -162,7 +171,8 @@ impl Client {
         let body = serde_json::to_vec(&CopyBody {
             src_bucket_name: &req.source_bucket_name,
             src_object_name: &req.source_object_name,
-        })?;
+        })
+        .map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(
             &req.target_bucket_name,
             &req.target_object_name,
@@ -170,16 +180,20 @@ impl Client {
         );
         cr.query.add("cp", "");
         cr.body = Some(Bytes::from(body).into());
-        let receipt: CopyObjectResponse = self
-            .do_json_limited(cr, 64 * 1024)
-            .await
-            .map_err(|e| FdsError::CopyOutcomeUnknown(Box::new(e)))?;
+        let receipt: CopyObjectResponse =
+            self.do_json_limited(cr, 64 * 1024)
+                .await
+                .map_err(|e| match e.dispatch() {
+                    crate::Dispatch::NotSent => e,
+                    _ => e.into_outcome_unknown(COPY_UNKNOWN),
+                })?;
         if receipt.bucket_name != req.target_bucket_name
             || receipt.object_name != req.target_object_name
         {
-            return Err(FdsError::CopyOutcomeUnknown(Box::new(FdsError::invalid(
-                "Copy receipt destination does not match request",
-            ))));
+            return Err(
+                Error::protocol("copy receipt destination does not match request")
+                    .into_outcome_unknown(COPY_UNKNOWN),
+            );
         }
         Ok(receipt)
     }

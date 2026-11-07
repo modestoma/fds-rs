@@ -1,7 +1,8 @@
 //! Explicit endpoint discovery and OAuth exchange. See docs/protocol.md
 //! for protocol evidence, provisioning prerequisites and refresh semantics.
 use crate::{
-    client::ClientRequest, Client, ClientBuilder, ClientConfiguration, FdsError, HttpMethod, Result,
+    client::ClientRequest, Client, ClientBuilder, ClientConfiguration, Error, ErrorKind,
+    HttpMethod, Result,
 };
 use chrono::{DateTime, Utc};
 use reqwest::header::HeaderValue;
@@ -20,7 +21,7 @@ impl Credentials {
                     || secret.is_empty()
                     || !id.bytes().all(|b| b.is_ascii_graphic() && b != b':') =>
             {
-                Err(FdsError::invalid(
+                Err(Error::config_invalid(
                     "credentials require a nonempty header-safe access ID and nonempty secret",
                 ))
             }
@@ -35,7 +36,7 @@ impl Credentials {
 
 fn nonempty(value: &str) -> Result<()> {
     if value.trim().is_empty() {
-        Err(FdsError::invalid(
+        Err(Error::invalid_input(
             "OAuth fields and discovery selectors must not be empty",
         ))
     } else {
@@ -51,7 +52,7 @@ fn secure_origin(url: &url::Url) -> Result<()> {
     if url.scheme() == "https" || loopback {
         Ok(())
     } else {
-        Err(FdsError::invalid(
+        Err(Error::config_invalid(
             "OAuth requires HTTPS (HTTP is allowed only for loopback IP tests)",
         ))
     }
@@ -131,10 +132,10 @@ impl StorageTokenRequest {
                 }
                 Ok(())
             }
-            (OAuthProvider::XiaoMi, None) => Err(FdsError::invalid(
+            (OAuthProvider::XiaoMi, None) => Err(Error::invalid_input(
                 "XiaoMi requires open ID, MAC key and MAC algorithm",
             )),
-            (_, Some(_)) => Err(FdsError::invalid(
+            (_, Some(_)) => Err(Error::invalid_input(
                 "MAC inputs are only supported for XiaoMi",
             )),
             (_, None) => Ok(()),
@@ -173,7 +174,8 @@ impl StorageAccessToken {
     pub(crate) fn validate(&self) -> Result<()> {
         nonempty(&self.token)?;
         if self.is_expired() {
-            Err(FdsError::invalid(
+            Err(Error::new(
+                ErrorKind::CredentialsExpired,
                 "storage token expired; explicitly exchange a new token",
             ))
         } else {
@@ -223,7 +225,7 @@ impl FdsServiceClient {
                 .bytes()
                 .any(|b| !(b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
         {
-            return Err(FdsError::invalid("discovery returned an invalid hostname"));
+            return Err(Error::protocol("discovery returned an invalid hostname"));
         }
         Ok(endpoint)
     }
@@ -263,9 +265,11 @@ impl FdsServiceClient {
             app_id: input.app_id.clone(),
             token: wire.token,
             expires_at: DateTime::from_timestamp_millis(wire.expire_time)
-                .ok_or_else(|| FdsError::invalid("invalid storage token expiration"))?,
+                .ok_or_else(|| Error::protocol("invalid storage token expiration"))?,
         };
-        token.validate()?;
+        token.validate().map_err(|e| {
+            Error::protocol("exchange returned an unusable storage token").with_source(e)
+        })?;
         Ok(token)
     }
 }

@@ -63,11 +63,11 @@ async fn invalid_names_fail_at_both_entry_points() {
     let client = client("http://127.0.0.1:1");
     assert!(matches!(
         client.get_object(&GetObjectRequest::new("", "o")).await,
-        Err(fds::FdsError::Invalid(_))
+        Err(e) if e.kind() == fds::ErrorKind::InvalidInput
     ));
     assert!(matches!(
         PutObjectRequest::new("", "o", vec![]).send(&client).await,
-        Err(fds::FdsError::Invalid(_))
+        Err(e) if e.kind() == fds::ErrorKind::InvalidInput
     ));
     assert_send(GetObjectRequest::new("b", "o").send(&client));
     assert_send(PutObjectRequest::new("b", "o", vec![]).send(&client));
@@ -180,7 +180,8 @@ async fn output_preserves_errors_and_raw_escape_hatch() {
         .send(&client)
         .await
         .unwrap_err();
-    assert_eq!(err.status(), Some(403));
+    assert_eq!(err.status(), Some(http::StatusCode::FORBIDDEN));
+    assert_eq!(err.kind(), fds::ErrorKind::PermissionDenied);
     let output = GetObjectRequest::new("b", "ok")
         .send(&client)
         .await
@@ -235,7 +236,8 @@ async fn chunk_reports_truncated_body_and_eof_is_stable() {
             Err(error) => break error,
         }
     };
-    assert!(matches!(error, fds::FdsError::Http(_)));
+    assert_eq!(error.kind(), fds::ErrorKind::Transport, "{error:?}");
+    assert_eq!(error.dispatch(), fds::Dispatch::Sent);
     server.await.unwrap();
     let mut server = mockito::Server::new_async().await;
     let stub = server
@@ -297,7 +299,7 @@ async fn copy_to_preserves_remaining_body_and_writer_errors() {
     drop(reader);
     assert!(matches!(
         output.copy_to(&mut writer).await,
-        Err(fds::FdsError::Io(_))
+        Err(e) if e.kind() == fds::ErrorKind::Io
     ));
     stub.assert_async().await;
 }
@@ -330,7 +332,7 @@ async fn file_upload_helper_keeps_body_and_options() {
     assert_eq!(result.unwrap().object_name, "o");
     assert!(matches!(
         fds::PutObjectRequest::from_file("b", "o", &path).await,
-        Err(fds::FdsError::Io(_))
+        Err(e) if e.kind() == fds::ErrorKind::Io
     ));
     stub.assert_async().await;
 }
@@ -415,6 +417,6 @@ async fn direct_client_entry_points_validate_before_transport() {
             .abort(&client)
             .await,
     ] {
-        assert!(matches!(result, Err(fds::FdsError::Invalid(_))));
+        assert!(matches!(result, Err(e) if e.kind() == fds::ErrorKind::InvalidInput));
     }
 }

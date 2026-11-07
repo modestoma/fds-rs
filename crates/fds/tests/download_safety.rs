@@ -428,10 +428,7 @@ async fn invalid_download_target_precedes_lock_and_network() {
             .send(&dl)
             .await
             .unwrap_err();
-        assert!(matches!(
-            error,
-            fds::ManagerError::Fds(fds::FdsError::Invalid(_))
-        ));
+        assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
         assert_eq!(std::fs::read(out.path()).unwrap(), b"original");
         assert!(!out.0.join("out.download.lock").exists());
         assert!(!out.0.join("out.tmp").exists());

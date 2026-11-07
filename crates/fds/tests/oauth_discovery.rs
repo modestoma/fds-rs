@@ -129,14 +129,18 @@ async fn provider_validation_and_https_fail_before_network() {
     ] {
         assert!(matches!(
             service.exchange_storage_token(&input).await,
-            Err(fds::FdsError::Invalid(_))
+            Err(e) if e.kind() == fds::ErrorKind::InvalidInput
         ));
     }
-    assert!(FdsServiceClient::new("http://invalid.example")
-        .unwrap()
-        .exchange_storage_token(&request(OAuthProvider::QQ))
-        .await
-        .is_err());
+    assert_eq!(
+        FdsServiceClient::new("http://invalid.example")
+            .unwrap()
+            .exchange_storage_token(&request(OAuthProvider::QQ))
+            .await
+            .unwrap_err()
+            .kind(),
+        fds::ErrorKind::ConfigInvalid
+    );
 }
 #[tokio::test]
 async fn oauth_operations_use_bound_app_token_and_reject_presigning() {
@@ -212,7 +216,7 @@ async fn token_errors_never_retain_response_secrets_and_exchange_is_not_retried(
         assert!(!format!("{error:?} {error}").contains("oauth-secret"));
         assert!(!error
             .response()
-            .map(fds::ResponseError::diagnostic_body)
+            .map(fds::ResponseDetails::diagnostic_body)
             .unwrap_or("")
             .contains("oauth-secret"));
         assert!(error.request_id().is_none());
@@ -243,10 +247,14 @@ async fn expired_clones_fail_locally_and_refresh_is_explicit() {
     )
     .await;
     for client in [&client, &clone] {
-        assert!(matches!(
-            client.list_app_buckets().await,
-            Err(fds::FdsError::Invalid(_))
-        ));
+        let error = client.list_app_buckets().await.unwrap_err();
+        assert_eq!(
+            error.kind(),
+            fds::ErrorKind::CredentialsExpired,
+            "{error:?}"
+        );
+        assert_eq!(error.dispatch(), fds::Dispatch::NotSent);
+        assert!(!format!("{error} {error:?}").contains("short-lived"));
     }
     mock.assert_async().await;
     // No hidden exchange occurred; only an explicit call obtains a replacement.
@@ -277,12 +285,14 @@ async fn oauth_operation_errors_discard_echoed_tokens() {
         .create_async()
         .await;
     let error = client.list_app_buckets().await.unwrap_err();
-    assert_eq!(error.status(), Some(403));
+    assert_eq!(error.status(), Some(http::StatusCode::FORBIDDEN));
+    assert_eq!(error.kind(), fds::ErrorKind::PermissionDenied);
     assert_eq!(
-        error.response().map(fds::ResponseError::diagnostic_body),
+        error.response().map(fds::ResponseDetails::diagnostic_body),
         Some("")
     );
     assert!(error.request_id().is_none());
-    assert!(!format!("{error:?}").contains("storage-secret"));
+    assert!(error.service_code().is_none());
+    assert!(!format!("{error} {error:?}").contains("storage-secret"));
     mock.assert_async().await;
 }

@@ -1,6 +1,6 @@
 //! HTTP Range parsing. Ports `fds/httpparser/range.go`.
 
-use crate::error::{FdsError, Result};
+use crate::error::{Error, Result};
 
 /// A single byte range (inclusive `start`..=`end`), mirroring Go `HTTPRange`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,18 +26,18 @@ pub fn parse_range(r: &str) -> Result<Vec<HttpRange>> {
 
     let index = match r.find('=') {
         Some(i) => i,
-        None => return Err(FdsError::invalid("fds: error range format")),
+        None => return Err(Error::invalid_input("fds: error range format")),
     };
 
     if &r[..index] != "bytes" {
-        return Err(FdsError::invalid("fds: only support bytes range"));
+        return Err(Error::invalid_input("fds: only support bytes range"));
     }
 
     let mut ranges = Vec::new();
     for item in r[index + 1..].split(',') {
         let parts: Vec<&str> = item.split('-').collect();
         if parts.len() != 2 {
-            return Err(FdsError::invalid("fds: error range format"));
+            return Err(Error::invalid_input("fds: error range format"));
         }
 
         let start: i64 = if parts[0].is_empty() {
@@ -45,15 +45,15 @@ pub fn parse_range(r: &str) -> Result<Vec<HttpRange>> {
         } else {
             parts[0]
                 .parse()
-                .map_err(|_| FdsError::invalid("fds: error range format"))?
+                .map_err(|_| Error::invalid_input("fds: error range format"))?
         };
 
         if parts[1].is_empty() {
-            return Err(FdsError::invalid("fds: error range format"));
+            return Err(Error::invalid_input("fds: error range format"));
         }
         let end: i64 = parts[1]
             .parse()
-            .map_err(|_| FdsError::invalid("fds: error range format"))?;
+            .map_err(|_| Error::invalid_input("fds: error range format"))?;
 
         ranges.push(HttpRange { start, end });
     }

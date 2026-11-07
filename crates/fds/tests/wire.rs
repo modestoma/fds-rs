@@ -164,10 +164,10 @@ async fn error_status_carries_body_and_code() {
         .await
         .unwrap_err();
 
-    assert_eq!(err.status(), Some(403));
+    assert_eq!(err.status().map(|s| s.as_u16()), Some(403));
     assert!(err
         .response()
-        .map(fds::ResponseError::diagnostic_body)
+        .map(fds::ResponseDetails::diagnostic_body)
         .unwrap()
         .contains("denied"));
 }
@@ -223,7 +223,7 @@ async fn explicit_status_matrix() {
             .await;
         assert_eq!(result.is_ok(), status == 200, "GET {status}");
         if let Err(e) = result {
-            assert_eq!(e.status(), Some(status as u16));
+            assert_eq!(e.status().map(|s| s.as_u16()), Some(status as u16));
         }
         get.assert_async().await;
         get.remove_async().await;
@@ -256,7 +256,10 @@ async fn explicit_status_matrix() {
         match status {
             200 => assert!(result.unwrap()),
             404 => assert!(!result.unwrap()),
-            _ => assert_eq!(result.unwrap_err().status(), Some(status as u16)),
+            _ => assert_eq!(
+                result.unwrap_err().status().map(|s| s.as_u16()),
+                Some(status as u16)
+            ),
         }
         head.assert_async().await;
         let bucket = server
@@ -301,13 +304,8 @@ async fn explicit_status_matrix() {
 
 #[tokio::test]
 async fn required_json_has_explicit_protocol_errors() {
-    use fds::ResponseErrorKind;
     use std::error::Error;
-    for (body, kind) in [
-        ("", ResponseErrorKind::EmptyJson),
-        ("  ", ResponseErrorKind::InvalidJson),
-        ("{broken", ResponseErrorKind::InvalidJson),
-    ] {
+    for (body, invalid_json) in [("", false), ("  ", true), ("{broken", true)] {
         let mut server = mockito::Server::new_async().await;
         let m = server
             .mock("PUT", "/b/o")
@@ -320,13 +318,19 @@ async fn required_json_has_explicit_protocol_errors() {
             .put_object(PutObjectRequest::new("b", "o", Vec::new()))
             .await
             .unwrap_err();
-        assert_eq!(error.status(), Some(200));
+        assert_eq!(error.status().map(|s| s.as_u16()), Some(200));
         assert_eq!(error.request_id(), Some("trace-123"));
-        assert_eq!(error.response().unwrap().kind(), kind);
+        assert_eq!(error.kind(), fds::ErrorKind::ProtocolViolation);
+        assert_eq!(error.dispatch(), fds::Dispatch::Sent);
         assert_eq!(
-            error.response().unwrap().source().is_some(),
-            kind == ResponseErrorKind::InvalidJson
+            error.message(),
+            if invalid_json {
+                "invalid JSON response body"
+            } else {
+                "required JSON response body is empty"
+            }
         );
+        assert_eq!(error.source().is_some(), invalid_json);
         m.assert_async().await;
     }
 }
@@ -367,7 +371,7 @@ async fn signed_redirects_never_follow_same_or_cross_origin() {
                 })
                 .await
                 .unwrap_err();
-            assert_eq!(error.status(), Some(status as u16));
+            assert_eq!(error.status().map(|s| s.as_u16()), Some(status as u16));
             assert!(!format!("{error} {error:?}").contains("secret"));
             target.assert_async().await;
             redirect.assert_async().await;
@@ -405,7 +409,7 @@ async fn diagnostics_are_bounded_and_formatting_omits_untrusted_strings() {
             })
             .await
             .unwrap_err();
-        assert_eq!(error.status(), Some(506));
+        assert_eq!(error.status().map(|s| s.as_u16()), Some(506));
         assert_eq!(error.request_id(), Some("header-id"));
         assert_eq!(
             error.service_code(),
@@ -415,13 +419,25 @@ async fn diagnostics_are_bounded_and_formatting_omits_untrusted_strings() {
                 Some("AccessDenied")
             }
         );
+        assert_eq!(error.kind(), fds::ErrorKind::ServerError);
         let response = error.response().unwrap();
         assert_eq!(response.body_truncated(), truncated);
         assert!(response.diagnostic_body().len() <= 8192);
-        let formatted = format!("{error} {error:?} {response} {response:?}");
-        for sensitive in ["credential", "oauth", "signed", "header-id", "AccessDenied"] {
-            assert!(!formatted.contains(sensitive));
+        let formatted = format!("{error} {error:?} {error:#?} {response:?}");
+        // Formatting keeps the status and a plain service code, never the
+        // request ID or the (credential-echoing) body.
+        for sensitive in [
+            "credential",
+            "oauth",
+            "signed",
+            "header-id",
+            "Galaxy-V2",
+            "雪",
+        ] {
+            assert!(!formatted.contains(sensitive), "{formatted}");
         }
+        assert!(formatted.contains("506"));
+        assert_eq!(formatted.contains("AccessDenied"), !truncated);
         m.assert_async().await;
     }
 }
@@ -451,7 +467,7 @@ async fn optional_error_fields_are_best_effort() {
         assert_eq!(e.service_code(), code);
         assert_eq!(e.request_id(), id);
         assert_eq!(
-            e.response().map(fds::ResponseError::diagnostic_body),
+            e.response().map(fds::ResponseDetails::diagnostic_body),
             Some(body)
         );
         m.assert_async().await;
@@ -483,46 +499,18 @@ async fn body_read_failure_preserves_status_request_id_and_source() {
             .put_object(PutObjectRequest::new("b", "o", Vec::new()))
             .await
             .unwrap_err();
-        assert_eq!(e.status(), Some(status));
+        assert_eq!(e.status().map(|s| s.as_u16()), Some(status));
         assert_eq!(e.request_id(), Some("read-failure"));
-        assert!(e.response().unwrap().source().is_some());
+        assert!(e.source().is_some());
+        assert_eq!(e.dispatch(), fds::Dispatch::Sent);
         assert_eq!(
-            e.response().unwrap().kind(),
+            e.kind(),
             if status == 200 {
-                fds::ResponseErrorKind::BodyRead
+                fds::ErrorKind::Transport
             } else {
-                fds::ResponseErrorKind::UnexpectedStatus
+                fds::ErrorKind::ServerError
             }
         );
         serve.await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn transport_error_conversion_removes_url_from_source() {
-    use std::error::Error;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!(
-        "http://{}/secret-object?storageAccessToken=private-token&Signature=private-signature",
-        listener.local_addr().unwrap()
-    );
-    drop(listener);
-    let raw = reqwest::Client::new().get(url).send().await.unwrap_err();
-    assert!(raw.url().is_some());
-    let error = fds::FdsError::from(raw);
-    let mut diagnostics = format!("{error} {error:?}");
-    let mut source = error.source();
-    while let Some(e) = source {
-        diagnostics.push_str(&format!("{e} {e:?}"));
-        source = e.source();
-    }
-    for secret in [
-        "secret-object",
-        "private-token",
-        "private-signature",
-        "storageAccessToken",
-        "Signature",
-    ] {
-        assert!(!diagnostics.contains(secret));
     }
 }

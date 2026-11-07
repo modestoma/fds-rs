@@ -297,7 +297,7 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             names,
             trash,
         } => {
-            output::delete_result(client.delete_objects(bucket, names, *trash).await)?;
+            output::delete_result(client.delete_objects(bucket, names, *trash).await, names)?;
         }
         ObjectCmd::DeletePrefix {
             bucket,
@@ -318,6 +318,7 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
                         *trash,
                     )
                     .await,
+                &[],
             )?;
         }
         ObjectCmd::List {

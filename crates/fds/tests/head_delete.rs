@@ -1,4 +1,4 @@
-use fds::Client;
+use fds::{Client, DeleteObjectsOutput, Dispatch, ErrorKind};
 use mockito::Matcher;
 fn client(s: &mockito::ServerGuard) -> Client {
     Client::builder()
@@ -17,6 +17,11 @@ fn query(marker: Option<&str>) -> Matcher {
         q.push(Matcher::UrlEncoded("marker".into(), m.into()));
     }
     Matcher::AllOf(q)
+}
+fn partial(error: &fds::Error) -> &DeleteObjectsOutput {
+    error
+        .partial_delete_output()
+        .unwrap_or_else(|| panic!("missing partial output: {error:?}"))
 }
 #[tokio::test]
 async fn head_metadata_status_and_encoded_key() {
@@ -40,7 +45,10 @@ async fn head_metadata_status_and_encoded_key() {
                 assert_eq!(md.get("x-xiaomi-meta-tag"), Some("value"));
             }
             404 => assert!(result.unwrap().is_none()),
-            _ => assert_eq!(result.unwrap_err().status(), Some(status as u16)),
+            _ => assert_eq!(
+                result.unwrap_err().status().map(|s| s.as_u16()),
+                Some(status as u16)
+            ),
         }
         m.assert_async().await;
     }
@@ -74,16 +82,25 @@ async fn bulk_results_are_never_silently_discarded() {
             assert_eq!(r.unwrap().deleted, ["a", "b"]);
         } else {
             let e = r.unwrap_err();
+            let output = partial(&e);
             if body.contains("denied") {
-                assert_eq!(e.output.deleted, ["a"]);
-                assert_eq!(e.output.failures[0].object_name, "b");
-                assert_eq!(e.output.failures[0].error_code, "denied");
-                assert_eq!(e.output.failures[0].error_description, "secret");
-                assert!(e.source.is_none());
-                assert!(!format!("{e:?}").contains("secret"));
+                assert_eq!(e.kind(), ErrorKind::PartialFailure);
+                assert_eq!(e.dispatch(), Dispatch::Sent);
+                assert_eq!(output.deleted, ["a"]);
+                assert_eq!(output.failures[0].object_name, "b");
+                assert_eq!(output.failures[0].error_code, "denied");
+                assert_eq!(output.failures[0].error_description, "secret");
+                assert!(output.unconfirmed.is_empty());
+                assert!(std::error::Error::source(&e).is_none());
+                assert!(!format!("{e} {e:?}").contains("secret"));
             } else {
-                assert_eq!(e.unconfirmed, ["a", "b"]);
-                assert!(e.source.is_some());
+                assert_eq!(e.kind(), ErrorKind::OutcomeUnknown, "{e:?}");
+                assert_eq!(output.unconfirmed, ["a", "b"]);
+                let source = std::error::Error::source(&e).unwrap();
+                assert_eq!(
+                    source.downcast_ref::<fds::Error>().unwrap().kind(),
+                    ErrorKind::ProtocolViolation
+                );
             }
         }
         m.assert_async().await;
@@ -137,9 +154,17 @@ async fn prefix_keeps_progress_on_later_delete_or_list_failure() {
             .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
             .await
             .unwrap_err();
-        assert_eq!(e.output.deleted, ["p/a"]);
-        assert_eq!(e.unconfirmed.len(), if fail_list { 0 } else { 1 });
-        assert_eq!(e.source.unwrap().status(), Some(500));
+        assert_eq!(partial(&e).deleted, ["p/a"]);
+        assert_eq!(partial(&e).unconfirmed.len(), if fail_list { 0 } else { 1 });
+        assert_eq!(e.status(), Some(http::StatusCode::INTERNAL_SERVER_ERROR));
+        assert_eq!(
+            e.kind(),
+            if fail_list {
+                ErrorKind::ServerError
+            } else {
+                ErrorKind::OutcomeUnknown
+            }
+        );
         first.assert_async().await;
         delete.assert_async().await;
         next.assert_async().await;
@@ -180,8 +205,9 @@ async fn prefix_empty_page_continues_and_partial_failure_stops() {
         .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
         .await
         .unwrap_err();
-    assert_eq!(e.output.deleted, ["p/a"]);
-    assert_eq!(e.output.failures[0].object_name, "p/b");
+    assert_eq!(e.kind(), ErrorKind::PartialFailure);
+    assert_eq!(partial(&e).deleted, ["p/a"]);
+    assert_eq!(partial(&e).failures[0].object_name, "p/b");
     first.assert_async().await;
     next.assert_async().await;
     delete.assert_async().await;
@@ -201,10 +227,12 @@ async fn prefix_rejects_missing_marker_and_out_of_scope_names_before_deleting() 
             .create_async()
             .await;
         let delete = s.mock("PUT", Matcher::Any).expect(0).create_async().await;
-        assert!(client(&s)
+        let error = client(&s)
             .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
             .await
-            .is_err());
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
+        assert!(partial(&error).deleted.is_empty());
         list.assert_async().await;
         delete.assert_async().await;
     }
@@ -243,7 +271,8 @@ async fn prefix_repeated_marker_stops_before_next_batch() {
         .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b").prefix("p/"), false)
         .await
         .unwrap_err();
-    assert_eq!(e.output.deleted, ["p/a"]);
+    assert_eq!(e.kind(), ErrorKind::ProtocolViolation);
+    assert_eq!(partial(&e).deleted, ["p/a"]);
     first.assert_async().await;
     delete.assert_async().await;
     next.assert_async().await;
@@ -299,13 +328,9 @@ async fn local_bulk_validation_retains_batch_without_unknown_outcomes() {
         .is_empty());
     for (bucket, names) in [("", vec!["a".into()]), ("b", vec!["a".into(), "".into()])] {
         let error = c.delete_objects(bucket, &names, false).await.unwrap_err();
-        assert_eq!(error.not_submitted, names);
-        assert!(error.unconfirmed.is_empty());
-        assert!(error.output.deleted.is_empty());
-        assert!(matches!(
-            error.source.as_deref(),
-            Some(fds::FdsError::Invalid(_))
-        ));
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.dispatch(), Dispatch::NotSent);
+        assert!(error.partial_delete_output().is_none());
     }
     no_put.assert_async().await;
 }
@@ -335,18 +360,17 @@ async fn bulk_duplicates_preserve_input_and_receipt_order() {
             assert_eq!(result.unwrap().deleted, ["b", "a", "b", "a"]);
         } else {
             let error = result.unwrap_err();
-            assert_eq!(error.output.deleted, ["b", "b"]);
+            let output = partial(&error);
+            assert_eq!(output.deleted, ["b", "b"]);
             assert_eq!(
-                error
-                    .output
+                output
                     .failures
                     .iter()
                     .map(|f| f.error_code.as_str())
                     .collect::<Vec<_>>(),
                 ["x", "y"]
             );
-            assert!(error.unconfirmed.is_empty());
-            assert!(error.not_submitted.is_empty());
+            assert!(output.unconfirmed.is_empty());
         }
         sent.assert_async().await;
     }
@@ -385,8 +409,8 @@ async fn prefix_long_cycle_and_initial_marker_are_checked_before_delete() {
         .delete_objects_with_prefix(&request, true)
         .await
         .unwrap_err();
-    assert_eq!(error.output.deleted, ["p/1", "p/2"]);
-    assert!(error.unconfirmed.is_empty());
+    assert_eq!(partial(&error).deleted, ["p/1", "p/2"]);
+    assert!(partial(&error).unconfirmed.is_empty());
     assert_eq!(request.marker.as_deref(), Some("start"));
     for m in reads.into_iter().chain(writes) {
         m.assert_async().await;
@@ -407,7 +431,8 @@ async fn empty_prefix_does_not_allow_empty_object_names() {
         .delete_objects_with_prefix(&fds::ListObjectsRequest::new("b"), false)
         .await
         .unwrap_err();
-    assert!(error.unconfirmed.is_empty());
+    assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
+    assert!(partial(&error).unconfirmed.is_empty());
     list.assert_async().await;
     no_delete.assert_async().await;
 }
@@ -421,7 +446,9 @@ async fn bucket_targets_validate_locally_but_root_lists_remain_valid() {
     for method in ["GET", "PUT", "HEAD", "DELETE"] {
         forbidden.push(s.mock(method, Matcher::Any).expect(0).create_async().await);
     }
-    let invalid = |result: fds::Result<()>| assert!(matches!(result, Err(FdsError::Invalid(_))));
+    let invalid = |result: fds::Result<()>| {
+        assert_eq!(result.unwrap_err().kind(), fds::ErrorKind::InvalidInput)
+    };
     invalid(CreateBucketRequest::new("").send(&c).await);
     invalid(c.does_bucket_exist("").await.map(|_| ()));
     invalid(c.delete_bucket("").await);

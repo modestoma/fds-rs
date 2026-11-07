@@ -1,6 +1,6 @@
 //! Validated client configuration and construction.
 use crate::{
-    error::{FdsError, Result},
+    error::{Error, ErrorKind, Result},
     Client,
 };
 use std::{fmt, time::Duration};
@@ -200,7 +200,11 @@ impl ClientBuilder {
     }
 
     pub fn build(self) -> Result<Client> {
-        let endpoint = validate_endpoint(self.endpoint.as_deref().ok_or(FdsError::Endpoint)?)?;
+        let endpoint = validate_endpoint(
+            self.endpoint
+                .as_deref()
+                .ok_or_else(|| Error::config_invalid("endpoint is required"))?,
+        )?;
         let mut conf = ClientConfiguration::for_endpoint(endpoint);
         conf.cdn_endpoint = self
             .cdn_endpoint
@@ -216,35 +220,40 @@ impl ClientBuilder {
             (&mut conf.tcp_keepalive, self.tcp_keepalive),
         ] {
             if let Some(value) = value {
-                *target = validate_timeout(value)?;
+                *target = validate_timeout(value, ErrorKind::ConfigInvalid)?;
             }
         }
-        conf.request_timeout = self.request_timeout.map(validate_timeout).transpose()?;
+        conf.request_timeout = self
+            .request_timeout
+            .map(|value| validate_timeout(value, ErrorKind::ConfigInvalid))
+            .transpose()?;
         // Socket options use integer seconds; reject rounding and oversized
         // values instead of letting the connector silently ignore OS errors.
         if conf.tcp_keepalive.subsec_nanos() != 0 || conf.tcp_keepalive.as_secs() > 32767 {
-            return Err(FdsError::invalid(
+            return Err(Error::config_invalid(
                 "tcp_keepalive must be whole seconds in 1..=32767",
             ));
         }
         #[cfg(feature = "cslb")]
         if let Some(value) = self.cslb_max_nodes {
             if value == 0 {
-                return Err(FdsError::invalid("cslb_max_nodes must be positive"));
+                return Err(Error::config_invalid("cslb_max_nodes must be positive"));
             }
             conf.cslb_max_nodes = value;
         }
         let credentials = self
             .credentials
-            .ok_or_else(|| FdsError::invalid("credentials are required"))?;
+            .ok_or_else(|| Error::config_invalid("credentials are required"))?;
         Client::with_credentials(credentials, conf)
     }
 }
 
 /// Reject zero and deadlines which cannot be represented as an `Instant`.
-pub(crate) fn validate_timeout(value: Duration) -> Result<Duration> {
+/// `kind` is `ConfigInvalid` for client settings, `InvalidInput` per request.
+pub(crate) fn validate_timeout(value: Duration, kind: ErrorKind) -> Result<Duration> {
     if value.is_zero() || std::time::Instant::now().checked_add(value).is_none() {
-        return Err(FdsError::invalid(
+        return Err(Error::new(
+            kind,
             "timeout must be nonzero and representable",
         ));
     }
@@ -254,7 +263,12 @@ pub(crate) fn validate_timeout(value: Duration) -> Result<Duration> {
 fn validate_endpoint(value: &str) -> Result<Url> {
     // Reject normalizations which could silently remove a caller's path prefix,
     // userinfo, or whitespace before URL parsing.
-    let (_, authority_path) = value.split_once("://").ok_or(FdsError::Endpoint)?;
+    let invalid = || {
+        Error::config_invalid(
+            "endpoint must be an http(s) origin without userinfo, path, query or fragment",
+        )
+    };
+    let (_, authority_path) = value.split_once("://").ok_or_else(invalid)?;
     let authority = authority_path.split('/').next().unwrap_or("");
     let path = authority_path.strip_prefix(authority).unwrap_or("");
     if value.chars().any(|c| c.is_whitespace() || c.is_control())
@@ -262,16 +276,16 @@ fn validate_endpoint(value: &str) -> Result<Url> {
         || authority.contains('@')
         || !(path.is_empty() || path == "/")
     {
-        return Err(FdsError::Endpoint);
+        return Err(invalid());
     }
-    let url = Url::parse(value).map_err(|_| FdsError::Endpoint)?;
+    let url = Url::parse(value).map_err(|_| invalid())?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
         || url.port() == Some(0)
     {
-        return Err(FdsError::Endpoint);
+        return Err(invalid());
     }
     Ok(url)
 }

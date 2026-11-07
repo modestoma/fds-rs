@@ -16,10 +16,9 @@ use serde::{Deserialize, Serialize};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::task::TaskTracker;
 
-use super::error::ManagerError;
 use crate::client::{Client, ClientRequest};
 use crate::constant::HttpMethod;
-use crate::error::FdsError;
+use crate::error::{Error, ErrorKind, Result};
 
 /// Validated, immutable download configuration. Build with named options.
 #[derive(Clone)]
@@ -64,15 +63,17 @@ impl DownloadOptionsBuilder {
         self.0.request_limiter = Some(limiter);
         self
     }
-    pub fn build(self) -> Result<DownloadOptions, ManagerError> {
+    pub fn build(self) -> Result<DownloadOptions> {
         if self.0.part_size == 0 {
-            return Err(ManagerError::PartSizeSmallerThanOne);
+            return Err(Error::invalid_input("part size must be at least 1"));
         }
         if self.0.part_size > i64::MAX as u64 {
-            return Err(invalid("part size exceeds supported file size"));
+            return Err(Error::invalid_input(
+                "part size exceeds supported file size",
+            ));
         }
         if self.0.concurrency == 0 {
-            return Err(ManagerError::ConcurrencySmallerThanOne);
+            return Err(Error::invalid_input("concurrency must be at least 1"));
         }
         Ok(self.0)
     }
@@ -112,13 +113,14 @@ impl DownloadRequest {
         self.range = Some(range);
         self
     }
-    pub async fn send(self, downloader: &Downloader) -> Result<(), ManagerError> {
+    pub async fn send(self, downloader: &Downloader) -> Result<()> {
         downloader.download(&self).await
     }
 }
 
-fn invalid(message: &'static str) -> ManagerError {
-    ManagerError::Fds(FdsError::invalid(message))
+/// An SDK-internal failure (a panicked task or a broken invariant).
+fn internal(message: &'static str) -> Error {
+    Error::unexpected(message)
 }
 
 /// Network bytes buffered per part before they are handed to one blocking
@@ -134,14 +136,14 @@ const CHECKPOINT_EVERY_PARTS: usize = 64;
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Runs blocking filesystem work off the async runtime threads.
-async fn blocking<T, F>(work: F) -> Result<T, ManagerError>
+async fn blocking<T, F>(work: F) -> Result<T>
 where
-    F: FnOnce() -> Result<T, ManagerError> + Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
     T: Send + 'static,
 {
     tokio::task::spawn_blocking(work)
         .await
-        .map_err(|_| invalid("blocking file operation panicked"))?
+        .map_err(|_| internal("blocking file operation panicked"))?
 }
 
 fn lock_flag(flag: &Mutex<bool>) -> MutexGuard<'_, bool> {
@@ -170,7 +172,7 @@ impl Drop for LockFile {
 }
 impl Destination {
     /// Blocking: canonicalizes the parent and takes the cooperative lock.
-    fn acquire(input: &Path) -> Result<Self, ManagerError> {
+    fn acquire(input: &Path) -> Result<Self> {
         let parent = input
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -178,7 +180,7 @@ impl Destination {
         let path = parent.canonicalize()?.join(
             input
                 .file_name()
-                .ok_or_else(|| invalid("missing destination filename"))?,
+                .ok_or_else(|| Error::invalid_input("missing destination filename"))?,
         );
         let suffix = |s: &str| {
             let mut p = path.as_os_str().to_os_string();
@@ -202,20 +204,15 @@ impl Destination {
         })
     }
 
-    fn staging(&self) -> Result<&File, ManagerError> {
+    fn staging(&self) -> Result<&File> {
         self.staging
             .get()
-            .ok_or_else(|| invalid("staging file is not open"))
+            .ok_or_else(|| internal("staging file is not open"))
     }
 
     /// Blocking: validates the staging file, verifies resumable parts and sizes
     /// the file. Returns the checkpoint the workers start from.
-    fn prepare(
-        &self,
-        id: &Identity,
-        count: usize,
-        resume: bool,
-    ) -> Result<Checkpoint, ManagerError> {
+    fn prepare(&self, id: &Identity, count: usize, resume: bool) -> Result<Checkpoint> {
         let mut checkpoint = Checkpoint {
             identity: id.clone(),
             hashes: vec![None; count],
@@ -236,14 +233,20 @@ impl Destination {
         // Never write through a staging symlink or other special file.
         if let Ok(meta) = std::fs::symlink_metadata(&self.tmp) {
             if !meta.file_type().is_file() {
-                return Err(invalid("staging path is not a regular file"));
+                return Err(Error::new(
+                    ErrorKind::Io,
+                    "staging path is not a regular file",
+                ));
             }
         }
         #[cfg(unix)]
         if let Ok(meta) = std::fs::metadata(&self.tmp) {
             use std::os::unix::fs::MetadataExt;
             if meta.nlink() != 1 {
-                return Err(invalid("staging file has other hard links"));
+                return Err(Error::new(
+                    ErrorKind::Io,
+                    "staging file has other hard links",
+                ));
             }
         }
         let mut file = OpenOptions::new()
@@ -270,7 +273,7 @@ impl Destination {
         file.set_len(length)?;
         self.staging
             .set(file)
-            .map_err(|_| invalid("staging file opened twice"))?;
+            .map_err(|_| internal("staging file opened twice"))?;
         Ok(checkpoint)
     }
 
@@ -278,8 +281,8 @@ impl Destination {
     /// `abandoned` is set (under the same mutex) when the owning future is
     /// dropped, so the rename either completed before that drop returned or
     /// never happens: cancellation cannot leave a detached rename behind.
-    fn commit(&self, abandoned: &Mutex<bool>) -> Result<(), ManagerError> {
-        let cancelled = || invalid("download cancelled before publishing");
+    fn commit(&self, abandoned: &Mutex<bool>) -> Result<()> {
+        let cancelled = || Error::new(ErrorKind::Cancelled, "download cancelled before publishing");
         if *lock_flag(abandoned) {
             return Err(cancelled());
         }
@@ -345,7 +348,7 @@ struct Checkpoint {
 }
 impl Checkpoint {
     /// Blocking.
-    fn dump(&self, path: &Path) -> Result<(), ManagerError> {
+    fn dump(&self, path: &Path) -> Result<()> {
         let mut name = path.as_os_str().to_os_string();
         name.push(".new");
         let staging = PathBuf::from(name);
@@ -359,7 +362,7 @@ impl Checkpoint {
             .write(true)
             .create_new(true)
             .open(&staging)?;
-        serde_json::to_writer(&mut f, self)?;
+        serde_json::to_writer(&mut f, self).map_err(Error::json_encode)?;
         f.sync_all()?;
         std::fs::rename(staging, path)?;
         Ok(())
@@ -394,7 +397,7 @@ impl Progress {
     fn final_write_due(&self) -> bool {
         self.resume && self.unwritten > 0 && !self.checkpoint.hashes.is_empty()
     }
-    async fn write(&mut self) -> Result<(), ManagerError> {
+    async fn write(&mut self) -> Result<()> {
         #[cfg(test)]
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -406,7 +409,7 @@ impl Progress {
             (checkpoint, result)
         })
         .await
-        .map_err(|_| invalid("checkpoint writer panicked"))?;
+        .map_err(|_| internal("checkpoint writer panicked"))?;
         self.checkpoint = checkpoint;
         result?;
         self.unwritten = 0;
@@ -433,7 +436,7 @@ fn part_bounds(id: &Identity, index: usize) -> (u64, u64) {
     let start = id.start + index as u64 * id.part_size;
     (start, start.saturating_add(id.part_size).min(id.end))
 }
-fn hash_part(file: &mut File, offset: u64, length: u64) -> Result<String, ManagerError> {
+fn hash_part(file: &mut File, offset: u64, length: u64) -> Result<String> {
     file.seek(SeekFrom::Start(offset))?;
     let mut left = length;
     let mut buffer = [0u8; 64 * 1024];
@@ -473,10 +476,8 @@ fn write_all_at(_: &File, _: &[u8], _: u64) -> std::io::Result<()> {
     Err(std::io::ErrorKind::Unsupported.into())
 }
 
-fn effective_range(range: Option<crate::ByteRange>, size: u64) -> Result<(u64, u64), ManagerError> {
-    range.map_or(Ok((0, size)), |range| {
-        range.resolve(size).map_err(|_| ManagerError::RangeFormat)
-    })
+fn effective_range(range: Option<crate::ByteRange>, size: u64) -> Result<(u64, u64)> {
+    range.map_or(Ok((0, size)), |range| range.resolve(size))
 }
 
 /// What a worker needs to write parts. Blocking writes are tracked so the
@@ -512,7 +513,7 @@ impl PartWriter {
             digest: PartDigest::Idle(Md5::new()),
         }
     }
-    async fn push(&mut self, chunk: Bytes) -> Result<(), ManagerError> {
+    async fn push(&mut self, chunk: Bytes) -> Result<()> {
         self.batch_len += chunk.len();
         self.batch.push(chunk);
         if self.batch_len >= WRITE_BATCH {
@@ -521,16 +522,16 @@ impl PartWriter {
         Ok(())
     }
     /// Waits for the in-flight batch and takes the running digest back.
-    async fn settle(&mut self) -> Result<Md5, ManagerError> {
+    async fn settle(&mut self) -> Result<Md5> {
         match std::mem::replace(&mut self.digest, PartDigest::Failed) {
             PartDigest::Idle(hash) => Ok(hash),
             PartDigest::Writing(task) => Ok(task
                 .await
-                .map_err(|_| invalid("download writer panicked"))??),
-            PartDigest::Failed => Err(invalid("download writer failed")),
+                .map_err(|_| internal("download writer panicked"))??),
+            PartDigest::Failed => Err(internal("download writer failed")),
         }
     }
-    async fn flush(&mut self) -> Result<(), ManagerError> {
+    async fn flush(&mut self) -> Result<()> {
         if self.batch.is_empty() {
             return Ok(());
         }
@@ -556,7 +557,7 @@ impl PartWriter {
         }));
         Ok(())
     }
-    async fn finish(mut self) -> Result<String, ManagerError> {
+    async fn finish(mut self) -> Result<String> {
         self.flush().await?;
         Ok(hex::encode(self.settle().await?.finalize()))
     }
@@ -568,7 +569,7 @@ async fn download_part(
     staging: Staging,
     index: usize,
     limiter: Option<Arc<governor::DefaultDirectRateLimiter>>,
-) -> Result<(usize, String), ManagerError> {
+) -> Result<(usize, String)> {
     if let Some(limiter) = limiter {
         limiter.until_ready().await;
     }
@@ -578,7 +579,7 @@ async fn download_part(
     request.headers.insert(
         RANGE,
         HeaderValue::from_str(&format!("bytes={start}-{}", end - 1))
-            .map_err(|_| invalid("invalid range"))?,
+            .map_err(|_| Error::invalid_input("invalid range"))?,
     );
     let mut response = client.do_request(request).await?;
     // Even a full-object request sent with Range must be honored; no silent 200 fallback.
@@ -589,29 +590,35 @@ async fn download_part(
             .and_then(|v| v.to_str().ok())
             != Some(format!("bytes {start}-{}/{}", end - 1, id.size).as_str())
     {
-        return Err(invalid("download response does not match requested range"));
+        return Err(Error::protocol(
+            "download response does not match requested range",
+        ));
     }
     if !id.etag.is_empty()
         && response.headers().get(ETAG).and_then(|v| v.to_str().ok()) != Some(id.etag.as_str())
     {
-        return Err(ManagerError::ObjectStateNotMatching);
+        return Err(Error::new(
+            ErrorKind::PreconditionFailed,
+            "object changed during download (ETag mismatch)",
+        )
+        .with_dispatch(crate::Dispatch::Sent));
     }
     if let Some(length) = response.headers().get(CONTENT_LENGTH) {
         if length.to_str().ok().and_then(|s| s.parse::<u64>().ok()) != Some(end - start) {
-            return Err(invalid("incorrect part Content-Length"));
+            return Err(Error::protocol("incorrect part Content-Length"));
         }
     }
     let mut writer = PartWriter::new(staging, start - id.start);
     let mut received = 0u64;
-    while let Some(chunk) = response.chunk().await.map_err(FdsError::from)? {
+    while let Some(chunk) = response.chunk().await.map_err(Error::body_failure)? {
         if chunk.len() as u64 > end - start - received {
-            return Err(invalid("oversized download part"));
+            return Err(Error::protocol("oversized download part"));
         }
         received += chunk.len() as u64;
         writer.push(chunk).await?;
     }
     if received != end - start {
-        return Err(invalid("short download part"));
+        return Err(Error::protocol("short download part"));
     }
     // No per-part fsync: the single `sync_all` happens before publishing, and
     // resume re-hashes local bytes instead of trusting the checkpoint.
@@ -633,7 +640,7 @@ impl Downloader {
     /// Atomically replace the destination only after every part is verified.
     /// Concurrent calls for the same canonical parent/filename fail while locked.
     /// Without a strong ETag, restart as one streaming request; do not resume.
-    pub async fn download(&self, request: &DownloadRequest) -> Result<(), ManagerError> {
+    pub async fn download(&self, request: &DownloadRequest) -> Result<()> {
         crate::object::validate_object(&request.bucket_name, &request.object_name)?;
         let input = request.file_path.clone();
         let destination = Arc::new(blocking(move || Destination::acquire(&input)).await?);
@@ -652,7 +659,7 @@ impl Downloader {
         &self,
         request: &DownloadRequest,
         destination: &Arc<Destination>,
-    ) -> Result<(), ManagerError> {
+    ) -> Result<()> {
         let head = self
             .client
             .do_request(ClientRequest::new(
@@ -666,9 +673,9 @@ impl Downloader {
             .get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
-            .ok_or_else(|| invalid("HEAD requires Content-Length"))?;
+            .ok_or_else(|| Error::protocol("HEAD requires Content-Length"))?;
         if size > i64::MAX as u64 {
-            return Err(invalid("object exceeds supported file size"));
+            return Err(Error::protocol("object exceeds supported file size"));
         }
         let etag = head
             .headers()
@@ -697,7 +704,9 @@ impl Downloader {
         let count = (end - start).div_ceil(part_size);
         // Bound checkpoint metadata as well as active workers, before allocation.
         if count > 1_000_000 {
-            return Err(invalid("too many download parts; increase part size"));
+            return Err(Error::invalid_input(
+                "too many download parts; increase part size",
+            ));
         }
         let count = count as usize;
         let resume = self.options.resume && !id.etag.is_empty();
@@ -745,7 +754,7 @@ impl Downloader {
         id: Arc<Identity>,
         staging: Staging,
         progress: &mut Progress,
-    ) -> Result<(), ManagerError> {
+    ) -> Result<()> {
         let mut workers = JoinSet::new();
         let mut next = 0usize;
         let count = progress.checkpoint.hashes.len();
@@ -781,7 +790,7 @@ impl Downloader {
                     }
                 }
                 Ok(Err(error)) => Err(error),
-                Err(_) => Err(invalid("download worker panicked or exited early")),
+                Err(_) => Err(internal("download worker panicked or exited early")),
             };
             if let Err(error) = result {
                 workers.abort_all();
@@ -790,7 +799,7 @@ impl Downloader {
             }
         }
         if progress.checkpoint.hashes.iter().any(Option::is_none) {
-            return Err(invalid("download incomplete"));
+            return Err(internal("download incomplete"));
         }
         Ok(())
     }
@@ -883,7 +892,7 @@ mod tests {
         assert!(!p.write_due(t0) && !p.final_write_due(), "resume disabled");
     }
 
-    async fn counted_download(fail: Option<usize>) -> (Result<(), ManagerError>, usize) {
+    async fn counted_download(fail: Option<usize>) -> (Result<()>, usize) {
         const PARTS: usize = 40;
         let mut server = mockito::Server::new_async().await;
         let _head = server
@@ -1014,7 +1023,6 @@ mod tests {
         for s in ["bytes=10-", "bytes=-0", "bytes=3-2", "bytes=0-1,3-4"] {
             assert!(s
                 .parse::<crate::ByteRange>()
-                .map_err(ManagerError::from)
                 .and_then(|r| effective_range(Some(r), 10))
                 .is_err());
         }

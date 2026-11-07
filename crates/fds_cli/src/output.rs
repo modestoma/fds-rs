@@ -38,14 +38,24 @@ pub fn deleted(v: &DeleteObjectsOutput) -> Value {
         "object_name":f.object_name,"error_code":f.error_code,"error_description":f.error_description
     })).collect::<Vec<_>>()})
 }
+/// `batch` is the explicit name list of a single-batch command; it is reported
+/// as `not_submitted` when the SDK did not send that batch.
 pub fn delete_result(
-    result: std::result::Result<DeleteObjectsOutput, DeleteObjectsError>,
+    result: fds::Result<DeleteObjectsOutput>,
+    batch: &[String],
 ) -> anyhow::Result<()> {
     match result {
         Ok(output) => super::util::print_json(&deleted(&output)),
         Err(error) => {
+            let empty = DeleteObjectsOutput::default();
+            let output = error.partial_delete_output().unwrap_or(&empty);
+            let not_submitted: &[String] = if error.dispatch() == Dispatch::NotSent {
+                batch
+            } else {
+                &[]
+            };
             super::util::print_json(
-                &json!({"output":deleted(&error.output),"unconfirmed":error.unconfirmed,"not_submitted":error.not_submitted}),
+                &json!({"output":deleted(output),"unconfirmed":output.unconfirmed,"not_submitted":not_submitted}),
             )?;
             Err(error.into())
         }

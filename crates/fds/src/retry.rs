@@ -1,5 +1,5 @@
 //! Opt-in retries for explicitly classified, replayable reads.
-use crate::{FdsError, Result};
+use crate::{Error, Result};
 use reqwest::header::HeaderMap;
 use std::{
     collections::hash_map::RandomState,
@@ -26,7 +26,7 @@ impl RetryPolicy {
             || initial_delay > max_delay
             || max_delay > Duration::from_secs(60)
         {
-            return Err(FdsError::invalid(
+            return Err(Error::config_invalid(
                 "retry limits require retries <= 100 and 0 < initial <= maximum <= 60s",
             ));
         }

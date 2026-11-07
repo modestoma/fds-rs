@@ -207,7 +207,8 @@ async fn connect_timeout_enforces_tls_handshake_deadline() {
         .await
         .unwrap()
         .unwrap_err();
-    assert!(matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()));
+    assert_eq!(e.kind(), fds::ErrorKind::Timeout, "{e:?}");
+    assert_eq!(e.dispatch(), fds::Dispatch::NotSent);
     server.abort();
 }
 
@@ -235,9 +236,7 @@ async fn read_timeout_enforces_header_and_stream_body_stalls() {
         })
         .await
         .unwrap();
-        assert!(
-            matches!(result.unwrap_err(), fds::FdsError::Http(ref source) if source.is_timeout())
-        );
+        assert!(result.unwrap_err().kind() == fds::ErrorKind::Timeout);
         server.abort();
     }
 }
@@ -300,7 +299,7 @@ async fn get_slow_body(
 fn assert_timeout(result: fds::Result<bytes::Bytes>) {
     let e = result.unwrap_err();
     assert!(
-        matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()),
+        e.kind() == fds::ErrorKind::Timeout,
         "expected a timeout, got {e:?}"
     );
 }
@@ -366,7 +365,7 @@ async fn put_object_request_timeout_applies_while_awaiting_response() {
     .expect("outer guard elapsed");
     let e = result.unwrap_err();
     assert!(
-        matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()),
+        e.kind() == fds::ErrorKind::Timeout,
         "expected a timeout, got {e:?}"
     );
     server.abort();
@@ -380,13 +379,13 @@ async fn per_request_timeout_is_validated() {
             .get_object(&GetObjectRequest::new("b", "o").timeout(duration))
             .await
             .unwrap_err();
-        assert!(matches!(e, fds::FdsError::Invalid(_)), "{e:?}");
+        assert_eq!(e.kind(), fds::ErrorKind::InvalidInput, "{e:?}");
         let e = PutObjectRequest::new("b", "o", b"x".to_vec())
             .timeout(duration)
             .send(&c)
             .await
             .unwrap_err();
-        assert!(matches!(e, fds::FdsError::Invalid(_)), "{e:?}");
+        assert_eq!(e.kind(), fds::ErrorKind::InvalidInput, "{e:?}");
     }
 }
 

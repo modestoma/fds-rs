@@ -1,4 +1,4 @@
-use fds::{Client, CopyObjectRequest, FdsError, RetryPolicy};
+use fds::{Client, CopyObjectRequest, Dispatch, ErrorKind, RetryPolicy};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -70,10 +70,14 @@ async fn receipts_are_required_matching_bounded_and_never_retried() {
             assert_eq!(receipt.bucket_name, "dst");
             assert_eq!(receipt.object_name, "中文 a.tar.gz");
         } else {
-            assert!(
-                matches!(result, Err(FdsError::CopyOutcomeUnknown(_))),
-                "{result:?}"
-            );
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::OutcomeUnknown, "{error:?}");
+            assert_eq!(error.dispatch(), Dispatch::Sent);
+            // Receipt mismatches are detected after decoding and carry no status.
+            if status != 200 || error.status().is_some() {
+                assert_eq!(error.status().map(|s| s.as_u16()), Some(status as u16));
+            }
+            assert!(std::error::Error::source(&error).is_some());
         }
         mock.assert_async().await;
     }
@@ -88,12 +92,11 @@ async fn legacy_entry_point_validates_body() {
         .expect(1)
         .create_async()
         .await;
-    assert!(matches!(
-        CopyObjectRequest::new("src", "key", "dst", "key")
-            .send(&client(server.url()))
-            .await,
-        Err(FdsError::CopyOutcomeUnknown(_))
-    ));
+    let error = CopyObjectRequest::new("src", "key", "dst", "key")
+        .send(&client(server.url()))
+        .await
+        .unwrap_err();
+    assert!(error.is_outcome_unknown(), "{error:?}");
     mock.assert_async().await;
 }
 
@@ -123,8 +126,9 @@ async fn truncated_transport_and_stalled_body_are_unknown_without_retry() {
             .copy_object_with_response(&CopyObjectRequest::new("src", "key", "dst", "key"))
             .await
             .unwrap_err();
-        assert!(matches!(error, FdsError::CopyOutcomeUnknown(_)));
-        assert_eq!(error.status(), Some(200));
+        assert!(error.is_outcome_unknown(), "{error:?}");
+        assert_eq!(error.status(), Some(http::StatusCode::OK));
+        assert_eq!(error.dispatch(), Dispatch::Sent);
         task.await.unwrap();
     }
 }

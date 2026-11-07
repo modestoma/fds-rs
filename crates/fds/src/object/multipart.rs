@@ -2,7 +2,7 @@
 
 use super::{insert_header_opt, validate_object};
 use crate::client::ClientRequest;
-use crate::{Client, FdsError, HttpMethod, ObjectMetadata, PutObjectResponse, Result, UploadBody};
+use crate::{Client, Error, HttpMethod, ObjectMetadata, PutObjectResponse, Result, UploadBody};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -193,7 +193,7 @@ impl Client {
     pub async fn upload_part(&self, req: UploadPartRequest) -> Result<UploadPartResponse> {
         validate_object(&req.bucket_name, &req.object_name)?;
         if req.upload_id.is_empty() || req.part_number <= 0 {
-            return Err(FdsError::invalid(
+            return Err(Error::invalid_input(
                 "upload ID must be non-empty and part number positive",
             ));
         }
@@ -213,7 +213,7 @@ impl Client {
     ) -> Result<PutObjectResponse> {
         validate_object(&req.bucket_name, &req.object_name)?;
         if req.upload_id.is_empty() {
-            return Err(FdsError::invalid("upload ID must be non-empty"));
+            return Err(Error::invalid_input("upload ID must be non-empty"));
         }
         #[derive(Serialize)]
         struct Parts<'a> {
@@ -222,7 +222,8 @@ impl Client {
         }
         let body = serde_json::to_vec(&Parts {
             parts: &req.upload_parts,
-        })?;
+        })
+        .map_err(Error::json_encode)?;
         let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
         cr.query.add("uploadId", &req.upload_id);
         if let Some(expires) = req.expires {
@@ -238,7 +239,7 @@ impl Client {
     pub async fn abort_multipart_upload(&self, init: &InitMultipartUploadResponse) -> Result<()> {
         validate_object(&init.bucket_name, &init.object_name)?;
         if init.upload_id.is_empty() {
-            return Err(FdsError::invalid("upload ID must be non-empty"));
+            return Err(Error::invalid_input("upload ID must be non-empty"));
         }
         let mut cr = ClientRequest::new(&init.bucket_name, &init.object_name, HttpMethod::Delete);
         cr.query.add("uploadId", &init.upload_id);

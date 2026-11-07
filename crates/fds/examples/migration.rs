@@ -53,14 +53,16 @@ async fn migrate(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     }
     Ok(())
 }
-fn record_failure(id: &str, primary: &fds::FdsError, cleanup: Option<&fds::FdsError>) {
+fn record_failure(id: &str, primary: &fds::Error, cleanup: Option<&fds::Error>) {
     // A real application persists this context securely, without logging secrets.
     let _recovery = (
         id,
+        primary.kind(),
+        primary.dispatch(),
         primary.status(),
         primary.service_code(),
         primary.request_id(),
-        cleanup.map(fds::FdsError::status),
+        cleanup.map(fds::Error::status),
     );
 }
 fn main() {
@@ -69,6 +71,12 @@ fn main() {
         .endpoint("https://example.invalid")
         .credentials("id", "secret")
         .build();
-    let error = fds::FdsError::invalid("example");
-    let _ = (error.status(), error.service_code(), error.request_id());
+    let error = fds::Error::new(fds::ErrorKind::InvalidInput, "example");
+    let _ = (
+        error.kind(),
+        error.is_retryable(),
+        error.status(),
+        error.service_code(),
+        error.request_id(),
+    );
 }

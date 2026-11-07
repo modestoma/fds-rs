@@ -6,7 +6,7 @@ use crate::constant::HTTP_HEADER_EXPIRES;
 use crate::constant::HTTP_HEADER_GALAXY_ACCESS_KEY_ID;
 use crate::constant::HTTP_HEADER_SIGNATURE;
 use crate::encoding::QueryValues;
-use crate::{Client, FdsError, HttpMethod, ObjectMetadata, Result};
+use crate::{Client, Error, HttpMethod, ObjectMetadata, Result};
 use chrono::{DateTime, Utc};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
@@ -49,15 +49,15 @@ impl GeneratePresignedURLRequest {
         lifetime: Duration,
     ) -> Result<Self> {
         if lifetime.as_millis() == 0 {
-            return Err(FdsError::invalid(
+            return Err(Error::invalid_input(
                 "presign lifetime must be at least one millisecond",
             ));
         }
         let delta = chrono::Duration::from_std(lifetime)
-            .map_err(|_| FdsError::invalid("presign lifetime overflow"))?;
+            .map_err(|_| Error::invalid_input("presign lifetime overflow"))?;
         let expiration = Utc::now()
             .checked_add_signed(delta)
-            .ok_or_else(|| FdsError::invalid("presign expiration overflow"))?;
+            .ok_or_else(|| Error::invalid_input("presign expiration overflow"))?;
         Ok(Self::new(bucket, object, method, expiration))
     }
     pub fn cdn(mut self, value: bool) -> Self {
@@ -118,8 +118,8 @@ fn metadata_headers(metadata: &Option<ObjectMetadata>) -> Result<HeaderMap> {
     if let Some(md) = metadata {
         for (k, v) in md.iter() {
             let name = HeaderName::from_bytes(k.as_bytes())
-                .map_err(|e| FdsError::invalid(e.to_string()))?;
-            let val = HeaderValue::from_str(v).map_err(|e| FdsError::invalid(e.to_string()))?;
+                .map_err(|e| Error::invalid_input(e.to_string()))?;
+            let val = HeaderValue::from_str(v).map_err(|e| Error::invalid_input(e.to_string()))?;
             headers.append(name, val);
         }
     }

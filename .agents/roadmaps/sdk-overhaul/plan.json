@@ -49,7 +49,7 @@
       "title": "错误模型重构为 FdsError + ErrorKind",
       "type": "refactor",
       "document": "tasks/error-model.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 2,
       "depends_on": [
         "request-timeout",

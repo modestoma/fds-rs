@@ -29,19 +29,19 @@ CSLB 在 DNS 解析时轮换首选 IP 并附加备选地址，按 TTL 刷新；�
 
 未明确接受的 2xx、全部 3xx 和错误状态不会自动当成功。批删即使 HTTP 200 仍需解析逐项失败；归档 API 尚未提供，不能将任意 202/409 解释为成功。
 
-`FdsError::Response` 表示错误状态或无效成功响应，HTTP status 可以是 200。`ResponseErrorKind` 分为 UnexpectedStatus、EmptyJson、InvalidJson、BodyRead；non_exhaustive 类型的 match 需保留兜底分支。
+所有操作只返回一种错误 `fds::Error`。被拒绝的状态按 `ErrorKind` 映射：404 NotFound、401 Unauthenticated、403 PermissionDenied、409 Conflict、412 PreconditionFailed、429 RateLimited、5xx ServerError，其余 4xx 及未列入成功的 2xx/3xx 为 Unexpected（保留 status）。空 JSON、非法 JSON 和超限响应是 ProtocolViolation，此时 HTTP status 可以是 200；读取响应体失败是 Timeout 或 Transport。收到响应后的错误 `dispatch()` 均为 `Dispatch::Sent`；构造、签名和连接阶段的失败为 `NotSent`；请求发送中途或等待响应时中断为 `Unknown`。non_exhaustive 类型的 match 需保留兜底分支。
 
 | 诊断入口 | 约束 |
 | --- | --- |
-| `status()` | HTTP 状态，独立于服务 code |
+| `status()` | HTTP 状态（`http::StatusCode`），独立于服务 code |
 | `service_code()` | 尽力解析 JSON code/errorCode 的字符串或数字，最多 256 字符 |
 | `request_id()` | 优先 x-xiaomi-request-id/x-request-id，再尝试 JSON requestId，最多 256 字符；不是必返字段 |
 | `diagnostic_body()` | 最多 8192 字节 UTF-8 文本；截断或读取不完整反映在 body_truncated |
 | `source()` | 传输错误去掉 URL；JSON 解析源仅保留类别、行、列 |
 
-错误状态只读取受限诊断前缀，正常 JSON 响应仍全量读取，没有通用大小硬上限。SDK 错误 Display/Debug 不打印服务文本，tracing 仅记录 method，Authorization 标记 sensitive。显式诊断访问器仍返回可能含敏感内容的服务原文；调用者构造的错误、模型、raw response、其他依赖日志不受这些格式化规则保护。
+错误状态只读取受限诊断前缀，正常 JSON 响应仍全量读取，没有通用大小硬上限。SDK 错误 Display/Debug 只打印 kind、SDK 消息、status 和形如标识符的 service code（Debug 另含 dispatch、上下文和按 Display 输出的 source 链），不打印 request ID 和响应体，tracing 仅记录 method，Authorization 标记 sensitive。显式诊断访问器仍返回可能含敏感内容的服务原文；调用者构造的错误、模型、raw response、其他依赖日志不受这些格式化规则保护。
 
-OAuth 的服务错误丢弃 body、request ID 和 service code，仅保留状态/类别；raw response 的 URL query 被移除。显式读取 token、body、header 后仍须按应用规则使用。
+OAuth 的服务错误丢弃 body、request ID 和 service code，仅保留状态/kind；raw response 的 URL query 被移除。显式读取 token、body、header 后仍须按应用规则使用。
 
 ## 流式上传与读取
 
@@ -78,15 +78,15 @@ ACL Add 省略 action，Delete 发送 action=delete，并携带要增删的 gran
 
 marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环采用常数空间 Brent 检测，可能先输出部分重复页再报错；普通分页不是快照或去重保证。有副作用的消费应自行防重复。
 
-批量删除使用独立错误类型 DeleteObjectsError。空 names 不请求，即使 bucket 为空也返回空成功。非空批次先校验所有名字，一次请求一个 JSON 数组，不自动按服务限制切批。
+批量删除返回 `fds::Result<DeleteObjectsOutput>`，未全部确认删除时返回的错误通过 `partial_delete_output()` 携带已确认结果。空 names 不请求，即使 bucket 为空也返回空成功。非空批次先校验所有名字，一次请求一个 JSON 数组，不自动按服务限制切批。
 
-| 字段 | 含义 |
+| 字段 / 判定 | 含义 |
 | --- | --- |
-| `output.deleted` | 根据合法服务失败数组推导的确认成功项，不是逐个 HEAD 检查 |
-| `output.failures` | 服务失败数组，保留对象名、错误码、描述、顺序与重复次数 |
-| `unconfirmed` | 已尝试传输但无法确定结果的批次，不能认定未删除 |
-| `not_submitted` | 本地校验拒绝、未提交的名字 |
-| `source` | 可选底层错误；纯逐项失败可为 None |
+| `deleted` | 根据合法服务失败数组推导的确认成功项，不是逐个 HEAD 检查 |
+| `failures` | 服务失败数组，保留对象名、错误码、描述、顺序与重复次数；此时 kind 为 PartialFailure |
+| `unconfirmed` | 已尝试传输但无法确定结果的批次（kind 为 OutcomeUnknown），不能认定未删除 |
+| `dispatch() == NotSent` | 失败批次未提交（本地校验或连接失败），不附带 partial output |
+| `source()` | 底层错误；纯逐项失败为 None |
 
 重复输入名字保留在线路和成功输出中；某名字失败则其全部出现均不计成功。响应必须为合法 JSON 失败数组，空 body/null/非法模型不视为全成功；出现未请求名字时保留失败数组并将整个批次标记未确认。
 
@@ -121,7 +121,7 @@ max_retries 不含首次，范围 0–100；initial_delay 必须大于零且不�
 | CompletionUnknown | complete 可能已发送；错误、取消或无效响应均需核对远端 |
 | Completed | complete 有效且对象身份匹配 |
 
-Preserve 默认不清理。AbortOnFailure 仅在完成前的错误/合作式取消尝试一次 abort；先丢弃分片 future，主错误保留在 cause，清理错误另存 cleanup_error。调用 token.cancel 后继续 await 才能获得清理结果；timeout/drop future 或整个 session Drop 不执行异步清理。
+Preserve 默认不清理。AbortOnFailure 仅在完成前的错误/合作式取消尝试一次 abort；先丢弃分片 future，返回原始错误；abort 也失败时其文本附加在错误上下文 `cleanup_error` 中。complete 可能已发出后的失败统一为 OutcomeUnknown。调用 token.cancel 后继续 await 才能获得清理结果；timeout/drop future 或整个 session Drop 不执行异步清理。
 
 进度包含会话、确认回执、文件大小、总片数和状态，应用应按业务需求持久保存。确认放弃后可显式 abort；确认需要补片时构造 UploadPartRequest；确认全部回执后可手动 complete。CompletionUnknown 不能自动 abort/retry，也不能仅用 HEAD 存在证明本次完成，同名对象可能来自旧版本或并发写入。
 

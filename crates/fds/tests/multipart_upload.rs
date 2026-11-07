@@ -95,15 +95,23 @@ async fn part_failure_preserves_original_cleanup_failure_and_identity() {
         .await
         .unwrap();
         let error = upload.upload(&CancellationToken::new()).await.unwrap_err();
-        assert_eq!(error.cause.status(), Some(503));
-        assert_eq!(
-            error.cleanup_error.as_ref().and_then(|e| e.status()),
-            if policy == CleanupPolicy::Preserve {
-                None
-            } else {
-                Some(500)
-            }
-        );
+        assert_eq!(error.status().map(|s| s.as_u16()), Some(503));
+        assert_eq!(error.kind(), fds::ErrorKind::ServerError);
+        let cleanup = error
+            .context()
+            .iter()
+            .find(|(key, _)| *key == "cleanup_error")
+            .map(|(_, value)| value.as_str());
+        if policy == CleanupPolicy::Preserve {
+            assert_eq!(cleanup, None);
+        } else {
+            let cleanup = cleanup.unwrap();
+            assert!(
+                cleanup.contains("ServerError") && cleanup.contains("HTTP 500"),
+                "{cleanup}"
+            );
+            assert!(error.to_string().contains("cleanup_error"));
+        }
         assert_eq!(upload.progress().state, MultipartState::Failed);
         assert_eq!(upload.progress().upload.upload_id, "id");
         assert_eq!(upload.progress().upload.bucket_name, "b");
@@ -179,7 +187,13 @@ async fn completion_failure_is_unknown_with_all_receipts_and_no_abort_or_retry()
         )
         .await
         .unwrap();
-        assert!(upload.upload(&CancellationToken::new()).await.is_err());
+        let error = upload.upload(&CancellationToken::new()).await.unwrap_err();
+        assert!(error.is_outcome_unknown(), "{error:?}");
+        assert_eq!(error.dispatch(), fds::Dispatch::Sent);
+        // An identity mismatch is detected after decoding and carries no status.
+        if body != "{}" {
+            assert_eq!(error.status().map(|s| s.as_u16()), Some(status as u16));
+        }
         assert_eq!(upload.progress().state, MultipartState::CompletionUnknown);
         assert_eq!(upload.progress().parts.len(), 1);
         assert!(upload.upload(&CancellationToken::new()).await.is_err());
@@ -345,7 +359,9 @@ async fn dropping_future_keeps_session_and_completion_cancellation_never_aborts(
                 token.cancel();
             };
             let (result, ()) = tokio::join!(upload.upload(&token), cancel);
-            assert!(result.is_err());
+            let error = result.unwrap_err();
+            assert!(error.is_outcome_unknown(), "{error:?}");
+            assert_eq!(error.dispatch(), fds::Dispatch::Unknown);
         } else {
             tokio::select! { result = upload.upload(&token) => panic!("unexpected {result:?}"), _ = reached.notified() => {} }
         }
@@ -423,7 +439,7 @@ async fn cancellation_stops_inflight_parts_before_abort_and_keeps_receipts() {
     .await
     .unwrap();
     let error = upload.upload(&token).await.unwrap_err();
-    assert!(matches!(error.cause, fds::FdsError::Cancelled));
+    assert_eq!(error.kind(), fds::ErrorKind::Cancelled);
     assert_eq!(upload.progress().parts.len(), 1);
     assert_eq!(upload.progress().state, MultipartState::Aborted);
     server.await.unwrap();
@@ -449,7 +465,7 @@ async fn local_file_failure_is_preserved_and_aborted() {
     .unwrap();
     tokio::fs::write(&file.0, b"").await.unwrap();
     let error = upload.upload(&CancellationToken::new()).await.unwrap_err();
-    assert!(matches!(error.cause, fds::FdsError::Io(_)));
+    assert_eq!(error.kind(), fds::ErrorKind::Io);
     assert_eq!(upload.progress().state, MultipartState::Aborted);
     i.assert_async().await;
     a.assert_async().await;

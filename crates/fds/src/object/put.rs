@@ -188,7 +188,7 @@ impl Client {
         let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
         cr.timeout = req
             .timeout
-            .map(crate::config::validate_timeout)
+            .map(|t| crate::config::validate_timeout(t, crate::ErrorKind::InvalidInput))
             .transpose()?;
         cr.headers = headers;
         cr.metadata = req.metadata.as_ref();

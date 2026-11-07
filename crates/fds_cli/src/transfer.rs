@@ -247,7 +247,11 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             match result {
                 Ok(response) => print_json(&output::put(&response))?,
                 Err(error) => {
-                    if let Some(cleanup) = &error.cleanup_error {
+                    if let Some((_, cleanup)) = error
+                        .context()
+                        .iter()
+                        .find(|(key, _)| *key == "cleanup_error")
+                    {
                         eprintln!("cleanup error: {cleanup}");
                     }
                     return Err(error.into());

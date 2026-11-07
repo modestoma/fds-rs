@@ -84,7 +84,11 @@ async fn status_budget_server_hint_and_non_transient_rejection() {
         .create_async()
         .await;
     assert_eq!(
-        c.head_object("b", "budget").await.unwrap_err().status(),
+        c.head_object("b", "budget")
+            .await
+            .unwrap_err()
+            .status()
+            .map(|s| s.as_u16()),
         Some(503)
     );
     budget.assert_async().await;

@@ -1,7 +1,7 @@
 //! Explicitly owned, bounded-memory file multipart uploads.
 use crate::{
-    Client, FdsError, InitMultipartUploadRequest, InitMultipartUploadResponse, ObjectMetadata,
-    PutObjectResponse, Result, UploadPartRequest,
+    Client, Dispatch, Error, ErrorKind, InitMultipartUploadRequest, InitMultipartUploadResponse,
+    ObjectMetadata, PutObjectResponse, Result, UploadPartRequest,
 };
 use futures_util::{StreamExt, TryStreamExt};
 use std::{path::Path, time::SystemTime};
@@ -47,7 +47,7 @@ impl MultipartOptions {
                 .checked_mul(concurrency)
                 .is_none_or(|n| n > 256 * 1024 * 1024)
         {
-            return Err(FdsError::invalid("invalid multipart resource limits"));
+            return Err(Error::invalid_input("invalid multipart resource limits"));
         }
         Ok(Self {
             part_size,
@@ -99,24 +99,6 @@ impl std::fmt::Debug for MultipartProgress {
     }
 }
 
-/// Original error and optional secondary cleanup error. Identity/progress remain
-/// on the session, including when the upload future is dropped without an error.
-#[derive(Debug, thiserror::Error)]
-#[error("managed multipart upload failed")]
-pub struct MultipartUploadError {
-    #[source]
-    pub cause: FdsError,
-    pub cleanup_error: Option<FdsError>,
-}
-impl From<FdsError> for MultipartUploadError {
-    fn from(cause: FdsError) -> Self {
-        Self {
-            cause,
-            cleanup_error: None,
-        }
-    }
-}
-
 /// A single-run session. Keep it alive until success or explicit recovery.
 /// No Drop implementation performs network IO. To cancel with cleanup, cancel
 /// the token and keep awaiting `upload`; dropping the future skips cleanup.
@@ -147,24 +129,27 @@ impl MultipartUpload {
         options: MultipartOptions,
     ) -> Result<Self> {
         if request.bucket_name.is_empty() || request.object_name.is_empty() {
-            return Err(FdsError::invalid("bucket and object must be non-empty"));
+            return Err(Error::invalid_input("bucket and object must be non-empty"));
         }
         let file = tokio::fs::File::open(path).await?;
         let metadata = file.metadata().await?;
         if !metadata.is_file() || metadata.len() == 0 {
-            return Err(FdsError::invalid(
+            return Err(Error::invalid_input(
                 "managed multipart requires a nonempty regular file; use PUT for empty files",
             ));
         }
         let count = (metadata.len() - 1) / options.part_size as u64 + 1;
         if count > 10_000 {
-            return Err(FdsError::invalid("managed upload exceeds 10000 parts"));
+            return Err(Error::invalid_input("managed upload exceeds 10000 parts"));
         }
         let mut upload = client.init_multipart_upload(&request).await?;
         if upload.upload_id.is_empty() {
-            return Err(FdsError::invalid(
-                "multipart initialization returned no upload ID; outcome unknown",
-            ));
+            return Err(
+                Error::protocol("multipart initialization returned no upload ID")
+                    .into_outcome_unknown(
+                        "multipart initialization outcome unknown; an upload may have been created",
+                    ),
+            );
         }
         // All subsequent requests stay bound to caller identity, never server-returned paths.
         upload.bucket_name = request.bucket_name;
@@ -189,44 +174,39 @@ impl MultipartUpload {
     }
 
     /// Upload once, with bounded concurrent part requests; complete in numeric
-    /// part order. Any completion failure is conservatively outcome-unknown.
-    /// After failure/drop, inspect progress and use manual APIs to reconcile;
-    /// calling upload again is rejected to prevent hidden replay.
-    // Preserve the public recovery error shape throughout 0.2.x.
-    #[allow(clippy::result_large_err)]
-    pub async fn upload(
-        &mut self,
-        cancel: &CancellationToken,
-    ) -> std::result::Result<PutObjectResponse, MultipartUploadError> {
+    /// part order. After failure/drop, inspect progress and use manual APIs to
+    /// reconcile; calling upload again is rejected to prevent hidden replay.
+    ///
+    /// Errors before completion are returned as they occurred. When
+    /// [`CleanupPolicy::AbortOnFailure`] is set and the abort itself fails,
+    /// the abort error's `Display` text is attached to the original error as
+    /// the `cleanup_error` [context](Error::context) entry, and the state stays
+    /// [`MultipartState::Failed`] instead of `Aborted`.
+    ///
+    /// Any completion failure after the completion request may have been sent
+    /// (including cancellation while it is in flight) is conservatively
+    /// [`ErrorKind::OutcomeUnknown`], with the cause in the source chain.
+    pub async fn upload(&mut self, cancel: &CancellationToken) -> Result<PutObjectResponse> {
         if self.progress.state != MultipartState::Ready {
-            return Err(FdsError::invalid(
+            return Err(Error::invalid_input(
                 "multipart session already run; explicit recovery required",
-            )
-            .into());
+            ));
         }
         self.progress.state = MultipartState::Uploading;
         let result = self.upload_parts(cancel).await;
-        if let Err(cause) = result {
+        if let Err(mut cause) = result {
             self.progress.state = MultipartState::Failed;
-            let cleanup_error = if self.options.cleanup == CleanupPolicy::AbortOnFailure {
+            if self.options.cleanup == CleanupPolicy::AbortOnFailure {
                 match self
                     .client
                     .abort_multipart_upload(&self.progress.upload)
                     .await
                 {
-                    Ok(()) => {
-                        self.progress.state = MultipartState::Aborted;
-                        None
-                    }
-                    Err(error) => Some(error),
+                    Ok(()) => self.progress.state = MultipartState::Aborted,
+                    Err(error) => cause = cause.with_context("cleanup_error", error),
                 }
-            } else {
-                None
-            };
-            return Err(MultipartUploadError {
-                cause,
-                cleanup_error,
-            });
+            }
+            return Err(cause);
         }
         // Set BEFORE polling the network future, so external drop is recoverable.
         self.progress.state = MultipartState::CompletionUnknown;
@@ -238,19 +218,28 @@ impl MultipartUpload {
             metadata: self.metadata.clone(),
             expires: None,
         };
+        const UNKNOWN: &str = "multipart completion outcome unknown; reconcile before retrying";
         let output = tokio::select! {
             biased;
-            _ = cancel.cancelled() => Err(FdsError::Cancelled),
+            _ = cancel.cancelled() => Err(Error::new(
+                ErrorKind::Cancelled,
+                "cancelled while multipart completion was in flight",
+            )
+            .with_dispatch(Dispatch::Unknown)),
             result = self.client.complete_multipart_upload(&request) => result,
-        }?;
+        }
+        .map_err(|e| match e.dispatch() {
+            Dispatch::NotSent => e,
+            _ => e.into_outcome_unknown(UNKNOWN),
+        })?;
         if output.object_name != self.progress.upload.object_name
             || (!output.bucket_name.is_empty()
                 && output.bucket_name != self.progress.upload.bucket_name)
         {
-            return Err(FdsError::invalid(
-                "multipart completion returned an unexpected object identity; outcome unknown",
+            return Err(Error::protocol(
+                "multipart completion returned an unexpected object identity",
             )
-            .into());
+            .into_outcome_unknown(UNKNOWN));
         }
         self.progress.state = MultipartState::Completed;
         Ok(output)
@@ -264,7 +253,7 @@ impl MultipartUpload {
             (&mut self.file, self.progress.file_size, 1i32),
             move |(file, remaining, number)| async move {
                 if remaining == 0 {
-                    return Ok::<_, FdsError>(None);
+                    return Ok::<_, Error>(None);
                 }
                 let size = remaining.min(part_size as u64) as usize;
                 let mut bytes = vec![0; size];
@@ -292,7 +281,7 @@ impl MultipartUpload {
                     || receipt.etag.is_empty()
                     || receipt.etag.len() > 1024
                 {
-                    return Err(FdsError::invalid(
+                    return Err(Error::protocol(
                         "multipart part receipt does not match request",
                     ));
                 }
@@ -304,7 +293,7 @@ impl MultipartUpload {
             loop {
                 let next = tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => return Err(FdsError::Cancelled),
+                    _ = cancel.cancelled() => return Err(cancelled()),
                     next = parts.next() => next,
                 };
                 match next {
@@ -319,13 +308,18 @@ impl MultipartUpload {
         self.progress.parts.sort_by_key(|part| part.part_number);
         let metadata = self.file.metadata().await?;
         if metadata.len() != self.progress.file_size || metadata.modified().ok() != self.modified {
-            return Err(FdsError::invalid(
+            return Err(Error::invalid_input(
                 "source file changed during multipart upload",
             ));
         }
         if cancel.is_cancelled() {
-            return Err(FdsError::Cancelled);
+            return Err(cancelled());
         }
         Ok(())
     }
+}
+
+/// Part requests may have been in flight when the token fired.
+fn cancelled() -> Error {
+    Error::new(ErrorKind::Cancelled, "multipart upload cancelled").with_dispatch(Dispatch::Unknown)
 }

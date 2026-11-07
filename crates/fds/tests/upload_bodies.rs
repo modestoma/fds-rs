@@ -123,7 +123,7 @@ async fn checksum_requirement_fails_before_polling_source() {
         .send(&client("http://127.0.0.1:1".into(), true))
         .await
         .unwrap_err();
-    assert!(matches!(error, fds::FdsError::Invalid(_)));
+    assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
 }
 
 #[tokio::test]

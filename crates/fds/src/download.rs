@@ -1,6 +1,6 @@
 //! Streaming download types and response consumption helpers.
 
-use crate::{FdsError, ObjectMetadata, Result};
+use crate::{Error, ObjectMetadata, Result};
 use bytes::Bytes;
 use reqwest::header::HeaderMap;
 use std::{fmt, num::NonZeroU64};
@@ -26,13 +26,13 @@ impl ByteRange {
             RangeKind::Suffix(n) => (size.saturating_sub(n.get()), size),
         };
         if start >= end {
-            return Err(FdsError::invalid("range is outside object"));
+            return Err(Error::invalid_input("range is outside object"));
         }
         Ok((start, end))
     }
     pub fn inclusive(start: u64, end: u64) -> Result<Self> {
         if start > end {
-            return Err(FdsError::invalid("range start exceeds end"));
+            return Err(Error::invalid_input("range start exceeds end"));
         }
         Ok(Self(RangeKind::Closed(start, end)))
     }
@@ -42,7 +42,7 @@ impl ByteRange {
     pub fn suffix(length: u64) -> Result<Self> {
         NonZeroU64::new(length)
             .map(|n| Self(RangeKind::Suffix(n)))
-            .ok_or_else(|| FdsError::invalid("range suffix must be positive"))
+            .ok_or_else(|| Error::invalid_input("range suffix must be positive"))
     }
 }
 impl fmt::Display for ByteRange {
@@ -55,9 +55,9 @@ impl fmt::Display for ByteRange {
     }
 }
 impl std::str::FromStr for ByteRange {
-    type Err = FdsError;
+    type Err = Error;
     fn from_str(value: &str) -> Result<Self> {
-        let invalid = || FdsError::invalid("expected a single bytes range");
+        let invalid = || Error::invalid_input("expected a single bytes range");
         let (start, end) = value
             .strip_prefix("bytes=")
             .and_then(|s| s.split_once('-'))
@@ -107,12 +107,12 @@ impl GetObjectOutput {
     }
     /// Read the next chunk; repeated calls after EOF return `None`.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>> {
-        Ok(self.response.chunk().await?)
+        self.response.chunk().await.map_err(Error::body_failure)
     }
     /// Collect the remaining body in memory, not necessarily the entire object
     /// if chunks have already been consumed.
     pub async fn bytes(self) -> Result<Bytes> {
-        Ok(self.response.bytes().await?)
+        self.response.bytes().await.map_err(Error::body_failure)
     }
     /// Copy the remaining body incrementally into a caller-owned writer.
     /// Returns bytes written by this call. Does not flush or shut down the writer.
