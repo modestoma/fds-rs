@@ -9,7 +9,15 @@
   "approved_revision": 1,
   "approval_ref": "2026-11-07 用户在会话中回复\"批准并开始\"，批准 revision 1，授权本地快进合并进 main，不推送",
   "max_parallel": 3,
-  "pending_questions": [],
+  "pending_questions": [
+    {
+      "id": "upload-read-timeout",
+      "text": "reqwest 的 read_timeout 在响应头到达前是从请求开始计时的固定期限，上传进度不会重置它；默认 50s 下，发送 body 加等待响应头超过 50s 的 put_object/upload_part 仍会失败（request-timeout 任务实测发现，已在 rustdoc/README 如实说明）。选项：(a) 新增任务，上传请求改由 SDK 实现按进度重置的空闲计时；(b) 接受限制，仅文档说明；(c) 调整 read_timeout 默认值。",
+      "tasks": [
+        "docs-release"
+      ]
+    }
+  ],
   "tasks": [
     {
       "key": "request-timeout",
