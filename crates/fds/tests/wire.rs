@@ -2,7 +2,6 @@
 //! the full send pipeline — URL construction, header assembly, signing, and
 //! status-code handling — which the in-crate unit tests cannot reach.
 
-use fds::bucket::CreateBucketRequest;
 use fds::object::ListObjectsRequest;
 use fds::Client;
 use mockito::Matcher;
@@ -135,10 +134,8 @@ async fn create_bucket_sends_empty_put() {
         .await;
 
     client_for(&server)
-        .create_bucket(&CreateBucketRequest {
-            bucket_name: "newbucket".into(),
-            ..Default::default()
-        })
+        .create_bucket("newbucket")
+        .send()
         .await
         .unwrap();
     m.assert_async().await;
@@ -249,7 +246,7 @@ async fn explicit_status_matrix() {
             .with_status(status)
             .create_async()
             .await;
-        let result = c.does_bucket_exist("b").await;
+        let result = c.bucket_exists("b").send().await;
         assert_eq!(
             result.is_ok(),
             [200, 404].contains(&status),
@@ -522,7 +519,7 @@ async fn every_request_identifies_the_sdk_in_user_agent() {
         .user_agent_suffix("my-app/1.2")
         .build()
         .unwrap();
-    assert!(client.does_bucket_exist("b").await.unwrap());
+    assert!(client.bucket_exists("b").send().await.unwrap());
     suffixed.assert_async().await;
 
     // The unauthenticated discovery channel identifies itself too.
@@ -536,6 +533,7 @@ async fn every_request_identifies_the_sdk_in_user_agent() {
     fds::oauth::FdsServiceClient::new(server.url())
         .unwrap()
         .get_endpoint("cnbj1", "fds")
+        .send()
         .await
         .unwrap();
     discovery.assert_async().await;

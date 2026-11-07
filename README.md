@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::env::var("FDS_ACCESS_KEY_SECRET")?,
         )
         .build()?;
-    let buckets = client.list_buckets().await?;
+    let buckets = client.list_buckets().send().await?;
     println!("可见 Bucket 数量：{}", buckets.buckets.len());
     Ok(())
 }
@@ -104,7 +104,7 @@ Client 内部共享配置、凭据和连接池，可廉价 `clone()` 后交给�
 | `cdn_endpoint(origin)` | 无 | 仅生成 CDN 预签名 URL 时使用，不改变普通 SDK 请求入口 |
 | `connect_timeout(Duration)` | 50 秒 | 建连，包括 TLS |
 | `read_timeout(Duration)` | 50 秒 | 所有请求的 I/O 空闲超时，只限制无进展的时长：上传时每传出一块 body（最多 64 KiB）重置；等待响应头从最后一次上传进展开始计时（无 body 的请求从请求开始计时）；读响应 body 时每次读到数据重置 |
-| `request_timeout(Duration)` | 无 | 显式开启单次请求总期限，覆盖响应 body 的流式消费；对象操作 builder 的 `.timeout(Duration)` 可按请求覆盖 |
+| `request_timeout(Duration)` | 无 | 显式开启单次请求总期限，覆盖响应 body 的流式消费；对象、Bucket 与 OAuth 操作 builder 的 `.timeout(Duration)` 可按请求覆盖 |
 | `pool_idle_timeout(Duration)` | 90 秒 | 空闲连接在池中保留的时间 |
 | `tcp_keepalive(Duration)` | 30 秒 | 整数秒，1–32767；实际探测由操作系统调度 |
 | `pool_max_idle_per_host(usize)` | 100 | 连接池每主机最多保留的空闲连接数；0 表示不保留空闲连接；不是并发上限 |
@@ -147,28 +147,29 @@ fn configured_client(endpoint: &str, id: &str, secret: &str) -> fds::Result<Clie
 
 ```rust,no_run
 use fds::Client;
-use fds::bucket::CreateBucketRequest;
 use fds::object::StorageClass;
 
 async fn bucket_operations(client: &Client, bucket: &str) -> fds::Result<()> {
-    CreateBucketRequest::new(bucket)
+    client
+        .create_bucket(bucket)
         .storage_class(StorageClass::new(StorageClass::STANDARD))
         .org_id("your-org-id")
-        .send(client).await?;
+        .send()
+        .await?;
 
-    let exists = client.does_bucket_exist(bucket).await?;
-    let info = client.get_bucket_info(bucket).await?;
-    let owned = client.list_buckets().await?;
-    let authorized = client.list_authorized_buckets().await?;
+    let exists = client.bucket_exists(bucket).send().await?;
+    let info = client.get_bucket_info(bucket).send().await?;
+    let owned = client.list_buckets().send().await?;
+    let authorized = client.list_authorized_buckets().send().await?;
     println!("存在：{exists}，对象数：{}，字节数：{}", info.object_num, info.used_space);
     println!("所有桶：{}，授权桶：{}", owned.buckets.len(), authorized.buckets.len());
     Ok(())
 }
 ```
 
-`storage_class`、`org_id` 和 `acl` 都可省略；省略时依服务默认。创建时的 canned ACL 见 ACL 章节。不要用“先 HEAD 不存在再创建”推导原子创建：检查和创建之间仍有竞争。
+`storage_class`、`org_id` 和 `acl` 都是可选的链式方法，不调用即不发送，依服务默认；`org_id("")` 同样不发送。创建时的 canned ACL 见 ACL 章节。不要用“先 HEAD 不存在再创建”推导原子创建：检查和创建之间仍有竞争。
 
-`does_bucket_exist` 只将 200/404 转成 true/false；403、网络错误等继续返回错误。`GetBucketInfoResponse` 提供 `bucket_name`、`creation_time`、`object_num`、`used_space`、`storage_class_type`、`allow_outside_access`、`enable_sse`。`ListBucketsResponse` 包含 `owner` 和 `buckets`。
+`bucket_exists` 只将 200/404 转成 true/false；403、网络错误等继续返回错误。`GetBucketInfoResponse` 提供 `bucket_name`、`creation_time`、`object_num`、`used_space`、`storage_class_type`、`allow_outside_access`、`enable_sse`。`ListBucketsResponse` 包含 `owner` 和 `buckets`。
 
 `StorageClass` 是保留服务端原始字符串的包装，使用 `new()`/`as_str()`；常量有 `STANDARD`、`STANDARD_IA`、`ARCHIVE`，后者的实际字符串为 `Archive`。类型存在不保证目标地区支持该存储类别。
 
@@ -176,17 +177,16 @@ async fn bucket_operations(client: &Client, bucket: &str) -> fds::Result<()> {
 
 ```rust,no_run
 use fds::Client;
-use fds::bucket::MigrateBucketRequest;
 
 async fn move_ownership(client: &Client, bucket: &str, org: &str, team: &str) -> fds::Result<()> {
-    MigrateBucketRequest::new(bucket, org, team).send(client).await
+    client.migrate_bucket(bucket, org, team).send().await
 }
 async fn remove_empty_bucket(client: &Client, bucket: &str) -> fds::Result<()> {
-    client.delete_bucket(bucket).await
+    client.delete_bucket(bucket).send().await
 }
 ```
 
-`migrate_bucket` 调整组织/团队归属，不是复制 Bucket 数据到另一个 endpoint。`delete_bucket` 不自动清空对象；是否允许删除由服务判断。
+`migrate_bucket` 的 org 和 team 是必填参数，按原值发送；它调整组织/团队归属，不是复制 Bucket 数据到另一个 endpoint。`delete_bucket` 不自动清空对象；是否允许删除由服务判断。
 
 ## 对象上传
 
@@ -560,7 +560,6 @@ ACL 的 `Add` 是默认增量添加，`Delete` 删除指定授权项；没有 Re
 ```rust,no_run
 use fds::Client;
 use fds::acl::{AccessControlList, AclAction, Grant, GrantKey, GrantPermission, GrantType};
-use fds::bucket::SetBucketAclRequest;
 
 fn read_grant(user_id: &str) -> AccessControlList {
     let mut acl = AccessControlList::default();
@@ -573,9 +572,9 @@ fn read_grant(user_id: &str) -> AccessControlList {
 }
 
 async fn grant_read(client: &Client, bucket: &str, key: &str, user_id: &str) -> fds::Result<()> {
-    SetBucketAclRequest::new(bucket, read_grant(user_id)).send(client).await?;
+    client.set_bucket_acl(bucket, read_grant(user_id)).send().await?;
     client.set_object_acl(bucket, key, read_grant(user_id)).send().await?;
-    let _bucket_acl = client.get_bucket_acl(bucket).await?;
+    let _bucket_acl = client.get_bucket_acl(bucket).send().await?;
     let _object_acl = client.get_object_acl(bucket, key).send().await?;
     Ok(())
 }
@@ -598,12 +597,13 @@ async fn revoke_object_read(client: &Client, bucket: &str, key: &str, user_id: &
 ```rust,no_run
 use fds::Client;
 use fds::acl::BucketCannedAcl;
-use fds::bucket::CreateBucketRequest;
 
 async fn create_public_read_bucket(client: &Client, bucket: &str) -> fds::Result<()> {
-    CreateBucketRequest::new(bucket)
+    client
+        .create_bucket(bucket)
         .acl([BucketCannedAcl::PublicRead])
-        .send(client).await
+        .send()
+        .await
 }
 ```
 
@@ -799,8 +799,7 @@ fn public_link(client: &Client, bucket: &str, key: &str) -> fds::Result<String> 
 ### 生命周期规则
 
 ```rust,no_run
-use fds::bucket::{GetLifecycleConfigRequest, LifecycleAction, LifecycleBaseItem, LifecycleConfig,
-    LifecycleRule};
+use fds::bucket::{LifecycleAction, LifecycleBaseItem, LifecycleConfig, LifecycleRule};
 use fds::Client;
 use std::collections::BTreeMap;
 
@@ -811,19 +810,22 @@ async fn configure_lifecycle(client: &Client, bucket: &str) -> fds::Result<()> {
         enabled: true, action,
     };
     // 配置指定规则。
-    client.set_lifecycle_rule(bucket, &rule).await?;
-    let _selected = GetLifecycleConfigRequest::new(bucket)
-        .rule_id(&rule.id).send(client).await?;
-    let _all = GetLifecycleConfigRequest::new(bucket).send(client).await?;
+    client.set_lifecycle_rule(bucket, rule.clone()).send().await?;
+    let _selected = client
+        .get_lifecycle_config(bucket)
+        .rule_id(&rule.id)
+        .send()
+        .await?;
+    let _all = client.get_lifecycle_config(bucket).send().await?;
 
     // 整体提交 rules；仅在确实要管理完整配置时调用。
     let config = LifecycleConfig { rules: vec![rule] };
-    client.set_lifecycle_config(bucket, &config).await?;
+    client.set_lifecycle_config(bucket, config).send().await?;
     Ok(())
 }
 ```
 
-`LifecycleRule.action` 是 `LifecycleAction` 到 `{ days: f64 }` 的有序 map，序列化字段名为 `actions`，多个 action 按线上字符串排序输出。`LifecycleRule::from_json` 和 `LifecycleConfig::from_json` 接受 JSON bytes；完整配置形式为 `{"rules":[...]}`。
+`LifecycleRule.action` 是 `LifecycleAction` 到 `{ days: f64 }` 的有序 map，序列化字段名为 `actions`，多个 action 按线上字符串排序输出。两者都实现 serde 的 `Serialize`/`Deserialize`，从 JSON 读取直接用 `serde_json::from_slice`；完整配置形式为 `{"rules":[...]}`。不调用 `.rule_id(..)` 时读取完整配置。
 
 `LifecycleAction` 还有 `NonCurrentVersionExpiration` 和 `AbortIncompleteMultipartUpload`；后者的线上值保留了协议兼容字符串的尾随空格（`"abortIncompleteMultipartUpload "`），不带空格的 key 会作为 `Other` 原样往返，不能假定等价。SDK 不验证天数业务范围，也没有独立 delete-lifecycle-rule 方法；禁用可提交同 ID 的 `enabled: false` 规则，具体更新/删除语义以服务为准。expiration 会影响匹配对象的数据保留，请按业务策略选择前缀和天数。
 
@@ -838,15 +840,15 @@ async fn enable_logs(client: &Client, bucket: &str, log_bucket: &str) -> fds::Re
         bucket_name: bucket.into(), enabled: true,
         log_bucket_name: log_bucket.into(), log_prefix: "fds-access/".into(),
     };
-    client.set_access_log(bucket, &config).await?;
-    let _effective = client.get_access_log(bucket).await?;
+    client.set_access_log(bucket, config).send().await?;
+    let _effective = client.get_access_log(bucket).send().await?;
     Ok(())
 }
 async fn disable_logs(client: &Client, bucket: &str) -> fds::Result<()> {
-    let mut config = client.get_access_log(bucket).await?;
+    let mut config = client.get_access_log(bucket).send().await?;
     config.bucket_name = bucket.into();
     config.enabled = false;
-    client.set_access_log(bucket, &config).await
+    client.set_access_log(bucket, config).send().await
 }
 ```
 
@@ -879,7 +881,7 @@ async fn discover_client(discovery_origin: &str, region: &str, service_name: &st
     allowed_hosts: &[String], id: &str, secret: &str) -> fds::Result<Client>
 {
     let discovery = FdsServiceClient::new(discovery_origin)?;
-    let host = discovery.get_endpoint(region, service_name).await?;
+    let host = discovery.get_endpoint(region, service_name).send().await?;
     if !allowed_hosts.contains(&host) {
         return Err(Error::new(ErrorKind::ConfigInvalid, "发现主机不在应用允许列表"));
     }
@@ -896,17 +898,19 @@ async fn discover_client(discovery_origin: &str, region: &str, service_name: &st
 
 ```rust,no_run
 use fds::Client;
-use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::oauth::{FdsServiceClient, OAuthProvider};
 
 async fn oauth_read(exchange_origin: &str, object_origin: &str, app_id: &str,
     oauth_app_id: &str, provider_token: &str, bucket: &str, key: &str) -> fds::Result<u64>
 {
     let service = FdsServiceClient::new(exchange_origin)?;
-    let input = StorageTokenRequest::new(app_id, oauth_app_id, provider_token, OAuthProvider::QQ);
-    let token = service.exchange_storage_token(&input).await?;
+    let token = service
+        .exchange_storage_token(app_id, oauth_app_id, provider_token, OAuthProvider::QQ)
+        .send()
+        .await?;
     let expires_at = token.expires_at();
     let client = Client::builder().endpoint(object_origin).storage_token(token).build()?;
-    let _app_buckets = client.list_app_buckets().await?;
+    let _app_buckets = client.list_app_buckets().send().await?;
     let mut output = client.get_object(bucket, key).send().await?;
     let mut count = 0;
     while let Some(chunk) = output.chunk().await? {
@@ -917,7 +921,7 @@ async fn oauth_read(exchange_origin: &str, object_origin: &str, app_id: &str,
 }
 ```
 
-provider 为 XiaoMi、QQ、Sina、RenRen。XiaoMi 还需追加 `.xiaomi_mac(open_id, mac_key, algorithm)`，三者非空；algorithm 原样交给服务，不在本地计算 MAC。Weixin 尚无可调用枚举。provider token 由应用通过相应授权流程获取，SDK 不提供用户登录流程。
+provider 为 XiaoMi、QQ、Sina、RenRen。app ID、OAuth app ID、provider token 和 provider 是 `exchange_storage_token` 的必填参数；XiaoMi 还需在 `.send()` 前链式追加 `.xiaomi_mac(open_id, mac_key, algorithm)`，三者非空；algorithm 原样交给服务，不在本地计算 MAC。Weixin 尚无可调用枚举。provider token 由应用通过相应授权流程获取，SDK 不提供用户登录流程。
 
 `StorageAccessToken` 提供 `app_id()`、`expires_at()`、`is_expired()` 和敏感访问器 `token()`；过期时间是 UTC 绝对时间，接口不提供任意字符串手动构造 token 的公开入口。交换始终只尝试一次。token 绑定 appId，`list_app_buckets` 自动使用该 appId，返回 `AppBuckets { owner, buckets }`；AppBucket 含 name、org_id、creation_time、used_space、num_objects。
 

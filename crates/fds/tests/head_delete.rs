@@ -465,30 +465,30 @@ async fn bucket_targets_validate_locally_but_root_lists_remain_valid() {
     let invalid = |result: fds::Result<()>| {
         assert_eq!(result.unwrap_err().kind(), fds::ErrorKind::InvalidInput)
     };
-    invalid(CreateBucketRequest::new("").send(&c).await);
-    invalid(c.does_bucket_exist("").await.map(|_| ()));
-    invalid(c.delete_bucket("").await);
-    invalid(c.get_bucket_info("").await.map(|_| ()));
-    invalid(MigrateBucketRequest::new("", "org", "team").send(&c).await);
-    invalid(c.get_bucket_acl("").await.map(|_| ()));
+    invalid(c.create_bucket("").send().await);
+    invalid(c.bucket_exists("").send().await.map(|_| ()));
+    invalid(c.delete_bucket("").send().await);
+    invalid(c.get_bucket_info("").send().await.map(|_| ()));
+    invalid(c.migrate_bucket("", "org", "team").send().await);
+    invalid(c.get_bucket_acl("").send().await.map(|_| ()));
     invalid(
-        SetBucketAclRequest::new("", AccessControlList::default())
-            .send(&c)
+        c.set_bucket_acl("", AccessControlList::default())
+            .send()
+            .await,
+    );
+    invalid(c.get_lifecycle_config("").send().await.map(|_| ()));
+    invalid(
+        c.set_lifecycle_config("", LifecycleConfig::default())
+            .send()
             .await,
     );
     invalid(
-        GetLifecycleConfigRequest::new("")
-            .send(&c)
-            .await
-            .map(|_| ()),
-    );
-    invalid(
-        c.set_lifecycle_config("", &LifecycleConfig::default())
+        c.set_lifecycle_rule("", LifecycleRule::default())
+            .send()
             .await,
     );
-    invalid(c.set_lifecycle_rule("", &LifecycleRule::default()).await);
-    invalid(c.get_access_log("").await.map(|_| ()));
-    invalid(c.set_access_log("", &AccessLog::default()).await);
+    invalid(c.get_access_log("").send().await.map(|_| ()));
+    invalid(c.set_access_log("", AccessLog::default()).send().await);
     assert!(c
         .delete_objects_with_prefix(&ListObjectsRequest::new(""), false)
         .await
@@ -508,8 +508,8 @@ async fn bucket_targets_validate_locally_but_root_lists_remain_valid() {
         .with_body("{}")
         .create_async()
         .await;
-    c.list_buckets().await.unwrap();
-    c.list_authorized_buckets().await.unwrap();
+    c.list_buckets().send().await.unwrap();
+    c.list_authorized_buckets().send().await.unwrap();
     root.assert_async().await;
     authorized.assert_async().await;
 }

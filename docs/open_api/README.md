@@ -20,7 +20,7 @@
 
 | 文件 | 功能 | 原始方法、路径与参数 | SDK 状态 | SDK 入口与差异 |
 | --- | --- | --- | --- | --- |
-| [get-endpoint.yaml](get-endpoint.yaml) | 根据地区码和后端服务获取endpoint | `GET /`；`?endpoint`、`?region`、`?service` | implemented | `FdsServiceClient::get_endpoint`；显式入口、JSON 主机名，见 [协议证据](../protocol.md#服务发现与-oauth) |
+| [get-endpoint.yaml](get-endpoint.yaml) | 根据地区码和后端服务获取endpoint | `GET /`；`?endpoint`、`?region`、`?service` | implemented | `FdsServiceClient::get_endpoint(..).send()`；显式入口、JSON 主机名，见 [协议证据](../protocol.md#服务发现与-oauth) |
 | [OAuth.yaml](OAuth.yaml) | 获取OAuth存储令牌 | `GET /`；`?storageAccessToken`、`?appId`、`?oauthAccessToken`、`?oauthOpenId`、`?oauthAppId`、`?oauthProvider`、`?oauthMacKey`、`?oauthMacAlgorithm` | implemented | 显式交换、绑定 appId 的 OAuth Client、UTC 到期与脱敏，见 [协议证据](../protocol.md#服务发现与-oauth) |
 
 ### Bucket 管理
@@ -29,8 +29,8 @@
 | --- | --- | --- | --- | --- |
 | [list-bucket.yaml](list-bucket.yaml) | 获取创建的Bucket列表 | `GET /`；`?authorizedBuckets` | implemented | `list_buckets`、`list_authorized_buckets` |
 | [Bucket.yaml](Bucket.yaml) | 按 appId 列举应用 Bucket | `GET /`；`?appId` | implemented | `list_app_buckets` 使用绑定 token/appId，保留 orgId；服务权限待真实验收 |
-| [put-bucket.yaml](put-bucket.yaml) | 新建Bucket | `PUT /{bucketname}`；`H:x-xiaomi-meta-acl`、`?orgId` | implemented | `CreateBucketRequest::acl` 支持创建 ACL，保留 orgId/storageClass |
-| [head-bucket.yaml](head-bucket.yaml) | 查看Bucket是否存在 | `HEAD /{bucketname}`；— | implemented | `does_bucket_exist`，200/404；其他状态报错 |
+| [put-bucket.yaml](put-bucket.yaml) | 新建Bucket | `PUT /{bucketname}`；`H:x-xiaomi-meta-acl`、`?orgId` | implemented | `create_bucket(..).acl(..)` 支持创建 ACL，`.org_id(..)` / `.storage_class(..)` 可选 |
+| [head-bucket.yaml](head-bucket.yaml) | 查看Bucket是否存在 | `HEAD /{bucketname}`；— | implemented | `bucket_exists`，200/404；其他状态报错 |
 | [get-bucket-meta.yaml](get-bucket-meta.yaml) | 获取Bucket的meta | `GET /{bucketname}`；— | implemented | `get_bucket_info`，裸 GET Bucket |
 | [delete-bucket.yaml](delete-bucket.yaml) | 删除Bucket | `DELETE /{bucketname}`；— | implemented | `delete_bucket` |
 
@@ -39,7 +39,7 @@
 | 文件 | 功能 | 原始方法、路径与参数 | SDK 状态 | SDK 入口与差异 |
 | --- | --- | --- | --- | --- |
 | [get-bucket-acl.yaml](get-bucket-acl.yaml) | 获取Bucket的ACL列表 | `GET /{bucketname}`；`?acl` | implemented | `get_bucket_acl` |
-| [put-bucket-acl.yaml](put-bucket-acl.yaml) | 修改Bucket的ACL | `PUT /{bucketname}`；`?acl`、`?action`、`B:body` | implemented | `SetBucketAclRequest::action` 支持类型化 add/delete |
+| [put-bucket-acl.yaml](put-bucket-acl.yaml) | 修改Bucket的ACL | `PUT /{bucketname}`；`?acl`、`?action`、`B:body` | implemented | `set_bucket_acl(..).action(..)` 支持类型化 add/delete |
 
 ### Object 读写与管理
 

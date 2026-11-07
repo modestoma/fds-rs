@@ -1,5 +1,6 @@
-//! Explicit endpoint discovery and OAuth exchange. See docs/protocol.md
-//! for protocol evidence, provisioning prerequisites and refresh semantics.
+//! Explicit endpoint discovery, OAuth exchange and the app-scoped bucket
+//! listing. See docs/protocol.md for protocol evidence, provisioning
+//! prerequisites and refresh semantics.
 use crate::{
     client::ClientRequest, Client, ClientBuilder, ClientConfiguration, Error, ErrorKind, Result,
 };
@@ -7,6 +8,7 @@ use chrono::{DateTime, Utc};
 use http::Method;
 use reqwest::header::HeaderValue;
 use std::fmt;
+use std::time::Duration;
 
 pub(crate) enum Credentials {
     AccessKey(String, String),
@@ -78,71 +80,6 @@ impl OAuthProvider {
     }
 }
 
-/// Secrets are private and redacted from Debug; no serialization implementation.
-/// XiaoMi requires `xiaomi_mac` before sending. Other providers reject MAC fields.
-#[derive(Clone)]
-pub struct StorageTokenRequest {
-    app_id: String,
-    oauth_app_id: String,
-    access_token: String,
-    provider: OAuthProvider,
-    xiaomi: Option<(String, String, String)>,
-}
-impl fmt::Debug for StorageTokenRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StorageTokenRequest")
-            .field("provider", &self.provider)
-            .finish_non_exhaustive()
-    }
-}
-impl StorageTokenRequest {
-    pub fn new(
-        app_id: impl Into<String>,
-        oauth_app_id: impl Into<String>,
-        access_token: impl Into<String>,
-        provider: OAuthProvider,
-    ) -> Self {
-        Self {
-            app_id: app_id.into(),
-            oauth_app_id: oauth_app_id.into(),
-            access_token: access_token.into(),
-            provider,
-            xiaomi: None,
-        }
-    }
-    /// Pass the algorithm returned by the provider verbatim; the SDK does not
-    /// calculate a MAC or guess an algorithm allowlist.
-    pub fn xiaomi_mac(
-        mut self,
-        open_id: impl Into<String>,
-        key: impl Into<String>,
-        algorithm: impl Into<String>,
-    ) -> Self {
-        self.xiaomi = Some((open_id.into(), key.into(), algorithm.into()));
-        self
-    }
-    fn validate(&self) -> Result<()> {
-        for value in [&self.app_id, &self.oauth_app_id, &self.access_token] {
-            nonempty(value)?;
-        }
-        match (self.provider, &self.xiaomi) {
-            (OAuthProvider::XiaoMi, Some((id, key, algorithm))) => {
-                for value in [id, key, algorithm] {
-                    nonempty(value)?;
-                }
-                Ok(())
-            }
-            (OAuthProvider::XiaoMi, None) => Err(Error::invalid_input(
-                "XiaoMi requires open ID, MAC key and MAC algorithm",
-            )),
-            (_, Some(_)) => Err(Error::invalid_input(
-                "MAC inputs are only supported for XiaoMi",
-            )),
-            (_, None) => Ok(()),
-        }
-    }
-}
-
 /// An FDS token bound to the app ID used in its exchange. Expiration is a UTC
 /// instant decoded from Unix epoch milliseconds, not a relative TTL.
 /// Cloning does not refresh it. Exchange again to obtain a replacement.
@@ -187,6 +124,27 @@ impl StorageAccessToken {
 /// An unauthenticated service connection exposing only discovery and token
 /// exchange. The origin is explicit; discovery never redirects a credentialed
 /// client or silently adopts the returned host.
+///
+/// Its operations follow the crate-level "Operation builders" convention:
+///
+/// ```no_run
+/// # async fn example() -> fds::Result<()> {
+/// use fds::oauth::{FdsServiceClient, OAuthProvider};
+///
+/// let service = FdsServiceClient::new("https://cnbj1.fds.api.xiaomi.com")?;
+/// let host = service.get_endpoint("cnbj1", "fds").send().await?;
+/// let token = service
+///     .exchange_storage_token("app-id", "oauth-app-id", "provider-token", OAuthProvider::XiaoMi)
+///     .xiaomi_mac("open-id", "mac-key", "hmac-sha-1")
+///     .send()
+///     .await?;
+/// let client = fds::Client::builder()
+///     .endpoint(format!("https://{host}"))
+///     .storage_token(token)
+///     .build()?;
+/// let _app_buckets = client.list_app_buckets().send().await?;
+/// # Ok(()) }
+/// ```
 #[derive(Clone, Debug)]
 pub struct FdsServiceClient {
     client: Client,
@@ -202,16 +160,70 @@ impl FdsServiceClient {
             client: builder.anonymous().build()?,
         })
     }
-    /// GET /?endpoint&region=...&service=...; returns the documented JSON host
-    /// string. Service/region values are service-defined, nonempty selectors.
-    /// This does not validate service availability or connect to the returned host.
-    pub async fn get_endpoint(&self, region: &str, service: &str) -> Result<String> {
-        nonempty(region)?;
-        nonempty(service)?;
-        let mut req = ClientRequest::new("", "", Method::GET).read_only();
+
+    /// Discover the host serving `service` in `region`. Both are
+    /// service-defined, nonempty selectors.
+    pub fn get_endpoint(
+        &self,
+        region: impl Into<String>,
+        service: impl Into<String>,
+    ) -> GetEndpoint {
+        GetEndpoint {
+            client: self.client.clone(),
+            region: region.into(),
+            service: service.into(),
+            timeout: None,
+        }
+    }
+
+    /// Exchange a provider's OAuth access token for an FDS storage token.
+    /// XiaoMi additionally requires [`ExchangeStorageToken::xiaomi_mac`];
+    /// other providers reject it.
+    pub fn exchange_storage_token(
+        &self,
+        app_id: impl Into<String>,
+        oauth_app_id: impl Into<String>,
+        access_token: impl Into<String>,
+        provider: OAuthProvider,
+    ) -> ExchangeStorageToken {
+        ExchangeStorageToken {
+            client: self.client.clone(),
+            app_id: app_id.into(),
+            oauth_app_id: oauth_app_id.into(),
+            access_token: access_token.into(),
+            provider,
+            xiaomi: None,
+            timeout: None,
+        }
+    }
+}
+
+/// Builder for [`FdsServiceClient::get_endpoint`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct GetEndpoint {
+    client: Client,
+    region: String,
+    service: String,
+    timeout: Option<Duration>,
+}
+
+impl GetEndpoint {
+    timeout_option!();
+
+    /// GET `/?endpoint&region=...&service=...`; returns the documented JSON
+    /// host string. Empty selectors fail with
+    /// [`ErrorKind::InvalidInput`] before sending. This does not validate
+    /// service availability or connect to the returned host.
+    pub async fn send(self) -> Result<String> {
+        nonempty(&self.region)?;
+        nonempty(&self.service)?;
+        let mut req = ClientRequest::new("", "", Method::GET)
+            .read_only()
+            .with_timeout(self.timeout)?;
         req.query.add("endpoint", "");
-        req.query.add("region", region);
-        req.query.add("service", service);
+        req.query.add("region", &self.region);
+        req.query.add("service", &self.service);
         let endpoint: String = self.client.do_json(req).await?;
         // The wire contract returns a hostname, not an origin or a URL path.
         if endpoint.len() > 253
@@ -229,27 +241,92 @@ impl FdsServiceClient {
         }
         Ok(endpoint)
     }
-    /// Single-attempt exchange, even when read retries are configured. Requires
-    /// application provisioning; errors discard server-controlled diagnostics.
-    pub async fn exchange_storage_token(
-        &self,
-        input: &StorageTokenRequest,
-    ) -> Result<StorageAccessToken> {
-        input.validate()?;
+}
+
+/// Builder for [`FdsServiceClient::exchange_storage_token`].
+///
+/// Secrets are private and redacted from `Debug`; there is no serialization
+/// implementation.
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct ExchangeStorageToken {
+    client: Client,
+    app_id: String,
+    oauth_app_id: String,
+    access_token: String,
+    provider: OAuthProvider,
+    xiaomi: Option<(String, String, String)>,
+    timeout: Option<Duration>,
+}
+impl fmt::Debug for ExchangeStorageToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExchangeStorageToken")
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
+    }
+}
+impl ExchangeStorageToken {
+    timeout_option!();
+
+    /// The XiaoMi MAC inputs: open ID, MAC key and MAC algorithm. Required
+    /// for [`OAuthProvider::XiaoMi`] and rejected for every other provider.
+    /// Pass the algorithm returned by the provider verbatim; the SDK does not
+    /// calculate a MAC or guess an algorithm allowlist.
+    pub fn xiaomi_mac(
+        mut self,
+        open_id: impl Into<String>,
+        key: impl Into<String>,
+        algorithm: impl Into<String>,
+    ) -> Self {
+        self.xiaomi = Some((open_id.into(), key.into(), algorithm.into()));
+        self
+    }
+
+    fn validate(&self) -> Result<()> {
+        for value in [&self.app_id, &self.oauth_app_id, &self.access_token] {
+            nonempty(value)?;
+        }
+        match (self.provider, &self.xiaomi) {
+            (OAuthProvider::XiaoMi, Some((id, key, algorithm))) => {
+                for value in [id, key, algorithm] {
+                    nonempty(value)?;
+                }
+                Ok(())
+            }
+            (OAuthProvider::XiaoMi, None) => Err(Error::invalid_input(
+                "XiaoMi requires open ID, MAC key and MAC algorithm",
+            )),
+            (_, Some(_)) => Err(Error::invalid_input(
+                "MAC inputs are only supported for XiaoMi",
+            )),
+            (_, None) => Ok(()),
+        }
+    }
+
+    /// GET `/?storageAccessToken&appId&oauthAppId&oauthAccessToken&oauthProvider`
+    /// (plus the XiaoMi MAC fields) with `Authorization: OAuth`.
+    ///
+    /// Missing or empty inputs and MAC inputs that do not match the provider
+    /// fail with [`ErrorKind::InvalidInput`], and a non-HTTPS origin (other
+    /// than a loopback IP) with [`ErrorKind::ConfigInvalid`], before sending.
+    /// Single attempt, even when read retries are configured. Requires
+    /// application provisioning; errors discard server-controlled
+    /// diagnostics.
+    pub async fn send(self) -> Result<StorageAccessToken> {
+        self.validate()?;
         secure_origin(self.client.configuration().endpoint())?;
-        let mut req = ClientRequest::new("", "", Method::GET);
+        let mut req = ClientRequest::new("", "", Method::GET).with_timeout(self.timeout)?;
         req.headers
             .insert("authorization", HeaderValue::from_static("OAuth"));
         for (key, value) in [
             ("storageAccessToken", ""),
-            ("appId", input.app_id.as_str()),
-            ("oauthAppId", input.oauth_app_id.as_str()),
-            ("oauthAccessToken", input.access_token.as_str()),
-            ("oauthProvider", input.provider.wire()),
+            ("appId", self.app_id.as_str()),
+            ("oauthAppId", self.oauth_app_id.as_str()),
+            ("oauthAccessToken", self.access_token.as_str()),
+            ("oauthProvider", self.provider.wire()),
         ] {
             req.query.add(key, value);
         }
-        if let Some((id, key, algorithm)) = &input.xiaomi {
+        if let Some((id, key, algorithm)) = &self.xiaomi {
             req.query.add("oauthOpenId", id);
             req.query.add("oauthMacKey", key);
             req.query.add("oauthMacAlgorithm", algorithm);
@@ -262,7 +339,7 @@ impl FdsServiceClient {
         }
         let wire: WireToken = self.client.do_json(req).await?;
         let token = StorageAccessToken {
-            app_id: input.app_id.clone(),
+            app_id: self.app_id,
             token: wire.token,
             expires_at: DateTime::from_timestamp_millis(wire.expire_time)
                 .ok_or_else(|| Error::protocol("invalid storage token expiration"))?,
@@ -290,12 +367,36 @@ pub struct AppBucket {
     pub used_space: i64,
     pub num_objects: i64,
 }
+/// Builder for [`Client::list_app_buckets`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct ListAppBuckets {
+    client: Client,
+    timeout: Option<Duration>,
+}
+
+impl ListAppBuckets {
+    timeout_option!();
+
+    /// GET `/` authenticated by the client's storage token and its app ID.
+    /// A client without an exchanged storage token fails with
+    /// [`ErrorKind::ConfigInvalid`] before sending.
+    pub async fn send(self) -> Result<AppBuckets> {
+        self.client.require_oauth()?;
+        let cr = ClientRequest::new("", "", Method::GET)
+            .read_only()
+            .with_timeout(self.timeout)?;
+        self.client.do_json(cr).await
+    }
+}
+
 impl Client {
     /// List buckets for the app bound to this client's exchanged OAuth token.
     /// appId is never accepted as standalone authentication or an override.
-    pub async fn list_app_buckets(&self) -> Result<AppBuckets> {
-        self.require_oauth()?;
-        self.do_json(ClientRequest::new("", "", Method::GET).read_only())
-            .await
+    pub fn list_app_buckets(&self) -> ListAppBuckets {
+        ListAppBuckets {
+            client: self.clone(),
+            timeout: None,
+        }
     }
 }

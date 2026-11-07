@@ -65,7 +65,10 @@ pub async fn smoke(
     println!("smoke test against bucket '{bucket}', prefix '{prefix}'");
 
     // bucket reachability
-    rep.check("does_bucket_exist", client.does_bucket_exist(bucket).await);
+    rep.check(
+        "does_bucket_exist",
+        client.bucket_exists(bucket).send().await,
+    );
 
     // put + get + verify
     let put = client

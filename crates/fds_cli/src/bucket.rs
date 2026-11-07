@@ -1,5 +1,5 @@
 use super::output;
-use super::util::{print_json, read_json, AclMode, CannedAcl};
+use super::util::{print_json, read_json, read_json_redacted, AclMode, CannedAcl};
 use anyhow::Result;
 use clap::Subcommand;
 use fds::{bucket::*, object::*, *};
@@ -81,75 +81,71 @@ pub async fn run_bucket(client: &Client, cmd: &BucketCmd) -> Result<()> {
             org_id,
             acl,
         } => {
-            let mut request = CreateBucketRequest::new(name).acl(acl.iter().map(|v| v.sdk()));
+            let mut request = client.create_bucket(name).acl(acl.iter().map(|v| v.sdk()));
             if let Some(value) = storage_class {
                 request = request.storage_class(StorageClass::from(value.as_str()));
             }
             if let Some(value) = org_id {
                 request = request.org_id(value);
             }
-            request.send(client).await?;
+            request.send().await?;
             output::ok()?;
         }
-        BucketCmd::Exists { name } => println!("{}", client.does_bucket_exist(name).await?),
+        BucketCmd::Exists { name } => println!("{}", client.bucket_exists(name).send().await?),
         BucketCmd::Delete { name } => {
-            client.delete_bucket(name).await?;
+            client.delete_bucket(name).send().await?;
             output::ok()?;
         }
         BucketCmd::Info { name } => {
-            print_json(&output::bucket(&client.get_bucket_info(name).await?))?
+            print_json(&output::bucket(&client.get_bucket_info(name).send().await?))?
         }
-        BucketCmd::List => print_json(&output::buckets(&client.list_buckets().await?))?,
-        BucketCmd::ListApp => print_json(&output::app_buckets(&client.list_app_buckets().await?))?,
+        BucketCmd::List => print_json(&output::buckets(&client.list_buckets().send().await?))?,
+        BucketCmd::ListApp => print_json(&output::app_buckets(
+            &client.list_app_buckets().send().await?,
+        ))?,
         BucketCmd::SetAcl { name, file, action } => {
-            SetBucketAclRequest::new(name, read_json(file)?)
+            client
+                .set_bucket_acl(name, read_json(file)?)
                 .action(action.sdk())
-                .send(client)
+                .send()
                 .await?;
             output::ok()?;
         }
-        BucketCmd::ListAuthorized => {
-            print_json(&output::buckets(&client.list_authorized_buckets().await?))?
-        }
+        BucketCmd::ListAuthorized => print_json(&output::buckets(
+            &client.list_authorized_buckets().send().await?,
+        ))?,
         BucketCmd::Migrate {
             name,
             org_id,
             team_id,
         } => {
-            client
-                .migrate_bucket(&MigrateBucketRequest {
-                    bucket_name: name.clone(),
-                    org_id: org_id.clone(),
-                    team_id: team_id.clone(),
-                })
-                .await?;
+            client.migrate_bucket(name, org_id, team_id).send().await?;
             output::ok()?;
         }
-        BucketCmd::GetAcl { name } => print_json(&client.get_bucket_acl(name).await?)?,
+        BucketCmd::GetAcl { name } => print_json(&client.get_bucket_acl(name).send().await?)?,
         BucketCmd::GetLifecycle { name, rule_id } => {
-            let cfg = client
-                .get_lifecycle_config(&GetLifecycleConfigRequest {
-                    bucket_name: name.clone(),
-                    rule_id: rule_id.clone().unwrap_or_default(),
-                })
-                .await?;
+            let mut request = client.get_lifecycle_config(name);
+            if let Some(rule_id) = rule_id {
+                request = request.rule_id(rule_id);
+            }
+            let cfg = request.send().await?;
             print_json(&cfg)?;
         }
         BucketCmd::SetLifecycle { name, file } => {
-            let cfg = LifecycleConfig::from_json(&std::fs::read(file)?)?;
-            client.set_lifecycle_config(name, &cfg).await?;
+            let cfg: LifecycleConfig = read_json_redacted(file)?;
+            client.set_lifecycle_config(name, cfg).send().await?;
             output::ok()?;
         }
         BucketCmd::SetLifecycleRule { name, file } => {
-            let rule = LifecycleRule::from_json(&std::fs::read(file)?)?;
-            client.set_lifecycle_rule(name, &rule).await?;
+            let rule: LifecycleRule = read_json_redacted(file)?;
+            client.set_lifecycle_rule(name, rule).send().await?;
             output::ok()?;
         }
-        BucketCmd::GetAccessLog { name } => print_json(&client.get_access_log(name).await?)?,
+        BucketCmd::GetAccessLog { name } => print_json(&client.get_access_log(name).send().await?)?,
         BucketCmd::SetAccessLog { name, file } => {
             let mut config: AccessLog = read_json(file)?;
             config.bucket_name = name.clone();
-            client.set_access_log(name, &config).await?;
+            client.set_access_log(name, config).send().await?;
             output::ok()?;
         }
     }

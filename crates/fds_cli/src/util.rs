@@ -28,6 +28,21 @@ pub fn parse_meta(pairs: &[String]) -> Result<ObjectMetadata> {
 pub fn read_json<T: serde::de::DeserializeOwned>(path: impl AsRef<std::path::Path>) -> Result<T> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
+/// Read a lifecycle JSON file. A decode error reports only the parser
+/// position (serde's message can echo input values), as an SDK invalid-input
+/// error, exactly as the SDK's former `from_json` helpers did.
+pub fn read_json_redacted<T: serde::de::DeserializeOwned>(
+    path: impl AsRef<std::path::Path>,
+) -> Result<T> {
+    let bytes = std::fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        fds::Error::new(fds::ErrorKind::InvalidInput, "invalid JSON input")
+            .with_context("category", format_args!("{:?}", error.classify()))
+            .with_context("line", error.line())
+            .with_context("column", error.column())
+            .into()
+    })
+}
 pub fn print_json(value: &impl serde::Serialize) -> Result<()> {
     use std::io::Write;
     let mut stdout = std::io::stdout().lock();

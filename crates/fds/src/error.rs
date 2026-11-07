@@ -458,15 +458,6 @@ impl Error {
             .with_source(error.without_url())
     }
 
-    /// Caller-supplied JSON could not be decoded. Only the parser position is
-    /// kept: serde's message can echo input values.
-    pub(crate) fn json_input(error: serde_json::Error) -> Self {
-        Self::invalid_input("invalid JSON input")
-            .with_context("category", format_args!("{:?}", error.classify()))
-            .with_context("line", error.line())
-            .with_context("column", error.column())
-    }
-
     /// Local JSON serialization of a request body or checkpoint failed.
     pub(crate) fn json_encode(error: serde_json::Error) -> Self {
         let kind = if error.is_io() {

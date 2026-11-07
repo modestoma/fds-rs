@@ -1,8 +1,5 @@
 //! SDK-only operations remain explicit wire contracts even without operation YAML.
-use fds::bucket::{
-    AccessLog, GetLifecycleConfigRequest, LifecycleAction, LifecycleConfig, LifecycleRule,
-    MigrateBucketRequest,
-};
+use fds::bucket::{AccessLog, LifecycleAction, LifecycleConfig, LifecycleRule};
 use fds::Client;
 use mockito::Matcher;
 
@@ -23,10 +20,9 @@ async fn sdk_only_bucket_operations_preserve_dispatch_and_models() {
         .create_async()
         .await;
     let config = client
-        .get_lifecycle_config(&GetLifecycleConfigRequest {
-            bucket_name: "b".into(),
-            rule_id: "rule +".into(),
-        })
+        .get_lifecycle_config("b")
+        .rule_id("rule +")
+        .send()
         .await
         .unwrap();
     assert_eq!(
@@ -41,7 +37,8 @@ async fn sdk_only_bucket_operations_preserve_dispatch_and_models() {
         .create_async()
         .await;
     client
-        .set_lifecycle_config("b", &LifecycleConfig::default())
+        .set_lifecycle_config("b", LifecycleConfig::default())
+        .send()
         .await
         .unwrap();
     put.assert_async().await;
@@ -56,11 +53,12 @@ async fn sdk_only_bucket_operations_preserve_dispatch_and_models() {
     client
         .set_lifecycle_rule(
             "b",
-            &LifecycleRule {
+            LifecycleRule {
                 id: "r".into(),
                 ..Default::default()
             },
         )
+        .send()
         .await
         .unwrap();
     rule.assert_async().await;
@@ -71,11 +69,8 @@ async fn sdk_only_bucket_operations_preserve_dispatch_and_models() {
         .create_async()
         .await;
     client
-        .migrate_bucket(&MigrateBucketRequest {
-            bucket_name: "b".into(),
-            org_id: "org +".into(),
-            team_id: String::new(),
-        })
+        .migrate_bucket("b", "org +", "")
+        .send()
         .await
         .unwrap();
     migration.assert_async().await;
@@ -85,7 +80,7 @@ async fn sdk_only_bucket_operations_preserve_dispatch_and_models() {
         .with_body(r#"{"bucketName":"logs","enabled":true}"#)
         .create_async()
         .await;
-    let config: AccessLog = client.get_access_log("b").await.unwrap();
+    let config: AccessLog = client.get_access_log("b").send().await.unwrap();
     assert!(config.enabled);
     assert_eq!(config.bucket_name, "logs");
     log.assert_async().await;
@@ -95,7 +90,7 @@ async fn sdk_only_bucket_operations_preserve_dispatch_and_models() {
         .match_body(Matcher::Json(serde_json::to_value(&config).unwrap()))
         .create_async()
         .await;
-    client.set_access_log("b", &config).await.unwrap();
+    client.set_access_log("b", config).send().await.unwrap();
     set_log.assert_async().await;
 }
 

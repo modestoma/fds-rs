@@ -161,7 +161,7 @@ async fn writes_streams_and_success_decode_errors_are_never_replayed() {
         .expect(1)
         .create_async()
         .await;
-    assert!(c.list_buckets().await.is_err());
+    assert!(c.list_buckets().send().await.is_err());
     decode.assert_async().await;
     let disabled = s
         .mock("HEAD", "/b/off")

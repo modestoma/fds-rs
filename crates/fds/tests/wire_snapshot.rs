@@ -1,4 +1,4 @@
-//! Byte-level wire snapshot of the single-object operations.
+//! Byte-level wire snapshot of the single-object, bucket and OAuth operations.
 //!
 //! Every request is captured from a raw TCP socket exactly as the SDK sends
 //! it: request line, header lines in send order and the raw body. Only the
@@ -8,11 +8,18 @@
 //! itself is pinned by the Go golden vectors). Presigned URLs carry no clock
 //! and are compared in full, signature included.
 //!
-//! The expected text is `tests/fixtures/wire_object_ops.txt`. Set
-//! `FDS_UPDATE_WIRE_SNAPSHOT=1` to rewrite it after an intended wire change.
+//! The expected texts are `tests/fixtures/wire_object_ops.txt` and
+//! `tests/fixtures/wire_bucket_ops.txt`. Set `FDS_UPDATE_WIRE_SNAPSHOT=1` to
+//! rewrite them after an intended wire change. The OAuth exchange and the
+//! storage-token requests carry the fixed `authorization: OAuth` header and a
+//! fixed test token, so they are kept verbatim.
 
-use fds::acl::{AccessControlList, AclAction, Grant, GrantKey, GrantPermission, GrantType};
-use fds::object::{ObjectMetadata, UploadBody};
+use fds::acl::{
+    AccessControlList, AclAction, BucketCannedAcl, Grant, GrantKey, GrantPermission, GrantType,
+};
+use fds::bucket::{AccessLog, LifecycleAction, LifecycleBaseItem, LifecycleConfig, LifecycleRule};
+use fds::oauth::{FdsServiceClient, OAuthProvider};
+use fds::object::{ObjectMetadata, StorageClass, UploadBody};
 use fds::Client;
 use http::Method;
 use std::future::Future;
@@ -24,22 +31,22 @@ const SNAPSHOT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/wire_object_ops.txt"
 );
+const BUCKET_SNAPSHOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/wire_bucket_ops.txt"
+);
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Serve exactly one request, answer it with `status` / `body`, and return
-/// the normalized request text.
-async fn capture<F, Fut>(
-    configure: impl FnOnce(fds::ClientBuilder) -> fds::ClientBuilder,
-    status: u16,
-    body: &'static str,
-    op: F,
-) -> String
+/// Serve exactly one request on a fresh loopback origin, answer it with
+/// `status` / `body`, and return the normalized request text together with
+/// what `op` returned. `op` receives the origin URL.
+async fn capture_at<F, Fut, T>(status: u16, body: &'static str, op: F) -> (String, T)
 where
-    F: FnOnce(Client) -> Fut,
-    Fut: Future<Output = ()>,
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = T>,
 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -80,16 +87,30 @@ where
         socket.shutdown().await.ok();
         (head, buf[head_end..].to_vec())
     });
-    let client = configure(
-        Client::builder()
-            .endpoint(format!("http://{addr}"))
-            .credentials("AKID", "sk"),
-    )
-    .build()
-    .unwrap();
-    op(client).await;
+    let output = op(format!("http://{addr}")).await;
     let (head, body) = server.await.unwrap();
-    normalize(&head, &body)
+    (normalize(&head, &body), output)
+}
+
+/// [`capture_at`] with an access-key client built from `configure`.
+async fn capture<F, Fut>(
+    configure: impl FnOnce(fds::ClientBuilder) -> fds::ClientBuilder,
+    status: u16,
+    body: &'static str,
+    op: F,
+) -> String
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    capture_at(status, body, |origin| async move {
+        let client = configure(Client::builder().endpoint(origin).credentials("AKID", "sk"))
+            .build()
+            .unwrap();
+        op(client).await
+    })
+    .await
+    .0
 }
 
 fn normalize(head: &str, body: &[u8]) -> String {
@@ -101,6 +122,7 @@ fn normalize(head: &str, body: &[u8]) -> String {
                 assert!(value.ends_with(" GMT"), "{line}");
                 "date: <date>".to_string()
             }
+            Some(("authorization", "OAuth")) => line.to_string(),
             Some(("authorization", value)) => {
                 let signature = value
                     .strip_prefix("Galaxy-V2 AKID:")
@@ -412,6 +434,287 @@ async fn requests() -> Vec<(&'static str, String)> {
     cases
 }
 
+const BUCKET_INFO: &str = r#"{"name":"b","creationTime":1,"numObjects":2,"usedSpace":3}"#;
+const BUCKETS: &str = r#"{"owner":{"id":"o","displayName":""},"buckets":[]}"#;
+const LIFECYCLE: &str = r#"{"rules":[]}"#;
+const ACCESS_LOG: &str =
+    r#"{"bucketName":"b","enabled":true,"logBucketName":"logs","logPrefix":"p/"}"#;
+/// Far in the future, so the exchanged test token never expires.
+const TOKEN: &str = r#"{"token":"storage-token +&%","expireTime":4102444800000}"#;
+const ODD_BUCKET: &str = "b-1";
+
+fn lifecycle_rule(id: &str, prefix: &str, actions: &[(LifecycleAction, f64)]) -> LifecycleRule {
+    LifecycleRule {
+        id: id.into(),
+        prefix: prefix.into(),
+        enabled: true,
+        action: actions
+            .iter()
+            .map(|(action, days)| (action.clone(), LifecycleBaseItem { days: *days }))
+            .collect(),
+    }
+}
+
+async fn bucket_requests() -> Vec<(&'static str, String)> {
+    let mut cases = Vec::new();
+
+    cases.push((
+        "create_bucket",
+        capture(plain, 200, "", |c| async move {
+            c.create_bucket(ODD_BUCKET).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "create_bucket all options",
+        capture(plain, 200, "", |c| async move {
+            c.create_bucket("b")
+                .acl([
+                    BucketCannedAcl::PublicRead,
+                    BucketCannedAcl::AuthenticatedWrite,
+                ])
+                .storage_class(StorageClass::new(StorageClass::STANDARD_IA))
+                .org_id("org +&1")
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "create_bucket empty org and acl",
+        capture(plain, 200, "", |c| async move {
+            c.create_bucket("b")
+                .acl([])
+                .org_id("")
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "bucket_exists",
+        capture(plain, 200, "", |c| async move {
+            assert!(c.bucket_exists(ODD_BUCKET).send().await.unwrap());
+        })
+        .await,
+    ));
+    cases.push((
+        "bucket_exists missing",
+        capture(plain, 404, "", |c| async move {
+            assert!(!c.bucket_exists("b").send().await.unwrap());
+        })
+        .await,
+    ));
+    cases.push((
+        "delete_bucket",
+        capture(plain, 200, "", |c| async move {
+            c.delete_bucket(ODD_BUCKET).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "get_bucket_info",
+        capture(plain, 200, BUCKET_INFO, |c| async move {
+            c.get_bucket_info(ODD_BUCKET).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "list_buckets",
+        capture(plain, 200, BUCKETS, |c| async move {
+            c.list_buckets().send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "list_authorized_buckets",
+        capture(plain, 200, BUCKETS, |c| async move {
+            c.list_authorized_buckets().send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "migrate_bucket",
+        capture(plain, 200, "", |c| async move {
+            c.migrate_bucket(ODD_BUCKET, "org +&1", "team 2")
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "get_bucket_acl",
+        capture(plain, 200, ACL_BODY, |c| async move {
+            c.get_bucket_acl(ODD_BUCKET).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "set_bucket_acl add",
+        capture(plain, 200, "", |c| async move {
+            let acl = grant("user1", GrantPermission::Read, GrantType::User);
+            c.set_bucket_acl(ODD_BUCKET, acl).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "set_bucket_acl delete",
+        capture(plain, 200, "", |c| async move {
+            let acl = grant("ALL_USERS", GrantPermission::Write, GrantType::Group);
+            c.set_bucket_acl("b", acl)
+                .action(AclAction::Delete)
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "get_lifecycle_config",
+        capture(plain, 200, LIFECYCLE, |c| async move {
+            c.get_lifecycle_config(ODD_BUCKET).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "get_lifecycle_config rule",
+        capture(plain, 200, LIFECYCLE, |c| async move {
+            c.get_lifecycle_config("b")
+                .rule_id("rule +&1")
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "set_lifecycle_config",
+        capture(plain, 200, "", |c| async move {
+            let config = LifecycleConfig {
+                rules: vec![
+                    lifecycle_rule(
+                        "r1",
+                        "logs/",
+                        &[
+                            (LifecycleAction::Expiration, 30.0),
+                            (LifecycleAction::AbortIncompleteMultipartUpload, 7.0),
+                            (LifecycleAction::NonCurrentVersionExpiration, 1.5),
+                        ],
+                    ),
+                    lifecycle_rule(
+                        "r2",
+                        "",
+                        &[(LifecycleAction::from("abortIncompleteMultipartUpload"), 2.0)],
+                    ),
+                ],
+            };
+            c.set_lifecycle_config(ODD_BUCKET, config)
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "set_lifecycle_rule",
+        capture(plain, 200, "", |c| async move {
+            let rule = lifecycle_rule(
+                "r 3",
+                "tmp/",
+                &[
+                    (LifecycleAction::AbortIncompleteMultipartUpload, 1.0),
+                    (LifecycleAction::from("transition"), 0.0),
+                ],
+            );
+            c.set_lifecycle_rule(ODD_BUCKET, rule).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "get_access_log",
+        capture(plain, 200, ACCESS_LOG, |c| async move {
+            c.get_access_log(ODD_BUCKET).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "set_access_log",
+        capture(plain, 200, "", |c| async move {
+            let config = AccessLog {
+                bucket_name: ODD_BUCKET.into(),
+                enabled: true,
+                log_bucket_name: "logs".into(),
+                log_prefix: "access/ +&".into(),
+            };
+            c.set_access_log(ODD_BUCKET, config).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "get_endpoint",
+        capture_at(200, r#""cnbj1.fds.api.xiaomi.com""#, |origin| async move {
+            let service = FdsServiceClient::new(origin).unwrap();
+            let host = service.get_endpoint("sg +&1", "fds").send().await.unwrap();
+            assert_eq!(host, "cnbj1.fds.api.xiaomi.com");
+        })
+        .await
+        .0,
+    ));
+    cases.push((
+        "exchange_storage_token qq",
+        capture_at(200, TOKEN, |origin| async move {
+            FdsServiceClient::new(origin)
+                .unwrap()
+                .exchange_storage_token(
+                    "app +&1",
+                    "oauth-app",
+                    "oauth-token +&%",
+                    OAuthProvider::QQ,
+                )
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .unwrap();
+        })
+        .await
+        .0,
+    ));
+    let (exchange, token) = capture_at(200, TOKEN, |origin| async move {
+        FdsServiceClient::from_builder(Client::builder().endpoint(origin))
+            .unwrap()
+            .exchange_storage_token(
+                "app +&1",
+                "oauth-app",
+                "oauth-token +&%",
+                OAuthProvider::XiaoMi,
+            )
+            .xiaomi_mac("open+id", "mac+key", "HmacSHA1")
+            .send()
+            .await
+            .unwrap()
+    })
+    .await;
+    cases.push(("exchange_storage_token xiaomi mac", exchange));
+    cases.push((
+        "list_app_buckets",
+        capture_at(200, BUCKETS, |origin| async move {
+            let client = Client::builder()
+                .endpoint(origin)
+                .storage_token(token)
+                .build()
+                .unwrap();
+            client.list_app_buckets().send().await.unwrap();
+        })
+        .await
+        .0,
+    ));
+    cases
+}
+
 fn urls() -> Vec<(&'static str, String)> {
     let client = Client::builder()
         .endpoint("https://cnbj1.fds.api.xiaomi.com")
@@ -461,6 +764,19 @@ fn urls() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Compare `actual` with the fixture at `path`, rewriting it first when
+/// `FDS_UPDATE_WIRE_SNAPSHOT` is set.
+fn assert_snapshot(path: &str, actual: &str) {
+    // A single final newline keeps `git diff --check` quiet.
+    let actual = format!("{}\n", actual.trim_end());
+    if std::env::var_os("FDS_UPDATE_WIRE_SNAPSHOT").is_some() {
+        std::fs::write(path, &actual).unwrap();
+    }
+    let expected = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {path}: {e}; set FDS_UPDATE_WIRE_SNAPSHOT=1"));
+    assert_eq!(actual, expected, "wire bytes changed");
+}
+
 #[tokio::test]
 async fn single_object_operations_match_the_wire_snapshot() {
     let mut actual = String::new();
@@ -470,12 +786,14 @@ async fn single_object_operations_match_the_wire_snapshot() {
     for (name, url) in urls() {
         actual.push_str(&format!("=== {name} ===\n{url}\n\n"));
     }
-    // A single final newline keeps `git diff --check` quiet.
-    let actual = format!("{}\n", actual.trim_end());
-    if std::env::var_os("FDS_UPDATE_WIRE_SNAPSHOT").is_some() {
-        std::fs::write(SNAPSHOT, &actual).unwrap();
+    assert_snapshot(SNAPSHOT, &actual);
+}
+
+#[tokio::test]
+async fn bucket_and_oauth_operations_match_the_wire_snapshot() {
+    let mut actual = String::new();
+    for (name, request) in bucket_requests().await {
+        actual.push_str(&format!("=== {name} ===\n{request}\n"));
     }
-    let expected = std::fs::read_to_string(SNAPSHOT)
-        .unwrap_or_else(|e| panic!("read {SNAPSHOT}: {e}; set FDS_UPDATE_WIRE_SNAPSHOT=1"));
-    assert_eq!(actual, expected, "wire bytes changed");
+    assert_snapshot(BUCKET_SNAPSHOT, &actual);
 }

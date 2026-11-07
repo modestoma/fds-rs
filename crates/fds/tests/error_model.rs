@@ -259,12 +259,13 @@ async fn debug_is_diagnostic_and_omits_credentials() {
         .await;
     let token = fds::oauth::FdsServiceClient::new(service.url())
         .unwrap()
-        .exchange_storage_token(&fds::oauth::StorageTokenRequest::new(
+        .exchange_storage_token(
             "private-app",
             "private-oauth-app",
             "private-oauth-token",
             fds::oauth::OAuthProvider::QQ,
-        ))
+        )
+        .send()
         .await
         .unwrap();
     let oauth = Client::builder()

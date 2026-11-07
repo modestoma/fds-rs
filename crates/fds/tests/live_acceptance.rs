@@ -63,7 +63,7 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
             ));
         }
         // Distinguish bare Bucket GET from explicit empty/nonempty prefix requests.
-        let _ = client.get_bucket_info(&bucket).await?;
+        let _ = client.get_bucket_info(&bucket).send().await?;
         let _ = ListObjectsRequest::new(&bucket)
             .max_keys(1)
             .send(&client)
@@ -99,14 +99,12 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 #[ignore = "requires FDS_LIVE=1, provisioned OAuth app/provider and readable fixture"]
 async fn live_oauth_discovery_and_read() -> Result<(), Box<dyn std::error::Error>> {
-    use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+    use fds::oauth::{FdsServiceClient, OAuthProvider};
     assert_eq!(std::env::var("FDS_LIVE").as_deref(), Ok("1"));
     let service = FdsServiceClient::new(std::env::var("FDS_DISCOVERY_ORIGIN")?)?;
     let discovered = service
-        .get_endpoint(
-            &std::env::var("FDS_REGION")?,
-            &std::env::var("FDS_SERVICE")?,
-        )
+        .get_endpoint(std::env::var("FDS_REGION")?, std::env::var("FDS_SERVICE")?)
+        .send()
         .await?;
     assert_eq!(
         discovered,
@@ -120,20 +118,20 @@ async fn live_oauth_discovery_and_read() -> Result<(), Box<dyn std::error::Error
         "RenRen" => OAuthProvider::RenRen,
         _ => return Err("unsupported FDS_OAUTH_PROVIDER".into()),
     };
-    let mut input = StorageTokenRequest::new(
+    let mut exchange = service.exchange_storage_token(
         std::env::var("FDS_APP_ID")?,
         std::env::var("FDS_OAUTH_APP_ID")?,
         std::env::var("FDS_OAUTH_ACCESS_TOKEN")?,
         provider,
     );
     if matches!(provider, OAuthProvider::XiaoMi) {
-        input = input.xiaomi_mac(
+        exchange = exchange.xiaomi_mac(
             std::env::var("FDS_OAUTH_OPEN_ID")?,
             std::env::var("FDS_OAUTH_MAC_KEY")?,
             std::env::var("FDS_OAUTH_MAC_ALGORITHM")?,
         );
     }
-    let token = service.exchange_storage_token(&input).await?;
+    let token = exchange.send().await?;
     assert!(!token.is_expired(), "exchanged token already expired");
     let endpoint = std::env::var("FDS_ENDPOINT")?;
     assert!(endpoint.starts_with("https://"));
@@ -141,7 +139,7 @@ async fn live_oauth_discovery_and_read() -> Result<(), Box<dyn std::error::Error
         .endpoint(endpoint)
         .storage_token(token)
         .build()?;
-    let _ = client.list_app_buckets().await?;
+    let _ = client.list_app_buckets().send().await?;
     let actual = client
         .get_object(
             std::env::var("FDS_LIVE_BUCKET")?,

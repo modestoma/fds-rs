@@ -112,8 +112,9 @@ impl Connection {
             if let Some(origin) = &self.auth_endpoint {
                 auth = auth.endpoint(origin);
             }
-            let token = FdsServiceClient::from_builder(auth)?
-                .exchange_storage_token(&request)
+            let token = request
+                .exchange(&FdsServiceClient::from_builder(auth)?)
+                .send()
                 .await?;
             return Ok(builder.storage_token(token).build()?);
         }

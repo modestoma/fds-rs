@@ -239,7 +239,7 @@ async fn connect_timeout_enforces_tls_handshake_deadline() {
         .read_timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    let e = tokio::time::timeout(Duration::from_secs(3), c.does_bucket_exist("b"))
+    let e = tokio::time::timeout(Duration::from_secs(3), c.bucket_exists("b").send())
         .await
         .unwrap()
         .unwrap_err();
@@ -613,11 +613,11 @@ async fn cloned_clients_reuse_pool_and_expired_idle_connections_are_replaced() {
         .pool_idle_timeout(Duration::from_millis(300))
         .build()
         .unwrap();
-    assert!(client.does_bucket_exist("b").await.unwrap());
-    assert!(client.clone().does_bucket_exist("b").await.unwrap());
+    assert!(client.bucket_exists("b").send().await.unwrap());
+    assert!(client.clone().bucket_exists("b").send().await.unwrap());
     assert_eq!(count.load(Ordering::SeqCst), 1);
     tokio::time::sleep(Duration::from_millis(650)).await;
-    assert!(client.clone().does_bucket_exist("b").await.unwrap());
+    assert!(client.clone().bucket_exists("b").send().await.unwrap());
     assert_eq!(count.load(Ordering::SeqCst), 2);
     server.abort();
 }

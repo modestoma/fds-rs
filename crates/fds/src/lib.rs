@@ -40,7 +40,8 @@
 //!   - [`acl`]: ACL models shared by buckets and objects;
 //!   - [`multipart`]: the low-level multipart requests and the managed
 //!     [`multipart::MultipartUpload`];
-//!   - [`oauth`]: endpoint discovery and storage-token exchange;
+//!   - [`oauth`]: endpoint discovery, storage-token exchange and the
+//!     app-scoped bucket listing;
 //!   - `manager` (default `manager` feature): the resumable `Downloader`.
 //! - A type defined in a domain module is never re-exported from the root or
 //!   from another module, and implementation modules are private. New
@@ -56,22 +57,25 @@
 //!
 //! Every operation is written as
 //! `client.<operation>(required arguments).<option>(..).send().await`.
-//! Single-object operations follow this convention today; bucket, listing,
-//! bulk-delete and multipart operations still use request structs until they
-//! are migrated to it.
+//! Single-object, bucket and OAuth operations follow this convention today;
+//! listing, bulk-delete and multipart operations still use request structs
+//! until they are migrated to it.
 //!
 //! - The [`Client`] method takes only the required arguments (bucket, object,
 //!   body, ACL, ...) and returns a builder type named after the operation,
 //!   defined in the operation's domain module (for example
 //!   [`object::GetObject`] for [`Client::get_object`]). Bucket and object
-//!   names are taken as `impl Into<String>`.
+//!   names are taken as `impl Into<String>`. Discovery and token exchange
+//!   start from [`oauth::FdsServiceClient`] the same way.
 //! - The builder owns a clone of the [`Client`] (cheap: clones share one
 //!   connection pool) and its arguments. Its fields are private and it does
 //!   not implement `Default`, so it can only be created from the [`Client`]
 //!   method, with every required argument present.
 //! - Optional settings are chained methods that take and return the builder
 //!   by value. A flag is a method without arguments (for example
-//!   [`object::PresignObject::cdn`]), never a `bool` parameter.
+//!   [`object::PresignObject::cdn`]), never a `bool` parameter. An unset
+//!   option is simply not called; no argument uses an empty string to mean
+//!   "not set" (for example [`bucket::CreateBucket::org_id`]).
 //! - `send(self)` consumes the builder and returns a future. All local
 //!   validation (bucket and object names, header values, the timeout) happens
 //!   there, before anything is sent, and fails with
@@ -86,6 +90,9 @@
 //!
 //! POST object creation, archive restoration and multipart copy remain deferred.
 //! See the repository's `docs/migration.md` for compatibility and validation.
+
+#[macro_use]
+mod macros;
 
 mod auth;
 mod client;

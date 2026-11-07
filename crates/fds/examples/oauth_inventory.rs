@@ -3,7 +3,7 @@
 //! FDS_OAUTH_APP_ID / FDS_PROVIDER_TOKEN。
 //! 运行：cargo run --example oauth_inventory -- BUCKET PREFIX
 //! 只读取存储数据，但 token 交换可能创建或续期凭据。
-use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::oauth::{FdsServiceClient, OAuthProvider};
 use fds::object::ListObjectsRequest;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
@@ -16,19 +16,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("usage: oauth_inventory BUCKET PREFIX".into());
     }
     let service = FdsServiceClient::new(std::env::var("FDS_OAUTH_ORIGIN")?)?;
-    let request = StorageTokenRequest::new(
-        std::env::var("FDS_APP_ID")?,
-        std::env::var("FDS_OAUTH_APP_ID")?,
-        std::env::var("FDS_PROVIDER_TOKEN")?,
-        OAuthProvider::QQ,
-    );
-    let token = service.exchange_storage_token(&request).await?;
+    let token = service
+        .exchange_storage_token(
+            std::env::var("FDS_APP_ID")?,
+            std::env::var("FDS_OAUTH_APP_ID")?,
+            std::env::var("FDS_PROVIDER_TOKEN")?,
+            OAuthProvider::QQ,
+        )
+        .send()
+        .await?;
     let expires_at = token.expires_at();
     let client = Client::builder()
         .endpoint(std::env::var("FDS_ENDPOINT")?)
         .storage_token(token)
         .build()?;
-    let app_buckets = client.list_app_buckets().await?;
+    let app_buckets = client.list_app_buckets().send().await?;
     if !app_buckets.buckets.iter().any(|b| b.name == args[1]) {
         return Err("requested bucket is absent from the application bucket listing".into());
     }

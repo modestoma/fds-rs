@@ -784,16 +784,16 @@ mod response_security_tests {
             .match_query(mockito::Matcher::Any)
             .with_body(serde_json::json!({"token":"private-storage-token", "expireTime":(chrono::Utc::now()+chrono::Duration::days(1)).timestamp_millis()}).to_string())
             .create_async().await;
-        let input = crate::oauth::StorageTokenRequest::new(
-            "private-app",
-            "private-oauth-app",
-            "private-oauth-token",
-            crate::oauth::OAuthProvider::XiaoMi,
-        )
-        .xiaomi_mac("private-openid", "private-mac-key", "HmacSHA1");
         let token = crate::oauth::FdsServiceClient::new(server.url())
             .unwrap()
-            .exchange_storage_token(&input)
+            .exchange_storage_token(
+                "private-app",
+                "private-oauth-app",
+                "private-oauth-token",
+                crate::oauth::OAuthProvider::XiaoMi,
+            )
+            .xiaomi_mac("private-openid", "private-mac-key", "HmacSHA1")
+            .send()
             .await
             .unwrap();
         let oauth = Client::builder()

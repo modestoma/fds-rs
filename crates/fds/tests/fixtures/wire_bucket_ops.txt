@@ -1,0 +1,237 @@
+=== create_bucket ===
+PUT /b-1 HTTP/1.1
+content-length: 0
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== create_bucket all options ===
+PUT /b?orgId=org+%2B%261&storageClass=STANDARD_IA HTTP/1.1
+x-xiaomi-meta-acl: PUBLIC_READ,AUTHENTICATED_WRITE
+content-length: 0
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== create_bucket empty org and acl ===
+PUT /b HTTP/1.1
+content-length: 0
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== bucket_exists ===
+HEAD /b-1 HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== bucket_exists missing ===
+HEAD /b HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== delete_bucket ===
+DELETE /b-1 HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_bucket_info ===
+GET /b-1 HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== list_buckets ===
+GET / HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== list_authorized_buckets ===
+GET /?authorizedBuckets= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== migrate_bucket ===
+PUT /b-1?migrate=&orgId=org+%2B%261&teamId=team+2 HTTP/1.1
+content-length: 0
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_bucket_acl ===
+GET /b-1?acl= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== set_bucket_acl add ===
+PUT /b-1?acl= HTTP/1.1
+content-length: 136
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"accessControlList":[{"grantee":{"id":"user1","displayName":""},"permission":"READ","type":"USER"}],"owner":{"id":"","displayName":""}}
+
+=== set_bucket_acl delete ===
+PUT /b?acl=&action=delete HTTP/1.1
+content-length: 142
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"accessControlList":[{"grantee":{"id":"ALL_USERS","displayName":""},"permission":"WRITE","type":"GROUP"}],"owner":{"id":"","displayName":""}}
+
+=== get_lifecycle_config ===
+GET /b-1?lifecycle= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== get_lifecycle_config rule ===
+GET /b?lifecycle=rule+%2B%261 HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== set_lifecycle_config ===
+PUT /b-1?lifecycle= HTTP/1.1
+content-length: 281
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"rules":[{"id":"r1","prefix":"logs/","enabled":true,"actions":{"abortIncompleteMultipartUpload ":{"days":7.0},"expiration":{"days":30.0},"nonCurrentVersionExpiration":{"days":1.5}}},{"id":"r2","prefix":"","enabled":true,"actions":{"abortIncompleteMultipartUpload":{"days":2.0}}}]}
+
+=== set_lifecycle_rule ===
+PUT /b-1?lifecycle=rule HTTP/1.1
+content-length: 128
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"id":"r 3","prefix":"tmp/","enabled":true,"actions":{"abortIncompleteMultipartUpload ":{"days":1.0},"transition":{"days":0.0}}}
+
+=== get_access_log ===
+GET /b-1?accessLog= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== set_access_log ===
+PUT /b-1?accessLog= HTTP/1.1
+content-length: 83
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"bucketName":"b-1","enabled":true,"logBucketName":"logs","logPrefix":"access/ +&"}
+
+=== get_endpoint ===
+GET /?endpoint=&region=sg+%2B%261&service=fds HTTP/1.1
+date: <date>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== exchange_storage_token qq ===
+GET /?appId=app+%2B%261&oauthAccessToken=oauth-token+%2B%26%25&oauthAppId=oauth-app&oauthProvider=QQ&storageAccessToken= HTTP/1.1
+authorization: OAuth
+date: <date>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== exchange_storage_token xiaomi mac ===
+GET /?appId=app+%2B%261&oauthAccessToken=oauth-token+%2B%26%25&oauthAppId=oauth-app&oauthMacAlgorithm=HmacSHA1&oauthMacKey=mac%2Bkey&oauthOpenId=open%2Bid&oauthProvider=XiaoMi&storageAccessToken= HTTP/1.1
+authorization: OAuth
+date: <date>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== list_app_buckets ===
+GET /?appId=app+%2B%261&storageAccessToken=storage-token+%2B%26%25 HTTP/1.1
+date: <date>
+authorization: OAuth
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---

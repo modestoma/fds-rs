@@ -1,6 +1,5 @@
 use chrono::{TimeZone, Utc};
 use fds::acl::{AccessControlList, AclAction, BucketCannedAcl};
-use fds::bucket::CreateBucketRequest;
 use fds::multipart::CompleteMultipartUploadRequest;
 use fds::object::ListObjectsRequest;
 use fds::Client;
@@ -229,7 +228,9 @@ async fn typed_acl_add_delete_and_bucket_creation_headers() {
             .match_body(Matcher::Json(body.clone()))
             .create_async()
             .await;
-        c.set_bucket_acl(&fds::bucket::SetBucketAclRequest::new("b", acl.clone()).action(action))
+        c.set_bucket_acl("b", acl.clone())
+            .action(action)
+            .send()
             .await
             .unwrap();
         bucket.assert_async().await;
@@ -253,24 +254,21 @@ async fn typed_acl_add_delete_and_bucket_creation_headers() {
         .match_body("")
         .create_async()
         .await;
-    c.create_bucket(&CreateBucketRequest::new("b").acl([
-        BucketCannedAcl::PublicRead,
-        BucketCannedAcl::AuthenticatedWrite,
-    ]))
-    .await
-    .unwrap();
+    c.create_bucket("b")
+        .acl([
+            BucketCannedAcl::PublicRead,
+            BucketCannedAcl::AuthenticatedWrite,
+        ])
+        .send()
+        .await
+        .unwrap();
     create.assert_async().await;
     let omitted = s
         .mock("PUT", "/b")
         .match_header("x-xiaomi-meta-acl", Matcher::Missing)
         .create_async()
         .await;
-    c.create_bucket(&CreateBucketRequest {
-        bucket_name: "b".into(),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    c.create_bucket("b").send().await.unwrap();
     omitted.assert_async().await;
 }
 

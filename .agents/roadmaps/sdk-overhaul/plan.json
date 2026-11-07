@@ -108,7 +108,7 @@
       "title": "Bucket 与 OAuth 操作迁移到流式 builder",
       "type": "feat",
       "document": "tasks/fluent-bucket.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 4,
       "depends_on": [
         "fluent-object"

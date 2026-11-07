@@ -1,10 +1,10 @@
 use chrono::{Duration, Utc};
-use fds::oauth::{FdsServiceClient, OAuthProvider, StorageTokenRequest};
+use fds::oauth::{ExchangeStorageToken, FdsServiceClient, OAuthProvider};
 use fds::Client;
 use mockito::{Matcher, Server};
 
-fn request(provider: OAuthProvider) -> StorageTokenRequest {
-    StorageTokenRequest::new("app +&中", "oauth-app", "oauth-secret +&%中", provider)
+fn request(service: &FdsServiceClient, provider: OAuthProvider) -> ExchangeStorageToken {
+    service.exchange_storage_token("app +&中", "oauth-app", "oauth-secret +&%中", provider)
 }
 fn response() -> String {
     serde_json::json!({"token":"storage-secret +&%中", "expireTime":(Utc::now()+Duration::days(7)).timestamp_millis()}).to_string()
@@ -16,11 +16,8 @@ async fn token(server: &mut Server) -> fds::oauth::StorageAccessToken {
         .with_body(response())
         .create_async()
         .await;
-    let token = FdsServiceClient::new(server.url())
-        .unwrap()
-        .exchange_storage_token(&request(OAuthProvider::QQ))
-        .await
-        .unwrap();
+    let service = FdsServiceClient::new(server.url()).unwrap();
+    let token = request(&service, OAuthProvider::QQ).send().await.unwrap();
     mock.assert_async().await;
     token
 }
@@ -50,11 +47,14 @@ async fn discovery_uses_documented_string_and_never_follows_or_authenticates() {
             .with_body(body)
             .create_async()
             .await;
-        assert_eq!(service.get_endpoint("sg +&中", "aws").await.is_ok(), valid);
+        assert_eq!(
+            service.get_endpoint("sg +&中", "aws").send().await.is_ok(),
+            valid
+        );
         mock.assert_async().await;
     }
-    assert!(service.get_endpoint("", "aws").await.is_err());
-    assert!(service.get_endpoint("sg", " ").await.is_err());
+    assert!(service.get_endpoint("", "aws").send().await.is_err());
+    assert!(service.get_endpoint("sg", " ").send().await.is_err());
 }
 #[tokio::test]
 async fn exchange_encodes_every_provider_field_and_utc_milliseconds() {
@@ -71,7 +71,8 @@ async fn exchange_encodes_every_provider_field_and_utc_milliseconds() {
             ("oauthAppId", "oauth-app"),
             ("oauthAccessToken", "oauth-secret +&%中"),
         ];
-        let mut input = request(provider);
+        let service = FdsServiceClient::new(server.url()).unwrap();
+        let mut input = request(&service, provider);
         let wire = format!("{provider:?}");
         pairs.push(("oauthProvider", &wire));
         if provider == OAuthProvider::XiaoMi {
@@ -102,14 +103,11 @@ async fn exchange_encodes_every_provider_field_and_utc_milliseconds() {
             .with_body(response())
             .create_async()
             .await;
-        let token = FdsServiceClient::new(server.url())
-            .unwrap()
-            .exchange_storage_token(&input)
-            .await
-            .unwrap();
+        let input_debug = format!("{input:?}");
+        let token = input.send().await.unwrap();
         assert!((token.expires_at() - Utc::now()).num_days() >= 6);
         assert!(!token.is_expired());
-        for debug in [format!("{input:?}"), format!("{token:?}")] {
+        for debug in [input_debug, format!("{token:?}")] {
             assert!(!debug.contains("secret"));
         }
         mock.assert_async().await;
@@ -119,27 +117,29 @@ async fn exchange_encodes_every_provider_field_and_utc_milliseconds() {
 async fn provider_validation_and_https_fail_before_network() {
     let service = FdsServiceClient::new("https://invalid.example").unwrap();
     for input in [
-        request(OAuthProvider::XiaoMi),
-        request(OAuthProvider::XiaoMi).xiaomi_mac("", "key", "alg"),
-        request(OAuthProvider::XiaoMi).xiaomi_mac("id", "", "alg"),
-        request(OAuthProvider::XiaoMi).xiaomi_mac("id", "key", ""),
-        request(OAuthProvider::QQ).xiaomi_mac("id", "key", "alg"),
-        StorageTokenRequest::new("", "id", "secret", OAuthProvider::QQ),
-        StorageTokenRequest::new("id", "", "secret", OAuthProvider::QQ),
-        StorageTokenRequest::new("id", "id", " ", OAuthProvider::QQ),
+        request(&service, OAuthProvider::XiaoMi),
+        request(&service, OAuthProvider::XiaoMi).xiaomi_mac("", "key", "alg"),
+        request(&service, OAuthProvider::XiaoMi).xiaomi_mac("id", "", "alg"),
+        request(&service, OAuthProvider::XiaoMi).xiaomi_mac("id", "key", ""),
+        request(&service, OAuthProvider::QQ).xiaomi_mac("id", "key", "alg"),
+        service.exchange_storage_token("", "id", "secret", OAuthProvider::QQ),
+        service.exchange_storage_token("id", "", "secret", OAuthProvider::QQ),
+        service.exchange_storage_token("id", "id", " ", OAuthProvider::QQ),
     ] {
         assert!(matches!(
-            service.exchange_storage_token(&input).await,
+            input.send().await,
             Err(e) if e.kind() == fds::ErrorKind::InvalidInput
         ));
     }
     assert_eq!(
-        FdsServiceClient::new("http://invalid.example")
-            .unwrap()
-            .exchange_storage_token(&request(OAuthProvider::QQ))
-            .await
-            .unwrap_err()
-            .kind(),
+        request(
+            &FdsServiceClient::new("http://invalid.example").unwrap(),
+            OAuthProvider::QQ
+        )
+        .send()
+        .await
+        .unwrap_err()
+        .kind(),
         fds::ErrorKind::ConfigInvalid
     );
 }
@@ -160,7 +160,7 @@ async fn oauth_operations_use_bound_app_token_and_reject_presigning() {
         .is_err());
     for (path, body) in [("/", "{\"owner\":{\"id\":\"user\"},\"buckets\":[{\"name\":\"b\",\"orgId\":\"org\",\"creationTime\":123,\"usedSpace\":4,\"numObjects\":1}]}"), ("/b/dir%2Fa%20%2B%25%E4%B8%AD", "content")] {
         let mock = server.mock("GET", path).match_header("authorization", "OAuth").match_query(Matcher::AllOf(vec![Matcher::UrlEncoded("appId".into(),"app +&中".into()),Matcher::UrlEncoded("storageAccessToken".into(),"storage-secret +&%中".into())])).with_body(body).create_async().await;
-        if path == "/" { let output = client.list_app_buckets().await.unwrap(); assert_eq!(output.buckets[0].org_id,"org"); }
+        if path == "/" { let output = client.list_app_buckets().send().await.unwrap(); assert_eq!(output.buckets[0].org_id,"org"); }
         else { let output = client.get_object("b","dir/a +%中").send().await.unwrap(); assert!(!format!("{output:?}").contains("secret")); let raw = output.into_raw(); assert!(!format!("{raw:?}").contains("secret")); assert!(raw.url().query().is_none()); assert_eq!(raw.bytes().await.unwrap(),"content"); }
         mock.assert_async().await;
     }
@@ -206,8 +206,8 @@ async fn token_errors_never_retain_response_secrets_and_exchange_is_not_retried(
             ),
         )
         .unwrap();
-        let error = service
-            .exchange_storage_token(&request(OAuthProvider::QQ))
+        let error = request(&service, OAuthProvider::QQ)
+            .send()
             .await
             .unwrap_err();
         assert!(!format!("{error:?} {error}").contains("oauth-secret"));
@@ -228,10 +228,7 @@ async fn expired_clones_fail_locally_and_refresh_is_explicit() {
         .with_body(serde_json::json!({"token":"short-lived", "expireTime":(Utc::now()+Duration::seconds(1)).timestamp_millis()}).to_string())
         .expect(1).create_async().await;
     let service = FdsServiceClient::new(server.url()).unwrap();
-    let token = service
-        .exchange_storage_token(&request(OAuthProvider::QQ))
-        .await
-        .unwrap();
+    let token = request(&service, OAuthProvider::QQ).send().await.unwrap();
     let expiry = token.expires_at();
     let client = Client::builder()
         .endpoint(server.url())
@@ -244,7 +241,7 @@ async fn expired_clones_fail_locally_and_refresh_is_explicit() {
     )
     .await;
     for client in [&client, &clone] {
-        let error = client.list_app_buckets().await.unwrap_err();
+        let error = client.list_app_buckets().send().await.unwrap_err();
         assert_eq!(
             error.kind(),
             fds::ErrorKind::CredentialsExpired,
@@ -258,7 +255,7 @@ async fn expired_clones_fail_locally_and_refresh_is_explicit() {
     mock.remove_async().await;
     let new_token = token_for_refresh(&mut server).await;
     assert!(!new_token.is_expired());
-    assert!(client.list_app_buckets().await.is_err());
+    assert!(client.list_app_buckets().send().await.is_err());
 }
 async fn token_for_refresh(server: &mut Server) -> fds::oauth::StorageAccessToken {
     token(server).await
@@ -281,7 +278,7 @@ async fn oauth_operation_errors_discard_echoed_tokens() {
         .with_body("{\"code\":\"storage-secret\",\"message\":\"storage-secret\"}")
         .create_async()
         .await;
-    let error = client.list_app_buckets().await.unwrap_err();
+    let error = client.list_app_buckets().send().await.unwrap_err();
     assert_eq!(error.status(), Some(http::StatusCode::FORBIDDEN));
     assert_eq!(error.kind(), fds::ErrorKind::PermissionDenied);
     assert_eq!(
