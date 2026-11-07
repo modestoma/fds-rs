@@ -168,7 +168,7 @@ flowchart LR
 | AC-4 | 阅读 rustdoc，并按示例调用每个操作 | 每个操作只有一种流式 builder 写法；类型名和方法名符合 Rust API Guidelines（`Acl`、`Url`、`object_exists` 等） | 自动：examples 和 doctest 能编译；用户：评审 rustdoc |
 | AC-5 | 查看 `fds` 的公开模块 | `constant`、`encoding`、`auth` 等内部模块不再公开；没有未使用的类型或错误变体；每个公开类型只有一条导出路径 | 自动：`cargo doc -D warnings`、clippy；用户：评审 rustdoc |
 | AC-6 | 使用各操作的返回值 | 时间字段是 `DateTime<Utc>`，大小字段是 `u64`，可能缺失的字段是 `Option`；`GetObjectOutput` 有类型化访问方法和 Stream / AsyncRead 适配；presign 返回 `Url`；不再有 `xxx_with_response` 这类重复 API | 自动：模型反序列化测试 |
-| AC-7 | 运行 `fds_cli` 的各个命令 | 命令行参数、输出格式和退出码与改造前一致（唯一例外见决定记录 revision 5：`multipart init` 收到不含 uploadId 的响应时报错退出） | 自动：`cargo test -p fds_cli --all-features` |
+| AC-7 | 运行 `fds_cli` 的各个命令 | 命令行参数、输出格式和退出码与改造前一致（例外见决定记录：revision 5 的 `multipart init` 无 uploadId 报错退出；revision 6 的服务端非法数值与非法 parts 文件提前报错） | 自动：`cargo test -p fds_cli --all-features` |
 | AC-8 | 运行 `scripts/check.sh` | 全部通过。因缺网络、缺工具链或缺真实 FDS 凭证而没跑的检查，必须如实标为未验证 | 自动 |
 | AC-9 | 使用会过期的 OAuth token，或给幂等写操作开启重试 | 凭证 provider 能在过期前刷新，Client 不需要重建；幂等写操作在显式开启后按策略重试，非幂等写操作永远不重试 | 自动：mock 测试 |
 | AC-10 | 阅读 README、docs，运行 examples | 内容与新 API 一致；两个 crate 的版本号都是 0.1.0 | 自动：check_docs.py；用户：评审 |
@@ -188,6 +188,8 @@ flowchart LR
 - 2026-11-07 · revision 1 · 用户原话"现在本地删除 GitLab ci 相关的配置，然后提交第一版，然后本轮 roadmap 在本地以 main 分支为基线进行开发" · 明确决定 · `.gitlab-ci.yml` 已移出仓库，基线为本地 main（不受保护），合并方式为 local，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户在确认默认假设时补充"版本号回退至 0.1.0；fds_cli 同步修改" · 明确决定 · 两个 crate 的版本号都定为 0.1.0（原为 0.2.0）；fds_cli 跟随每个任务同步修改 · 影响 docs-release 及全部 API 任务。
 - 2026-11-07 · revision 1 · 默认假设，用户已确认 · 凭证 provider 和幂等写重试排在最后阶段，用户评审时可以删掉 · 影响 credentials-provider、idempotent-retry。
+- 2026-11-07 · revision 6 · 用户在提问中选择"保留字段（推荐）" · 明确决定 · `PutObjectOutput` 保留 `access_key_id`、`signature`、`expires`（已改为时间类型）、`outside_access`，因为 fds_cli 的 `object put` / `multipart complete` / `multipart upload` 输出依赖它们；typed-responses 中"删除无用字段"一项对这四个字段不执行 · 影响 typed-responses。
+- 2026-11-07 · revision 6 · 用户在提问中选择"接受为例外（推荐）" · 明确决定 · AC-7 新增例外：服务端返回负数大小、负数或超出范围的时间戳时，CLI 报 ProtocolViolation 并以 1 退出（`multipart upload` 为 OutcomeUnknown / CompletionUnknown）；`multipart complete --parts` 文件中 partNumber 为 0、负数或大于 65535，或 partSize 为负数时，读文件阶段即报错退出 · 影响 typed-responses。
 - 2026-11-07 · revision 5 · 用户在提问中选择"SDK 加显式选项（推荐）" · 明确决定 · 新增任务 delete-prefix-options（依赖 fluent-listing-delete，typed-responses 改为依赖它）：SDK `delete_prefix` 增加显式 `.marker()`/`.delimiter()`，fds_cli 改为直接调用 SDK 并删除重复的分页循环，CLI 行为与请求不变 · 影响 delete-prefix-options、typed-responses。
 - 2026-11-07 · revision 5 · 用户在提问中选择"接受新行为（推荐）" · 明确决定 · AC-7 的例外：`fds_cli multipart init` 收到不含 uploadId 的响应时，由原来打印空 uploadId 并以 0 退出，改为报 OutcomeUnknown 并以 1 退出（避免脚本误以为初始化成功）。fluent-multipart-manager 中"非法 --part-size/--concurrency 时提前创建 recovery 文件"的差异不属于例外，已要求恢复原行为 · 影响 fluent-multipart-manager。
 - 2026-11-07 · revision 4 · 用户原话"并行"（回答"三个 fluent 任务为什么不并行"后的提议） · 明确决定 · fluent-bucket、fluent-listing-delete、fluent-multipart-manager 的 resources 收窄到各自源码文件，三者并行执行；共享的 tests、examples、fds_cli tests、README、wire 快照由协调者在按顺序合并时解决冲突，每合并一个，其余分支同步新基线并完整重跑 check.sh · 影响上述三个任务。

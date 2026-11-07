@@ -36,6 +36,8 @@
 
 **不做：** ObjectMetadata 的结构调整（object-metadata 负责）。
 
+- revision 6 调整（用户决定）：`PutObjectOutput` 的 `access_key_id`、`signature`、`expires`、`outside_access` 保留（CLI 输出依赖）；类型收紧导致的 CLI 非法值报错行为作为 AC-7 例外接受。
+
 ## 对应验收标准
 
 AC-6（全部），AC-7、AC-8（本任务范围内）。

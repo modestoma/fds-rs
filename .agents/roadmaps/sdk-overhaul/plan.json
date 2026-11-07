@@ -2,12 +2,12 @@
   "schema_version": 3,
   "id": "sdk-overhaul",
   "title": "FDS Rust SDK 设计重构（0.1.0）",
-  "revision": 5,
+  "revision": 6,
   "status": "running",
   "base_branch": "main",
   "merge_mode": "local",
-  "approved_revision": 5,
-  "approval_ref": "2026-11-07 用户在提问中选择：multipart init 无 uploadId \"接受新行为（推荐）\"；delete-prefix \"SDK 加显式选项（推荐）\"；授权范围同前",
+  "approved_revision": 6,
+  "approval_ref": "2026-11-07 用户在提问中选择：PutObjectOutput \"保留字段（推荐）\"；类型收紧 \"接受为例外（推荐）\"；授权范围同前",
   "max_parallel": 3,
   "pending_questions": [],
   "tasks": [
@@ -160,7 +160,7 @@
       "type": "feat",
       "document": "tasks/typed-responses.md",
       "status": "planned",
-      "reviewed_revision": 5,
+      "reviewed_revision": 6,
       "depends_on": [
         "fluent-bucket",
         "fluent-listing-delete",
@@ -177,7 +177,7 @@
       "type": "feat",
       "document": "tasks/object-metadata.md",
       "status": "planned",
-      "reviewed_revision": 5,
+      "reviewed_revision": 6,
       "depends_on": [
         "typed-responses"
       ],
@@ -191,7 +191,7 @@
       "type": "feat",
       "document": "tasks/credentials-provider.md",
       "status": "planned",
-      "reviewed_revision": 5,
+      "reviewed_revision": 6,
       "depends_on": [
         "object-metadata"
       ],
@@ -212,7 +212,7 @@
       "type": "feat",
       "document": "tasks/idempotent-retry.md",
       "status": "planned",
-      "reviewed_revision": 5,
+      "reviewed_revision": 6,
       "depends_on": [
         "object-metadata"
       ],
@@ -226,7 +226,7 @@
       "type": "docs",
       "document": "tasks/docs-release.md",
       "status": "planned",
-      "reviewed_revision": 5,
+      "reviewed_revision": 6,
       "depends_on": [
         "credentials-provider",
         "idempotent-retry"
@@ -353,6 +353,18 @@
         "typed-responses"
       ],
       "at": "2026-11-07T14:30:48Z"
+    },
+    {
+      "revision": 6,
+      "reason": "用户决定：PutObjectOutput 保留 CLI 依赖的四个字段；类型收紧导致的非法值报错作为 AC-7 例外",
+      "affects": [
+        "credentials-provider",
+        "docs-release",
+        "idempotent-retry",
+        "object-metadata",
+        "typed-responses"
+      ],
+      "at": "2026-11-07T15:21:35Z"
     }
   ]
 }
