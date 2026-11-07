@@ -27,6 +27,8 @@
 
 **不做：** ObjectSummary 等模型的字段类型化（typed-responses 负责）。
 
+- 并行说明（revision 4）：本任务与另外两个 fluent 迁移任务并行执行。共享的 tests、examples、fds_cli tests、README 和 wire 快照文件可能同时被改：只改与本任务操作相关的调用点和内容，往 wire 快照里追加条目时不要改动其他条目，便于协调者在合并时解决冲突。
+
 ## 对应验收标准
 
 AC-4（列举与删除部分），AC-6（删除的部分失败作为 Ok 输出），AC-7、AC-8（本任务范围内）。
