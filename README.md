@@ -42,7 +42,7 @@ FDS（File Data Storage）对象存储的异步 Rust SDK，基于 Tokio 和 reqw
 
 ```toml
 [dependencies]
-fds-rs = "0.1.0"
+fds-rs = "0.1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }
 bytes = "1"
 futures-util = "0.3"
@@ -59,8 +59,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 | `manager` | 是 | `Client::download_file`（`DownloadFile`）、断点与请求限流（`RequestLimiter`） |
 | `cslb` | 否 | 让 Client 通过内部 CSLB DNS resolver 解析主机；不增加公开模块或类型 |
 
-只用核心：`fds-rs = { version = "0.1.0", default-features = false }`。
-启用 CSLB：`fds-rs = { version = "0.1.0", features = ["cslb"] }`。
+只用核心：`fds-rs = { version = "0.1.1", default-features = false }`。
+启用 CSLB：`fds-rs = { version = "0.1.1", features = ["cslb"] }`。
 独立 CLI 操作见 [CLI 手册](docs/cli.md)。
 
 运行 `cargo check` 验证依赖解析和构建。
@@ -1167,7 +1167,7 @@ cargo run --locked -p fds-rs --example oauth_inventory -- BUCKET PREFIX
 从 crates.io 安装 CLI：
 
 ```sh
-cargo install fds_cli --version 0.1.0 --locked
+cargo install fds_cli --version 0.1.1 --locked
 fds_cli --help
 ```
 
