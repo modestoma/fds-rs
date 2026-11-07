@@ -2,22 +2,14 @@
   "schema_version": 3,
   "id": "sdk-overhaul",
   "title": "FDS Rust SDK 设计重构（0.1.0）",
-  "revision": 1,
+  "revision": 2,
   "status": "running",
   "base_branch": "main",
   "merge_mode": "local",
-  "approved_revision": 1,
-  "approval_ref": "2026-11-07 用户在会话中回复\"批准并开始\"，批准 revision 1，授权本地快进合并进 main，不推送",
+  "approved_revision": 2,
+  "approval_ref": "2026-11-07 用户回答待答问题 upload-read-timeout：\"(a) 新增任务修复\"，即新增 upload-idle-timeout 任务；授权范围同 revision 1（本地快进合并，不推送）",
   "max_parallel": 3,
-  "pending_questions": [
-    {
-      "id": "upload-read-timeout",
-      "text": "reqwest 的 read_timeout 在响应头到达前是从请求开始计时的固定期限，上传进度不会重置它；默认 50s 下，发送 body 加等待响应头超过 50s 的 put_object/upload_part 仍会失败（request-timeout 任务实测发现，已在 rustdoc/README 如实说明）。选项：(a) 新增任务，上传请求改由 SDK 实现按进度重置的空闲计时；(b) 接受限制，仅文档说明；(c) 调整 read_timeout 默认值。",
-      "tasks": [
-        "docs-release"
-      ]
-    }
-  ],
+  "pending_questions": [],
   "tasks": [
     {
       "key": "request-timeout",
@@ -42,7 +34,7 @@
       "type": "perf",
       "document": "tasks/downloader-io.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "baseline-green"
       ],
@@ -58,7 +50,7 @@
       "type": "refactor",
       "document": "tasks/error-model.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "request-timeout",
         "downloader-io"
@@ -73,9 +65,10 @@
       "type": "refactor",
       "document": "tasks/public-surface.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
-        "error-model"
+        "error-model",
+        "upload-idle-timeout"
       ],
       "resources": [
         "*"
@@ -87,7 +80,7 @@
       "type": "refactor",
       "document": "tasks/internal-cleanup.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "public-surface"
       ],
@@ -101,7 +94,7 @@
       "type": "feat",
       "document": "tasks/fluent-object.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "internal-cleanup"
       ],
@@ -115,7 +108,7 @@
       "type": "feat",
       "document": "tasks/fluent-bucket.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "fluent-object"
       ],
@@ -135,7 +128,7 @@
       "type": "feat",
       "document": "tasks/fluent-listing-delete.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "fluent-object"
       ],
@@ -154,7 +147,7 @@
       "type": "feat",
       "document": "tasks/fluent-multipart-manager.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "fluent-object"
       ],
@@ -174,7 +167,7 @@
       "type": "feat",
       "document": "tasks/typed-responses.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "fluent-bucket",
         "fluent-listing-delete",
@@ -190,7 +183,7 @@
       "type": "feat",
       "document": "tasks/object-metadata.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "typed-responses"
       ],
@@ -204,7 +197,7 @@
       "type": "feat",
       "document": "tasks/credentials-provider.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "object-metadata"
       ],
@@ -225,7 +218,7 @@
       "type": "feat",
       "document": "tasks/idempotent-retry.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "object-metadata"
       ],
@@ -239,7 +232,7 @@
       "type": "docs",
       "document": "tasks/docs-release.md",
       "status": "planned",
-      "reviewed_revision": 1,
+      "reviewed_revision": 2,
       "depends_on": [
         "credentials-provider",
         "idempotent-retry"
@@ -260,8 +253,35 @@
         "crates/fds/src/cslb",
         "scripts/check.sh"
       ]
+    },
+    {
+      "key": "upload-idle-timeout",
+      "title": "上传请求按进度重置的空闲超时",
+      "type": "fix",
+      "document": "tasks/upload-idle-timeout.md",
+      "status": "planned",
+      "reviewed_revision": 2,
+      "depends_on": [
+        "error-model"
+      ],
+      "resources": [
+        "crates/fds/src/client.rs",
+        "crates/fds/src/upload.rs",
+        "crates/fds/src/config.rs",
+        "crates/fds/tests",
+        "crates/fds_cli/src/config.rs"
+      ]
     }
   ],
   "acceptance": null,
-  "history": []
+  "history": [
+    {
+      "revision": 2,
+      "reason": "上传仍受 read_timeout 固定期限限制，新增任务实现按进度重置的上传空闲计时",
+      "affects": [
+        "docs-release"
+      ],
+      "at": "2026-11-07T11:28:27Z"
+    }
+  ]
 }

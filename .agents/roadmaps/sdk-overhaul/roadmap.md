@@ -49,7 +49,7 @@
 ## 阶段成果
 
 0. **基线全绿**（baseline-green）：修复新工具链下的 clippy 失败，完整运行一次 check.sh 作为对照。
-1. **运行时问题修复**（request-timeout、downloader-io）：大对象传输不再被 300 秒整体超时打断；Downloader 的文件 IO 不再占用 async worker 线程。
+1. **运行时问题修复**（request-timeout、downloader-io，以及排在 error-model 之后的 upload-idle-timeout）：大对象传输不再被 300 秒整体超时打断；上传按进度重置空闲计时；Downloader 的文件 IO 不再占用 async worker 线程。
 2. **基础重构**（error-model、public-surface、internal-cleanup）：确立新的错误模型，收缩公开面，去掉内部冗余，为 API 改造打好地基。
 3. **API 统一**（fluent-object、fluent-bucket、fluent-listing-delete、fluent-multipart-manager）：全部操作改为流式 builder，命名和参数类型符合 Rust API Guidelines。
 4. **返回值清晰化**（typed-responses、object-metadata）：响应模型类型化；元数据拆分为系统字段和用户元数据两部分。
@@ -74,36 +74,39 @@ flowchart LR
     t_error_model["error-model：错误模型重构为 FdsError + ErrorKind"]
   end
   subgraph G4["批次 4"]
-    t_public_surface["public-surface：收缩公开 API 面并清理死代码"]
+    t_upload_idle_timeout["upload-idle-timeout：上传请求按进度重置的空闲超时"]
   end
   subgraph G5["批次 5"]
-    t_internal_cleanup["internal-cleanup：内部实现去冗余：serde 样板、header、脱敏、HTTP 配置"]
+    t_public_surface["public-surface：收缩公开 API 面并清理死代码"]
   end
   subgraph G6["批次 6"]
-    t_fluent_object["fluent-object：建立流式 builder 模式并迁移对象基础操作"]
+    t_internal_cleanup["internal-cleanup：内部实现去冗余：serde 样板、header、脱敏、HTTP 配置"]
   end
   subgraph G7["批次 7"]
-    t_fluent_bucket["fluent-bucket：Bucket 与 OAuth 操作迁移到流式 builder"]
+    t_fluent_object["fluent-object：建立流式 builder 模式并迁移对象基础操作"]
   end
   subgraph G8["批次 8"]
-    t_fluent_listing_delete["fluent-listing-delete：列举与批量删除迁移到流式 builder"]
+    t_fluent_bucket["fluent-bucket：Bucket 与 OAuth 操作迁移到流式 builder"]
   end
   subgraph G9["批次 9"]
-    t_fluent_multipart_manager["fluent-multipart-manager：分片上传与 Downloader 迁移到流式 builder"]
+    t_fluent_listing_delete["fluent-listing-delete：列举与批量删除迁移到流式 builder"]
   end
   subgraph G10["批次 10"]
-    t_typed_responses["typed-responses：返回值类型化与精简"]
+    t_fluent_multipart_manager["fluent-multipart-manager：分片上传与 Downloader 迁移到流式 builder"]
   end
   subgraph G11["批次 11"]
-    t_object_metadata["object-metadata：ObjectMetadata 拆分系统字段与用户元数据"]
+    t_typed_responses["typed-responses：返回值类型化与精简"]
   end
   subgraph G12["批次 12"]
-    t_credentials_provider["credentials-provider：可刷新的凭证 provider"]
+    t_object_metadata["object-metadata：ObjectMetadata 拆分系统字段与用户元数据"]
   end
   subgraph G13["批次 13"]
-    t_idempotent_retry["idempotent-retry：幂等写操作的可选重试"]
+    t_credentials_provider["credentials-provider：可刷新的凭证 provider"]
   end
   subgraph G14["批次 14"]
+    t_idempotent_retry["idempotent-retry：幂等写操作的可选重试"]
+  end
+  subgraph G15["批次 15"]
     t_docs_release["docs-release：文档、示例与版本号 0.1.0"]
   end
   t_baseline_green --> t_request_timeout
@@ -111,6 +114,7 @@ flowchart LR
   t_request_timeout --> t_error_model
   t_downloader_io --> t_error_model
   t_error_model --> t_public_surface
+  t_upload_idle_timeout --> t_public_surface
   t_public_surface --> t_internal_cleanup
   t_internal_cleanup --> t_fluent_object
   t_fluent_object --> t_fluent_bucket
@@ -124,6 +128,7 @@ flowchart LR
   t_object_metadata --> t_idempotent_retry
   t_credentials_provider --> t_docs_release
   t_idempotent_retry --> t_docs_release
+  t_error_model --> t_upload_idle_timeout
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
   class t_request_timeout,t_baseline_green done
 ```
@@ -131,17 +136,18 @@ flowchart LR
 - 批次 1：baseline-green✅
 - 批次 2（可并行）：request-timeout✅、downloader-io
 - 批次 3：error-model
-- 批次 4：public-surface
-- 批次 5：internal-cleanup
-- 批次 6：fluent-object
-- 批次 7：fluent-bucket
-- 批次 8：fluent-listing-delete
-- 批次 9：fluent-multipart-manager
-- 批次 10：typed-responses
-- 批次 11：object-metadata
-- 批次 12：credentials-provider
-- 批次 13：idempotent-retry
-- 批次 14：docs-release
+- 批次 4：upload-idle-timeout
+- 批次 5：public-surface
+- 批次 6：internal-cleanup
+- 批次 7：fluent-object
+- 批次 8：fluent-bucket
+- 批次 9：fluent-listing-delete
+- 批次 10：fluent-multipart-manager
+- 批次 11：typed-responses
+- 批次 12：object-metadata
+- 批次 13：credentials-provider
+- 批次 14：idempotent-retry
+- 批次 15：docs-release
 
 ✅ 已完成　⛔ 阻塞　✖️ 已取消。进行中的任务看 `roadmap.py status`（分支存在即进行中）。
 <!-- roadmap:order:end -->
@@ -150,7 +156,7 @@ flowchart LR
 
 | AC | 用户操作 | 期望结果 | 验证方式（自动 / 用户） |
 | --- | --- | --- | --- |
-| AC-1 | 用默认配置的 Client 下载或上传一个耗时超过旧 300 秒上限的对象 | 默认不设整体超时，传输只受连接超时和读空闲超时约束；单个请求可以显式设置超时 | 自动：mock 慢速响应的测试，配合配置项测试 |
+| AC-1 | 用默认配置的 Client 下载或上传一个耗时超过旧 300 秒上限、也超过 read_timeout 的对象 | 默认不设整体超时；下载和上传都只受连接超时和按进度重置的空闲超时约束，持续推进的传输不会失败，卡住的传输在空闲阈值后以 Timeout 失败；单个请求可以显式设置整体超时 | 自动：mock 慢速响应的测试，配合配置项测试 |
 | AC-2 | 在 current_thread runtime 上并发运行 Downloader 和其他任务 | 下载过程中其他任务不会被文件 IO 或 fsync 长时间阻塞；checkpoint 和最终 rename 的语义不变 | 自动：阻塞检测测试，以及现有 download_safety 测试 |
 | AC-3 | 调用任意 SDK 操作并处理失败 | 只有一个公开错误类型；`kind()` 能区分 NotFound、PermissionDenied、Unauthenticated、RateLimited、ServerError、InvalidInput、ProtocolViolation、Timeout、Transport、Io、OutcomeUnknown 等；`is_retryable()` 和 `is_not_found()` 可用；`Debug` 输出能用于排查且不含凭证 | 自动：错误映射测试和脱敏测试 |
 | AC-4 | 阅读 rustdoc，并按示例调用每个操作 | 每个操作只有一种流式 builder 写法；类型名和方法名符合 Rust API Guidelines（`Acl`、`Url`、`object_exists` 等） | 自动：examples 和 doctest 能编译；用户：评审 rustdoc |
@@ -176,6 +182,7 @@ flowchart LR
 - 2026-11-07 · revision 1 · 用户原话"现在本地删除 GitLab ci 相关的配置，然后提交第一版，然后本轮 roadmap 在本地以 main 分支为基线进行开发" · 明确决定 · `.gitlab-ci.yml` 已移出仓库，基线为本地 main（不受保护），合并方式为 local，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户在确认默认假设时补充"版本号回退至 0.1.0；fds_cli 同步修改" · 明确决定 · 两个 crate 的版本号都定为 0.1.0（原为 0.2.0）；fds_cli 跟随每个任务同步修改 · 影响 docs-release 及全部 API 任务。
 - 2026-11-07 · revision 1 · 默认假设，用户已确认 · 凭证 provider 和幂等写重试排在最后阶段，用户评审时可以删掉 · 影响 credentials-provider、idempotent-retry。
+- 2026-11-07 · revision 2 · 用户对待答问题 upload-read-timeout 的回答"(a) 新增任务修复" · 明确决定 · 新增任务 upload-idle-timeout（依赖 error-model，public-surface 改为依赖它），上传请求改由 SDK 实现按进度重置的空闲计时；AC-1 补充上传语义；已完成的 request-timeout 不回退 · 影响 upload-idle-timeout、public-surface、docs-release。
 - 2026-11-07 · revision 1 · 用户原话"批准并开始" · 明确决定 · 批准 revision 1（15 个任务，含前置任务 baseline-green）；授权 Agent 在本地把任务分支快进合并进 main；仓库没有远程，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户原话"保留为 1.86 不变" · 明确决定 · MSRV 保持 `rust-version = "1.86"`，`scripts/check.sh` 中的 1.86 检查保留；只有某个任务确实需要更新的语言特性或依赖时，才在该任务里提出，由用户决定是否提高 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户原话"我本地自己执行" · 明确决定 · `tests/live_acceptance.rs` 需要真实的 FDS 凭证，由用户本地执行，Agent 不运行，也不接触凭证；相关结果在验收时由用户提供 · 影响 docs-release、accept。

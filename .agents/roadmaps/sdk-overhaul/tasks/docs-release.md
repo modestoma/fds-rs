@@ -9,7 +9,7 @@
 **要做：**
 
 1. **版本号**：`crates/fds/Cargo.toml` 和 `crates/fds_cli/Cargo.toml` 的 version 从 0.2.0 改为 0.1.0（用户决定）；fds_cli 对 fds 的依赖版本同步修改；Cargo.lock 更新。
-2. **README.md**（约 1000 行）：所有示例改为流式 builder API、新的错误处理方式（kind / is_not_found）、新的返回值类型；删掉与已移除 API 相关的段落；补上超时语义（默认无整体超时）、重试策略（只读默认 + 可选幂等写）、凭证 provider 的说明。
+2. **README.md**（约 1000 行）：确认超时一节反映 upload-idle-timeout 后的最终语义（上传与下载都是按进度重置的空闲计时，不再提示"上传大文件需调大 read_timeout"）；所有示例改为流式 builder API、新的错误处理方式（kind / is_not_found）、新的返回值类型；删掉与已移除 API 相关的段落；补上超时语义（默认无整体超时）、重试策略（只读默认 + 可选幂等写）、凭证 provider 的说明。
 3. **docs/**：
    - `docs/runtime.md`：超时、重试、Downloader 的 IO 模型；
    - `docs/protocol.md`、`docs/validation.md`、`docs/cli.md`：与新 API 和新行为对齐；
