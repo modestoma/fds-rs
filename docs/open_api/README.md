@@ -106,7 +106,7 @@
 | Presign / URL | `generate_presigned_url`、`generate_absolute_object_url`，HEAD 签名附 metadata，expires 毫秒，Signature 原样追加 |
 | Prefix delete | `delete_objects_with_prefix` 列举后逐页批删 |
 | Download manager | `Downloader` / `DownloadRequest`，默认 manager feature |
-| CSLB | `cslb` 的 resolver/service/group/strategy 与可选 metrics |
+| CSLB | `cslb` feature 下 Client 使用内部 DNS resolver（`cslb_max_nodes`），不提供公开类型 |
 
 ## 快照校验
 

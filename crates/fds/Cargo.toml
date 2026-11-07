@@ -31,18 +31,16 @@ http = "1"
 http-body = "1"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
-thiserror = "2"
 tracing = "0.1"
 
 # Optional features
 governor = { version = "0.6", optional = true }        # manager rate limiting
-arc-swap = { version = "1", optional = true }          # cslb atomic node list
-dashmap = { version = "6", optional = true }           # cslb group / metrics
 
 [features]
 default = ["manager"]
 manager = ["dep:governor", "tokio-util/rt"]
-cslb = ["dep:arc-swap", "dep:dashmap", "tokio/sync", "tokio/net"]
+# Installs the internal CSLB DNS resolver in Client; no public API of its own.
+cslb = ["tokio/sync", "tokio/net"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

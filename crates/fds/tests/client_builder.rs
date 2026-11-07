@@ -147,6 +147,31 @@ fn limits_and_effective_configuration() {
     }
 }
 
+/// With `cslb`, a hostname endpoint is resolved by the internal CSLB resolver
+/// (IP literals bypass DNS). The server listens on 127.0.0.1 only, so this also
+/// covers falling back from a refused `::1` to the next resolved node.
+#[cfg(feature = "cslb")]
+#[tokio::test]
+async fn cslb_client_resolves_hostname_endpoints() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("HEAD", "/b/o")
+        .with_header("content-length", "5")
+        .expect(3)
+        .create_async()
+        .await;
+    let port = server.socket_address().port();
+    let c = builder()
+        .endpoint(format!("http://localhost:{port}"))
+        .build()
+        .unwrap();
+    for _ in 0..3 {
+        let md = c.head_object("b", "o").await.unwrap().unwrap();
+        assert_eq!(md.get("content-length"), Some("5"));
+    }
+    m.assert_async().await;
+}
+
 #[tokio::test]
 async fn explicit_cdn_and_md5_keep_wire_behavior() {
     let mut server = mockito::Server::new_async().await;

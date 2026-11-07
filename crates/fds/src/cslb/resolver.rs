@@ -1,18 +1,15 @@
 //! reqwest custom DNS resolver backed by per-host [`LoadBalancer`]s: return
-//! the round-robin pick plus remaining healthy IPs as fallbacks; TTL refresh
+//! the round-robin pick plus the remaining nodes as fallbacks; TTL refresh
 //! handles staleness.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use tokio::sync::Mutex;
 
-use super::{
-    LoadBalancer, LoadBalancerOption, RoundRobinStrategy, RrDnsService, DEFAULT_MIN_SAMPLE_SIZE,
-    DNS_CACHE_TTL, NODE_COUNT_UNLIMITED,
-};
+use super::{LoadBalancer, RrDnsService, DNS_CACHE_TTL, NODE_COUNT_UNLIMITED};
 
 struct Inner {
     max_node_count: usize,
@@ -52,20 +49,8 @@ async fn get_or_create(inner: &Inner, host: &str) -> Arc<LoadBalancer> {
     if let Some(lb) = map.get(host) {
         return lb.clone();
     }
-    let service = Arc::new(RrDnsService::new(
-        vec![host.to_string()],
-        inner.ipv4,
-        inner.ipv6,
-    ));
-    let strategy = Arc::new(RoundRobinStrategy::new());
-    let option = LoadBalancerOption {
-        max_node_count: inner.max_node_count,
-        ttl: DNS_CACHE_TTL,
-        min_healthy_node_ratio: 0.5,
-        max_node_failed_ratio: 0.0,
-        min_sample_size: DEFAULT_MIN_SAMPLE_SIZE,
-    };
-    let lb = Arc::new(LoadBalancer::new(service, strategy, option).await);
+    let service = RrDnsService::new(host.to_string(), inner.ipv4, inner.ipv6);
+    let lb = Arc::new(LoadBalancer::new(service, inner.max_node_count, DNS_CACHE_TTL).await);
     map.insert(host.to_string(), lb.clone());
     lb
 }
@@ -79,18 +64,14 @@ impl Resolve for CslbResolver {
 
             let mut addrs: Vec<SocketAddr> = Vec::new();
             // Primary: the round-robin pick (advances the rotation).
-            if let Ok(primary) = lb.next().await {
-                if let Ok(ip) = primary.to_string().parse::<IpAddr>() {
-                    addrs.push(SocketAddr::new(ip, 0));
-                }
+            if let Some(primary) = lb.next().await {
+                addrs.push(SocketAddr::new(primary, 0));
             }
-            // Fallbacks: the rest of the healthy nodes (reqwest tries in order).
+            // Fallbacks: the rest of the nodes (reqwest tries in order).
             for node in lb.current_nodes() {
-                if let Ok(ip) = node.to_string().parse::<IpAddr>() {
-                    let sa = SocketAddr::new(ip, 0);
-                    if !addrs.contains(&sa) {
-                        addrs.push(sa);
-                    }
+                let sa = SocketAddr::new(node, 0);
+                if !addrs.contains(&sa) {
+                    addrs.push(sa);
                 }
             }
 
@@ -105,5 +86,46 @@ impl Resolve for CslbResolver {
             let iter: Addrs = Box::new(addrs.into_iter());
             Ok(iter)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    async fn resolve(resolver: &CslbResolver, host: &str) -> Vec<SocketAddr> {
+        let name = Name::from_str(host).unwrap();
+        resolver.resolve(name).await.unwrap().collect()
+    }
+
+    #[tokio::test]
+    async fn returns_distinct_nodes_with_rotating_primary() {
+        let resolver = CslbResolver::new(20, true, true);
+        let first = resolve(&resolver, "localhost").await;
+        assert!(!first.is_empty());
+        for (i, addr) in first.iter().enumerate() {
+            assert!(addr.ip().is_loopback() && addr.port() == 0, "{addr}");
+            assert!(!first[..i].contains(addr), "duplicate {addr}");
+        }
+
+        let second = resolve(&resolver, "localhost").await;
+        let mut sorted = (first.clone(), second.clone());
+        sorted.0.sort();
+        sorted.1.sort();
+        assert_eq!(sorted.0, sorted.1, "same node set between refreshes");
+        if first.len() > 1 {
+            assert_ne!(first[0], second[0], "the primary rotates");
+        }
+    }
+
+    #[tokio::test]
+    async fn node_limit_and_family_filter_apply() {
+        let limited = resolve(&CslbResolver::new(1, true, true), "localhost").await;
+        assert_eq!(limited.len(), 1);
+
+        let ipv4_only = resolve(&CslbResolver::new(0, true, false), "localhost").await;
+        assert!(!ipv4_only.is_empty());
+        assert!(ipv4_only.iter().all(SocketAddr::is_ipv4), "{ipv4_only:?}");
     }
 }

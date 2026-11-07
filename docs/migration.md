@@ -40,7 +40,7 @@
 | max_dns_record、download_bandwidth、upload_bandwidth、http_keep_alive_timeout_ms | 旧项无效；下载限速继续用 DownloadOptionsBuilder::request_limiter；不承诺上传限速 |
 | region_name | 通用 origin 不必对应 FDS 区域，删除派生区域访问器 |
 
-`manager` 默认启用；`cslb` 独立启用。CLI 已拆为 workspace 的 `fds_cli` 包，SDK 不再提供 `cli` feature；使用 `cargo run -p fds_cli -- --help`。客户端和 CLI 均只接受完整 origin。Client、配置和凭据构建后不可变；轮换配置需构建新实例。
+`manager` 默认启用；`cslb` 独立启用，只影响 Client 的 DNS 解析。原 `fds::cslb` 模块及其独立负载均衡类型（LoadBalancer、Service、Strategy、Group、Metrics、CslbError 等）已删除，没有替代 API。CLI 已拆为 workspace 的 `fds_cli` 包，SDK 不再提供 `cli` feature；使用 `cargo run -p fds_cli -- --help`。客户端和 CLI 均只接受完整 origin。Client、配置和凭据构建后不可变；轮换配置需构建新实例。
 
 ## 下载断点兼容性
 

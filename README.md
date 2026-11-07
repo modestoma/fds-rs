@@ -59,7 +59,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 | --- | --- | --- |
 | 核心 SDK | 始终 | Bucket、对象、OAuth、手动及托管分片、流式读写、读取重试 |
 | `manager` | 是 | `Downloader`、下载选项、断点与请求限流 |
-| `cslb` | 否 | 为 Client 安装 CSLB DNS resolver；提供独立负载均衡工具 |
+| `cslb` | 否 | 让 Client 通过内部 CSLB DNS resolver 解析主机；不增加公开模块或类型 |
 
 只用核心：`fds = { version = "1.0.0", registry = "artifactory", default-features = false }`。
 启用 CSLB：`fds = { version = "1.0.0", registry = "artifactory", features = ["cslb"] }`。
@@ -987,7 +987,7 @@ async fn read_with_deadline(client: &Client, bucket: &str, key: &str)
 
 它在 DNS 解析时轮换首选地址并附带备选 IP，以 600 秒 TTL 刷新。HTTP 连接池复用不会逐请求重新选节点；节点数不是 HTTP 并发数。集成 resolver 没有连接失败反馈回调，不能视为自动故障摘除系统；无节点时会回退系统 DNS。
 
-普通 SDK 接入只需配置 Client；resolver 本身是 crate 内部实现，不对外公开。自定义节点来源或哈希选择策略等独立工具位于 `fds::cslb`，可通过 `cargo doc --all-features --no-deps --open` 查看类型文档。
+`cslb` feature 只影响 Client 的 DNS 解析：resolver 是 crate 内部实现，SDK 不提供 `fds::cslb` 模块或独立的负载均衡类型，唯一的配置入口是 `cslb_max_nodes`。
 
 ## 组合功能示例
 
