@@ -33,7 +33,7 @@
       "title": "Downloader 文件 IO 移出 async 线程并减少 fsync",
       "type": "perf",
       "document": "tasks/downloader-io.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 2,
       "depends_on": [
         "baseline-green"

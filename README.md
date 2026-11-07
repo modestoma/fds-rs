@@ -696,7 +696,7 @@ async fn download_safely(client: &Client, bucket: &str, key: &str, path: &std::p
 
 下载先写同目录暂存文件，全部成功并同步后替换目标，失败保留旧目标。父目录必须存在且可写。同目标使用 `.download.lock` 合作式排他；还会使用 `.tmp`、`.download.bp`、`.download.bp.new` 等路径，调用者不能同时使用这些附属路径。中断后对同一路径重新调用并开启 resume，下载器校验对象身份和本地分片摘要，损坏或不匹配分片重新下载。进程被杀死可能留下锁，确认无下载进程后才移除。
 
-取消直接丢弃 download future；worker 结束前仍持有锁，立即重试可能暂时报 AlreadyExists。同步文件 IO、fsync 和恢复摘要可能占用运行时线程，建议多线程 Tokio。它不承诺跨程序目录防篡改或目录 fsync 级断电持久性；详见 [下载安全](docs/runtime.md#下载文件与断点)。
+取消直接丢弃 download future；worker 结束前仍持有锁，立即重试可能暂时报 AlreadyExists。文件 IO、fsync 和恢复摘要都在阻塞线程中执行，不占用 async 运行时线程。它不承诺跨程序目录防篡改或目录 fsync 级断电持久性；详见 [下载安全](docs/runtime.md#下载文件与断点)。
 
 ### 请求启动限流
 

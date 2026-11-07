@@ -465,3 +465,162 @@ fn request_preserves_non_utf8_path_without_lossy_conversion() {
     let request = DownloadRequest::new("b", "o", PathBuf::from(path));
     assert_eq!(request.file_path.as_os_str().as_bytes(), &[b'o', 0xff]);
 }
+
+fn pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i * 31 % 251) as u8).collect()
+}
+
+/// Serves `parts` contiguous parts of `body`; `fail` makes that part return 500.
+async fn serve_parts(
+    server: &mut mockito::ServerGuard,
+    body: &[u8],
+    part_size: usize,
+    fail: Option<usize>,
+) -> Vec<mockito::Mock> {
+    let mut mocks = Vec::new();
+    for (index, chunk) in body.chunks(part_size).enumerate() {
+        let start = index * part_size;
+        let end = start + chunk.len() - 1;
+        let mock = server
+            .mock("GET", "/b/o")
+            .match_header("range", format!("bytes={start}-{end}").as_str());
+        let mock = if fail == Some(index) {
+            mock.with_status(500)
+        } else {
+            mock.with_status(206)
+                .with_header("etag", "\"v1\"")
+                .with_header(
+                    "content-range",
+                    &format!("bytes {start}-{end}/{}", body.len()),
+                )
+                .with_body(chunk)
+        };
+        mocks.push(mock.create_async().await);
+    }
+    mocks
+}
+
+/// Runs `future` while a sibling task on the same current_thread runtime ticks
+/// every 2 ms; returns the future's output and the largest observed tick gap.
+async fn with_ticker<F: std::future::Future>(future: F) -> (F::Output, std::time::Duration) {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    let ticker = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(2));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last = Instant::now();
+        let mut max = Duration::ZERO;
+        while !flag.load(Ordering::Relaxed) {
+            interval.tick().await;
+            let now = Instant::now();
+            max = max.max(now - last);
+            last = now;
+        }
+        max
+    });
+    // Let the ticker start before the measured work begins.
+    tokio::task::yield_now().await;
+    let output = future.await;
+    done.store(true, Ordering::Relaxed);
+    (output, ticker.await.unwrap())
+}
+
+// AC-2: the Downloader must not stall a current_thread runtime with file IO,
+// fsync or resume hashing. 32 x 1 MiB parts: the first run fails on the last
+// part (fresh writes + checkpoints), the second resumes (hashes ~31 MiB of
+// local data, writes the rest, fsyncs and renames).
+#[tokio::test(flavor = "current_thread")]
+async fn current_thread_runtime_keeps_ticking_during_download_and_resume() {
+    use std::time::Duration;
+    const PART: usize = 1024 * 1024;
+    const PARTS: usize = 32;
+    let body = pattern(PART * PARTS);
+    let mut server = mockito::Server::new_async().await;
+    let _h = head(&mut server, body.len(), "\"v1\"").await;
+    let failing = serve_parts(&mut server, &body, PART, Some(PARTS - 1)).await;
+    let out = Output::new();
+    let dl = downloader(&server, PART as u64, 4, true);
+    let (first, first_gap) = with_ticker(dl.download(&out.request())).await;
+    assert!(first.is_err());
+    assert!(out.0.join("out.download.bp").exists());
+    for mock in failing {
+        mock.remove_async().await;
+    }
+    let _ok = serve_parts(&mut server, &body, PART, None).await;
+    let (second, second_gap) = with_ticker(dl.download(&out.request())).await;
+    second.unwrap();
+    assert!(std::fs::read(out.path()).unwrap() == body);
+    // Threshold: with all file IO in spawn_blocking the ticker is delayed only
+    // by HTTP parsing and buffer copies; measured max gap is ~3 ms (tick period
+    // 2 ms) in debug builds. The original implementation measured 58 ms (first
+    // run, fsync per part) and 335 ms (resume, synchronous MD5 of ~31 MiB) on
+    // the same machine. 100 ms is >30x the expected gap, so scheduler noise on
+    // a loaded host does not trip it, while the resume stall still exceeds it
+    // by >3x.
+    let limit = Duration::from_millis(100);
+    eprintln!("max tick gap: first run {first_gap:?}, resume {second_gap:?}");
+    assert!(
+        first_gap < limit,
+        "first run stalled ticks for {first_gap:?}"
+    );
+    assert!(
+        second_gap < limit,
+        "resume stalled ticks for {second_gap:?}"
+    );
+}
+
+// Checkpoints are throttled, but the final write on failure records every
+// completed part, so a resumed download fetches exactly the missing ones.
+#[tokio::test]
+async fn throttled_checkpoint_still_resumes_exactly_the_missing_parts() {
+    const PARTS: usize = 12;
+    const FAIL: usize = 8;
+    let body = pattern(4 * PARTS);
+    let mut server = mockito::Server::new_async().await;
+    let _h = head(&mut server, body.len(), "\"v1\"").await;
+    let failing = serve_parts(&mut server, &body, 4, Some(FAIL)).await;
+    let out = Output::new();
+    // concurrency 1 makes the set of completed parts deterministic: 0..FAIL.
+    let dl = downloader(&server, 4, 1, true);
+    assert!(dl.download(&out.request()).await.is_err());
+    assert!(!out.0.join("out.download.lock").exists());
+    let cp: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.0.join("out.download.bp")).unwrap()).unwrap();
+    let hashes = cp["hashes"].as_array().unwrap();
+    assert_eq!(hashes.len(), PARTS);
+    for (index, hash) in hashes.iter().enumerate() {
+        assert_eq!(hash.is_string(), index < FAIL, "part {index}: {hash}");
+    }
+    for mock in failing {
+        mock.remove_async().await;
+    }
+    let mut resumed = Vec::new();
+    for (index, chunk) in body.chunks(4).enumerate() {
+        let (start, end) = (index * 4, index * 4 + 3);
+        resumed.push(
+            server
+                .mock("GET", "/b/o")
+                .match_header("range", format!("bytes={start}-{end}").as_str())
+                .with_status(206)
+                .with_header("etag", "\"v1\"")
+                .with_header(
+                    "content-range",
+                    &format!("bytes {start}-{end}/{}", body.len()),
+                )
+                .with_body(chunk)
+                .expect(usize::from(index >= FAIL))
+                .create_async()
+                .await,
+        );
+    }
+    dl.download(&out.request()).await.unwrap();
+    for mock in &resumed {
+        mock.assert_async().await;
+    }
+    assert_eq!(std::fs::read(out.path()).unwrap(), body);
+    assert!(!out.0.join("out.download.bp").exists());
+    assert!(!out.0.join("out.download.lock").exists());
+}

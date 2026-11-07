@@ -68,7 +68,7 @@ flowchart LR
   end
   subgraph G2["批次 2（可并行）"]
     t_request_timeout["request-timeout：取消默认整体超时，支持单请求超时 ✅"]
-    t_downloader_io["downloader-io：Downloader 文件 IO 移出 async 线程并减少 fsync"]
+    t_downloader_io["downloader-io：Downloader 文件 IO 移出 async 线程并减少 fsync ✅"]
   end
   subgraph G3["批次 3"]
     t_error_model["error-model：错误模型重构为 FdsError + ErrorKind"]
@@ -130,11 +130,11 @@ flowchart LR
   t_idempotent_retry --> t_docs_release
   t_error_model --> t_upload_idle_timeout
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_request_timeout,t_baseline_green done
+  class t_request_timeout,t_downloader_io,t_baseline_green done
 ```
 
 - 批次 1：baseline-green✅
-- 批次 2（可并行）：request-timeout✅、downloader-io
+- 批次 2（可并行）：request-timeout✅、downloader-io✅
 - 批次 3：error-model
 - 批次 4：upload-idle-timeout
 - 批次 5：public-surface
