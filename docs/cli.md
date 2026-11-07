@@ -290,7 +290,7 @@ fds_cli object get demo-bucket demo/a.txt # 验证恢复后的内容
 fds_cli object list demo-bucket --prefix demo/temp/ --all # 检查前缀清理结果
 ```
 
-批删失败时仍会输出 `output`、`unconfirmed`、`not_submitted`，先核对每个 key 再处理。`restore` 是删除恢复，不是归档解冻；普通对象删除不清理未完成的分片会话。
+批删失败时仍会输出 `output`、`unconfirmed`、`not_submitted`，先核对每个 key 再处理。`delete-prefix` 直接调用 SDK 的 `delete_prefix`，`--marker`、`--delimiter` 分别对应 `.marker()`、`.delimiter()`；不给 `--marker` 时仍发送空的 `marker=`。起始 marker 也计入循环检查：后续页的 nextMarker 回到它时立即停止，不删除该页；名字越出 prefix 或 nextMarker 缺失、重复时，都以 `ProtocolViolation: invalid prefix deletion page or pagination marker` 退出 1，已删除的部分仍在 `output` 中。`restore` 是删除恢复，不是归档解冻；普通对象删除不清理未完成的分片会话。
 
 ## 服务发现与 OAuth
 

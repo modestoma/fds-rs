@@ -576,7 +576,7 @@ async fn delete_prefix(client: &Client, bucket: &str, prefix: &str)
 
 `DeleteObjectFailure` 的 `Debug` 只输出 error_code（形如普通标识符时），不输出对象名和描述，避免对象名进入日志；需要时直接读字段。
 
-前缀删除只按 bucket 和 prefix 选择对象（不带 delimiter，嵌套“目录”下的对象也会删除），逐页列举、逐页删除。提交一页之前会检查：名字非空且以 prefix 开头；truncated 页的 next_marker 存在且与本次运行见过的所有 marker 都不同（记住全部 marker，任何长度的循环都会在重复删除之前停下）。全部确认删除才返回 `Ok`；遇到第一个问题即停止并返回错误，`partial_delete_output()` 带有此前所有页已确认的结果：某批出现逐项失败时 kind 为 `PartialFailure`（后续页不再列举），批次结果未知时为 `OutcomeUnknown`，列举失败或检查不通过时为对应错误。尚未列举的对象不会出现在结果中。它会累计已确认结果，因此结果内存随删除数量增长；海量清理可由应用分页、分批持久记录进度。
+前缀删除默认只按 bucket 和 prefix 选择对象（不带 delimiter，嵌套“目录”下的对象也会删除），逐页列举、逐页删除。两个显式选项会缩小范围：`.marker(m)` 从 m 之后开始，m 及之前的对象不列举也不删除（首个列举请求带 `marker`，空串也照样发送；不调用时不带该参数）；`.delimiter("/")` 只删当前层，服务归入 commonPrefixes 的名字既不删除也不深入（SDK 信任服务的分组）。提交一页之前会检查：名字非空且以 prefix 开头；truncated 页的 next_marker 存在且与本次运行见过的所有 marker 都不同，起始 marker 也算在内（记住全部 marker，任何长度的循环都会在重复删除之前停下）。全部确认删除才返回 `Ok`；遇到第一个问题即停止并返回错误，`partial_delete_output()` 带有此前所有页已确认的结果：某批出现逐项失败时 kind 为 `PartialFailure`（后续页不再列举），批次结果未知时为 `OutcomeUnknown`，列举失败或检查不通过时为对应错误。尚未列举的对象不会出现在结果中。它会累计已确认结果，因此结果内存随删除数量增长；海量清理可由应用分页、分批持久记录进度。
 
 ## Bucket 与对象 ACL
 

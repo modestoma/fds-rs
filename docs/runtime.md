@@ -90,7 +90,7 @@ marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环�
 
 重复输入名字保留在线路和成功输出中；某名字失败则其全部出现均不计成功。响应必须为合法 JSON 失败数组，空 body/null/非法模型不视为全成功；出现未请求名字时保留失败数组并将整个批次标记未确认。
 
-`delete_prefix(bucket, prefix)` 只按 bucket 和 prefix 选择对象（不带 delimiter，也不接受起始 marker），逐页执行，首个逐项失败（kind 为 PartialFailure）或请求错误即停，错误的 `partial_delete_output()` 保留先前结果。它使用记住本次全部 marker 的严格已见集合，在删除当前页前拒绝循环和前缀外 key；与普通分页的常数空间循环检测不同。后续未列举项不在结果中，并发新增不保证被清空。累计结果与 marker 集合随处理量增长，海量任务可由应用分批持久化。
+`delete_prefix(bucket, prefix)` 默认只按 bucket 和 prefix 选择对象（不带 delimiter、不带 marker）；显式的 `.marker(m)` 从 m 之后开始（m 计入已见 marker），`.delimiter(d)` 只删当前层（commonPrefixes 不删除也不深入）。逐页执行，首个逐项失败（kind 为 PartialFailure）或请求错误即停，错误的 `partial_delete_output()` 保留先前结果。它使用记住本次全部 marker 的严格已见集合，在删除当前页前拒绝循环和前缀外 key；与普通分页的常数空间循环检测不同。后续未列举项不在结果中，并发新增不保证被清空。累计结果与 marker 集合随处理量增长，海量任务可由应用分批持久化。
 
 ## 重试与超时
 

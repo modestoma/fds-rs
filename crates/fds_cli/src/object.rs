@@ -2,8 +2,7 @@ use super::output;
 use super::util::{parse_method, print_json, read_json, AclMode, BodyArgs, MetadataArgs};
 use anyhow::Result;
 use clap::Subcommand;
-use fds::{object::*, *};
-use std::collections::HashSet;
+use fds::*;
 use std::num::NonZeroU32;
 #[derive(Subcommand)]
 pub enum ObjectCmd {
@@ -316,17 +315,22 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
                     return output::delete_outcome(Default::default(), Some(error), &[]);
                 }
             };
-            let (deleted, error) = delete_prefix(
-                client,
-                bucket,
-                prefix,
-                delimiter.as_deref().unwrap_or_default(),
-                marker.as_deref().unwrap_or_default(),
-                page_size,
-                *trash,
-            )
-            .await;
-            output::delete_outcome(deleted, error, &[])?;
+            // The marker is always sent, empty when `--marker` is not given.
+            let mut request = client
+                .delete_prefix(bucket, prefix)
+                .delimiter(delimiter.as_deref().unwrap_or_default())
+                .marker(marker.as_deref().unwrap_or_default())
+                .page_size(page_size);
+            if *trash {
+                request = request.move_to_trash();
+            }
+            match request.send().await {
+                Ok(deleted) => output::delete_outcome(deleted, None, &[])?,
+                Err(error) => {
+                    let deleted = error.partial_delete_output().cloned().unwrap_or_default();
+                    output::delete_outcome(deleted, Some(page_check_error(error)), &[])?;
+                }
+            }
         }
         ObjectCmd::List {
             bucket,
@@ -404,81 +408,18 @@ fn positive_max_keys(max_keys: i32) -> fds::Result<NonZeroU32> {
         .ok_or_else(|| fds::Error::new(ErrorKind::InvalidInput, "max_keys must be positive"))
 }
 
-/// `object delete-prefix`: list one page, check it, delete it as one batch,
-/// then list the next page; stop at the first error or per-object failure.
-///
-/// The SDK's `Client::delete_prefix` selects objects by bucket and prefix only,
-/// while this command also takes `--delimiter` (delete only the listed level)
-/// and `--marker`, and always sends the marker (empty by default). So it pages
-/// itself, with the same safety rules: every listed name must be non-empty and
-/// inside the prefix, and a truncated page's `nextMarker` must differ from
-/// every marker of this run, the starting one included; otherwise nothing from
-/// that page is deleted. The returned output holds everything confirmed so far.
-async fn delete_prefix(
-    client: &Client,
-    bucket: &str,
-    prefix: &str,
-    delimiter: &str,
-    marker: &str,
-    page_size: NonZeroU32,
-    trash: bool,
-) -> (DeleteObjectsOutput, Option<fds::Error>) {
-    let mut output = DeleteObjectsOutput::default();
-    let mut seen = HashSet::from([marker.to_owned()]);
-    let mut marker = marker.to_owned();
-    loop {
-        let page = match client
-            .list_objects(bucket)
-            .prefix(prefix)
-            .delimiter(delimiter)
-            .max_keys(page_size)
-            .marker(&marker)
-            .send()
-            .await
-        {
-            Ok(page) => page,
-            Err(error) => return (output, Some(error)),
-        };
-        if page
-            .object_summaries
-            .iter()
-            .any(|o| o.object_name.is_empty() || !o.object_name.starts_with(prefix))
-            || (page.truncated
-                && (page.next_marker.is_empty() || !seen.insert(page.next_marker.clone())))
-        {
-            let error = fds::Error::new(
-                ErrorKind::ProtocolViolation,
-                "invalid prefix deletion page or pagination marker",
-            );
-            return (output, Some(error));
-        }
-        let mut batch = client
-            .delete_objects(bucket)
-            .keys(page.object_summaries.into_iter().map(|o| o.object_name));
-        if trash {
-            batch = batch.move_to_trash();
-        }
-        match batch.send().await {
-            Ok(mut batch) => {
-                let failure = (!batch.failures.is_empty()).then(|| output::partial_failure(&batch));
-                output.deleted.append(&mut batch.deleted);
-                output.failures.append(&mut batch.failures);
-                if failure.is_some() {
-                    return (output, failure);
-                }
-            }
-            Err(error) => {
-                if let Some(batch) = error.partial_delete_output() {
-                    output.deleted.extend_from_slice(&batch.deleted);
-                    output.failures.extend_from_slice(&batch.failures);
-                    output.unconfirmed.extend_from_slice(&batch.unconfirmed);
-                }
-                return (output, Some(error));
-            }
-        }
-        if !page.truncated {
-            return (output, None);
-        }
-        marker = page.next_marker;
+/// `object delete-prefix` reports both of the SDK's page checks (a listed name
+/// outside the prefix, a missing or repeated `nextMarker`) with the command's
+/// original single message. They are the only `ProtocolViolation`s of the run
+/// without a response: the client's own ones (an empty, oversized or invalid
+/// body) carry it, and a bulk delete's become `OutcomeUnknown`.
+fn page_check_error(error: fds::Error) -> fds::Error {
+    if error.kind() == ErrorKind::ProtocolViolation && error.response().is_none() {
+        fds::Error::new(
+            ErrorKind::ProtocolViolation,
+            "invalid prefix deletion page or pagination marker",
+        )
+    } else {
+        error
     }
 }

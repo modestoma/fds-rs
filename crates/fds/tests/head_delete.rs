@@ -447,6 +447,88 @@ async fn prefix_long_cycle_is_checked_before_delete() {
 }
 
 #[tokio::test]
+async fn prefix_marker_and_delimiter_narrow_the_run_and_guard_the_start() {
+    // The starting marker is sent and remembered: a page that leads back to
+    // it stops the run before that page is deleted. Common prefixes are not
+    // deleted, and every listing keeps the caller's delimiter.
+    let mut s = mockito::Server::new_async().await;
+    let first = s
+        .mock("GET", "/b")
+        .match_query(Matcher::Exact(
+            "delimiter=%2F&marker=start&maxKeys=7&prefix=p%2F".into(),
+        ))
+        .with_body(r#"{"delimiter":"evil","objects":[{"name":"p/1"}],"commonPrefixes":["p/d/"],"truncated":true,"nextMarker":"a"}"#)
+        .create_async()
+        .await;
+    let delete = s
+        .mock("PUT", "/b")
+        .match_query(Matcher::Exact("deleteObjects=&enableTrash=true".into()))
+        .match_body(r#"["p/1"]"#)
+        .with_body("[]")
+        .create_async()
+        .await;
+    let second = s
+        .mock("GET", "/b")
+        .match_query(Matcher::Exact(
+            "delimiter=%2F&marker=a&maxKeys=7&prefix=p%2F".into(),
+        ))
+        .with_body(r#"{"objects":[{"name":"p/2"}],"truncated":true,"nextMarker":"start"}"#)
+        .create_async()
+        .await;
+    let no_delete = s
+        .mock("PUT", "/b")
+        .match_query(Matcher::Any)
+        .match_body(r#"["p/2"]"#)
+        .expect(0)
+        .create_async()
+        .await;
+    let error = client(&s)
+        .delete_prefix("b", "p/")
+        .marker("start")
+        .delimiter("/")
+        .page_size(std::num::NonZeroU32::new(7).unwrap())
+        .move_to_trash()
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
+    assert_eq!(partial(&error).deleted, ["p/1"]);
+    for m in [first, delete, second, no_delete] {
+        m.assert_async().await;
+    }
+}
+
+#[tokio::test]
+async fn prefix_marker_is_sent_only_when_set_even_if_empty() {
+    for (marker, query) in [
+        (None, "delimiter=&maxKeys=1000&prefix=p%2F"),
+        (Some(""), "delimiter=&marker=&maxKeys=1000&prefix=p%2F"),
+    ] {
+        let mut s = mockito::Server::new_async().await;
+        let list = s
+            .mock("GET", "/b")
+            .match_query(Matcher::Exact(query.into()))
+            .with_body(r#"{"objects":[{"name":"p/a"}]}"#)
+            .create_async()
+            .await;
+        let delete = s
+            .mock("PUT", "/b")
+            .match_query(Matcher::Exact("deleteObjects=&enableTrash=false".into()))
+            .match_body(r#"["p/a"]"#)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let mut request = client(&s).delete_prefix("b", "p/").delimiter("");
+        if let Some(marker) = marker {
+            request = request.marker(marker);
+        }
+        assert_eq!(request.send().await.unwrap().deleted, ["p/a"]);
+        list.assert_async().await;
+        delete.assert_async().await;
+    }
+}
+
+#[tokio::test]
 async fn empty_prefix_does_not_allow_empty_object_names() {
     let mut s = mockito::Server::new_async().await;
     let list = s

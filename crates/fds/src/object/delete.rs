@@ -190,12 +190,42 @@ pub struct DeletePrefix {
     client: Client,
     bucket: String,
     prefix: String,
+    marker: Option<String>,
+    delimiter: String,
     page_size: NonZeroU32,
     move_to_trash: bool,
     timeout: Option<Duration>,
 }
 
 impl DeletePrefix {
+    /// Start after `marker` instead of at the beginning of the prefix: the
+    /// first listing sends it as `marker` (even when it is empty), so names
+    /// up to and including the marker are not listed and not deleted. Use a
+    /// `nextMarker` of an earlier listing, for example to resume a run.
+    ///
+    /// The marker counts as already seen by the page check (see
+    /// [`send`](Self::send)): a later page whose `nextMarker` returns to it
+    /// stops the run before that page is deleted.
+    ///
+    /// Default: no `marker` parameter; the run starts at the beginning.
+    pub fn marker(mut self, marker: impl Into<String>) -> Self {
+        self.marker = Some(marker.into());
+        self
+    }
+
+    /// Only delete the current level below the prefix: the listing sends
+    /// `delimiter`, so the service groups names that contain it after the
+    /// prefix into common prefixes, which are neither deleted nor descended
+    /// into. Names the service lists as objects are deleted; its grouping is
+    /// not checked again.
+    ///
+    /// Default: empty (no grouping), so names below nested "directories" are
+    /// deleted too. An empty delimiter is the same as not calling this.
+    pub fn delimiter(mut self, delimiter: impl Into<String>) -> Self {
+        self.delimiter = delimiter.into();
+        self
+    }
+
     /// How many names to list, and so delete, per page (`maxKeys`).
     /// Default: 1000.
     pub fn page_size(mut self, page_size: NonZeroU32) -> Self {
@@ -217,16 +247,18 @@ impl DeletePrefix {
     /// each page as one [`DeleteObjects`] batch before listing the next.
     /// The timeout applies to each list and delete request separately.
     ///
-    /// Only the bucket and the prefix select objects: the listing has no
-    /// delimiter, so names below nested "directories" are deleted too, and
-    /// pagination keeps the caller's bucket and prefix, never the scope echoed
-    /// by the service.
+    /// The bucket and the prefix select objects, narrowed only by the
+    /// explicit [`marker`](Self::marker) (start position) and
+    /// [`delimiter`](Self::delimiter) (current level only). Without them
+    /// every name below the prefix is deleted, nested "directories"
+    /// included. Pagination keeps the caller's bucket, prefix and delimiter,
+    /// never the scope echoed by the service.
     ///
     /// Before a page is submitted it is checked: every name must be non-empty
     /// and start with the prefix, and a truncated page's `nextMarker` must be
-    /// present and differ from every marker seen in this run (all are
-    /// remembered, so a cycle of any length stops before a page is deleted
-    /// twice). A failed check is [`ErrorKind::ProtocolViolation`] and nothing
+    /// present and differ from every marker seen in this run, the starting
+    /// marker included (all are remembered, so a cycle of any length stops
+    /// before a page is deleted twice). A failed check is [`ErrorKind::ProtocolViolation`] and nothing
     /// from that page was submitted.
     ///
     /// `Ok` means every listed object was confirmed deleted; `failures` and
@@ -250,8 +282,13 @@ impl DeletePrefix {
             .client
             .list_objects(&self.bucket)
             .prefix(&self.prefix)
+            .delimiter(&self.delimiter)
             .max_keys(self.page_size)
             .exact_markers();
+        let pages = match self.marker {
+            Some(marker) => pages.marker(marker),
+            None => pages,
+        };
         let pages = match self.timeout {
             Some(timeout) => pages.timeout(timeout),
             None => pages,
@@ -352,7 +389,20 @@ impl Client {
 
     /// Delete every object whose name starts with `prefix`, one listed page
     /// per batch. See [`DeletePrefix::send`]; an empty prefix means the whole
-    /// bucket.
+    /// bucket. [`DeletePrefix::marker`] and [`DeletePrefix::delimiter`]
+    /// narrow the run to a start position and the current level.
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// // Delete logs/2026-11-07.txt but keep logs/archive/old.txt.
+    /// let output = client
+    ///     .delete_prefix("bucket", "logs/")
+    ///     .delimiter("/")
+    ///     .send()
+    ///     .await?;
+    /// println!("{} deleted", output.deleted.len());
+    /// # Ok(()) }
+    /// ```
     pub fn delete_prefix(
         &self,
         bucket: impl Into<String>,
@@ -362,6 +412,8 @@ impl Client {
             client: self.clone(),
             bucket: bucket.into(),
             prefix: prefix.into(),
+            marker: None,
+            delimiter: String::new(),
             page_size: DEFAULT_LIST_OBJECTS_MAX_KEYS,
             move_to_trash: false,
             timeout: None,

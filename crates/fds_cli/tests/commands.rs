@@ -846,9 +846,76 @@ async fn delete_prefix_keeps_listing_flags_and_stops_on_a_repeated_marker() {
     .await;
     assert_eq!(result.status.code(), Some(1));
     assert_eq!(value(&result)["output"]["deleted"], json!(["p/1"]));
-    assert!(String::from_utf8_lossy(&result.stderr).contains("ProtocolViolation"));
+    assert_eq!(
+        String::from_utf8_lossy(&result.stderr),
+        "error: ProtocolViolation: invalid prefix deletion page or pagination marker\n"
+    );
     first.assert_async().await;
     delete.assert_async().await;
     second.assert_async().await;
     no_delete.assert_async().await;
+}
+
+#[tokio::test]
+async fn delete_prefix_without_flags_sends_an_empty_marker() {
+    let mut server = Server::new_async().await;
+    let first = server
+        .mock("GET", "/b")
+        .match_query(Matcher::Exact(
+            "delimiter=&marker=&maxKeys=1000&prefix=p%2F".into(),
+        ))
+        .with_body(r#"{"truncated":true,"nextMarker":"m","objects":[{"name":"p/1"}]}"#)
+        .create_async()
+        .await;
+    let second = server
+        .mock("GET", "/b")
+        .match_query(Matcher::Exact(
+            "delimiter=&marker=m&maxKeys=1000&prefix=p%2F".into(),
+        ))
+        .with_body(r#"{"objects":[{"name":"q/2"}]}"#)
+        .create_async()
+        .await;
+    let delete = server
+        .mock("PUT", "/b?deleteObjects=&enableTrash=false")
+        .match_body(r#"["p/1"]"#)
+        .with_body("[]")
+        .create_async()
+        .await;
+    // A listed name outside the prefix: nothing from that page is deleted.
+    let no_delete = server
+        .mock("PUT", "/b?deleteObjects=&enableTrash=false")
+        .match_body(r#"["q/2"]"#)
+        .expect(0)
+        .create_async()
+        .await;
+    let result = run(&server.url(), &["object", "delete-prefix", "b", "p/"]).await;
+    assert_eq!(result.status.code(), Some(1));
+    assert_eq!(value(&result)["output"]["deleted"], json!(["p/1"]));
+    assert_eq!(
+        String::from_utf8_lossy(&result.stderr),
+        "error: ProtocolViolation: invalid prefix deletion page or pagination marker\n"
+    );
+    for mock in [first, second, delete, no_delete] {
+        mock.assert_async().await;
+    }
+}
+
+#[tokio::test]
+async fn delete_prefix_keeps_the_client_error_for_a_broken_listing() {
+    let mut server = Server::new_async().await;
+    let list = server
+        .mock("GET", "/b")
+        .match_query(Matcher::Any)
+        .with_body("not json")
+        .create_async()
+        .await;
+    let result = run(&server.url(), &["object", "delete-prefix", "b", "p/"]).await;
+    assert_eq!(result.status.code(), Some(1));
+    assert_eq!(value(&result)["output"]["deleted"], json!([]));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.starts_with("error: ProtocolViolation: invalid JSON response body (HTTP 200)"),
+        "{stderr}"
+    );
+    list.assert_async().await;
 }

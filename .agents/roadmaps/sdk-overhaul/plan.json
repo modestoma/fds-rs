@@ -292,7 +292,7 @@
       "title": "delete_prefix 增加显式 marker/delimiter，CLI 改用 SDK",
       "type": "refactor",
       "document": "tasks/delete-prefix-options.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 5,
       "depends_on": [
         "fluent-listing-delete"

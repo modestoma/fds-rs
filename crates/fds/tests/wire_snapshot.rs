@@ -1002,6 +1002,33 @@ async fn listing_delete_requests() -> Vec<(&'static str, String)> {
         })
         .await,
     ));
+    cases.push((
+        "delete_prefix empty marker",
+        capture_all(&[r#"{"objects":[{"name":"p/a"}]}"#, "[]"], |c| async move {
+            c.delete_prefix("b", "p/").marker("").send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "delete_prefix marker delimiter",
+        capture_all(
+            &[
+                r#"{"objects":[{"name":"p/a"}],"commonPrefixes":["p/d/"],"truncated":true,"nextMarker":"n x+1"}"#,
+                "[]",
+                r#"{"objects":[{"name":"p/b"}]}"#,
+                "[]",
+            ],
+            |c| async move {
+                c.delete_prefix("b", "p/")
+                    .marker("m k+1/2")
+                    .delimiter("/")
+                    .send()
+                    .await
+                    .unwrap();
+            },
+        )
+        .await,
+    ));
     cases
 }
 
