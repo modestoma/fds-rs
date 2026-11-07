@@ -56,6 +56,7 @@ async fn get_object_range_explicitly_accepts_206() {
             bucket_name: "b".into(),
             object_name: "o".into(),
             range: Some("bytes=0-4".parse().unwrap()),
+            timeout: None,
         })
         .await
         .unwrap()
@@ -158,6 +159,7 @@ async fn error_status_carries_body_and_code() {
             bucket_name: "b".into(),
             object_name: "o".into(),
             range: None,
+            timeout: None,
         })
         .await
         .unwrap_err();
@@ -186,6 +188,7 @@ async fn object_name_with_slash_is_percent_encoded_on_the_wire() {
             bucket_name: "b".into(),
             object_name: "dir/sub/file.log".into(),
             range: None,
+            timeout: None,
         })
         .await
         .unwrap()
@@ -215,6 +218,7 @@ async fn explicit_status_matrix() {
                 bucket_name: "b".into(),
                 object_name: "o".into(),
                 range: None,
+                timeout: None,
             })
             .await;
         assert_eq!(result.is_ok(), status == 200, "GET {status}");
@@ -234,6 +238,7 @@ async fn explicit_status_matrix() {
                 bucket_name: "b".into(),
                 object_name: "o".into(),
                 range: Some("bytes=0-2".parse().unwrap()),
+                timeout: None,
             })
             .await;
         assert_eq!(
@@ -358,6 +363,7 @@ async fn signed_redirects_never_follow_same_or_cross_origin() {
                     bucket_name: "b".into(),
                     object_name: "o".into(),
                     range: None,
+                    timeout: None,
                 })
                 .await
                 .unwrap_err();
@@ -395,6 +401,7 @@ async fn diagnostics_are_bounded_and_formatting_omits_untrusted_strings() {
                 bucket_name: "b".into(),
                 object_name: "o".into(),
                 range: None,
+                timeout: None,
             })
             .await
             .unwrap_err();

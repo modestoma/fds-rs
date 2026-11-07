@@ -14,7 +14,7 @@ pub struct ClientConfiguration {
     pub(crate) cdn_endpoint: Option<Url>,
     pub(crate) enable_md5_calculate: bool,
     pub(crate) connect_timeout: Duration,
-    pub(crate) request_timeout: Duration,
+    pub(crate) request_timeout: Option<Duration>,
     pub(crate) read_timeout: Duration,
     pub(crate) pool_idle_timeout: Duration,
     pub(crate) tcp_keepalive: Duration,
@@ -30,7 +30,7 @@ impl ClientConfiguration {
             cdn_endpoint: None,
             enable_md5_calculate: false,
             connect_timeout: Duration::from_secs(50),
-            request_timeout: Duration::from_secs(300),
+            request_timeout: None,
             read_timeout: Duration::from_secs(50),
             pool_idle_timeout: Duration::from_secs(90),
             tcp_keepalive: Duration::from_secs(30),
@@ -50,12 +50,17 @@ impl ClientConfiguration {
     pub fn enable_md5_calculate(&self) -> bool {
         self.enable_md5_calculate
     }
+    /// Connection establishment timeout, including TLS. Defaults to 50 seconds.
     pub fn connect_timeout(&self) -> Duration {
         self.connect_timeout
     }
-    pub fn request_timeout(&self) -> Duration {
+    /// Client-wide total deadline for each attempt, or `None` (the default)
+    /// when no total deadline applies. See [`ClientBuilder::request_timeout`].
+    pub fn request_timeout(&self) -> Option<Duration> {
         self.request_timeout
     }
+    /// Read idle timeout, reset after each successful read. Defaults to 50
+    /// seconds. See [`ClientBuilder::read_timeout`].
     pub fn read_timeout(&self) -> Duration {
         self.read_timeout
     }
@@ -132,17 +137,46 @@ impl ClientBuilder {
         self.md5 = value;
         self
     }
-    /// Connection establishment timeout, including TLS. Must be nonzero.
+    /// Connection establishment timeout, including TLS. Defaults to 50
+    /// seconds. Must be nonzero and representable.
     pub fn connect_timeout(mut self, value: Duration) -> Self {
         self.connect_timeout = Some(value);
         self
     }
-    /// Total request deadline through consumption of the response body.
+    /// Opt in to a client-wide total deadline for each request attempt.
+    ///
+    /// By default there is **no** total deadline: requests are bounded only by
+    /// [`connect_timeout`](Self::connect_timeout) and
+    /// [`read_timeout`](Self::read_timeout), so a streaming download keeps
+    /// running for as long as it makes progress. Uploads are different: see
+    /// [`read_timeout`](Self::read_timeout) for how it bounds the time spent
+    /// sending a request body.
+    ///
+    /// Once set, the deadline runs from connecting until the response body has
+    /// been fully consumed. It therefore also covers streaming reads through
+    /// [`GetObjectOutput::chunk`](crate::GetObjectOutput::chunk),
+    /// [`GetObjectOutput::copy_to`](crate::GetObjectOutput::copy_to) and
+    /// [`GetObjectOutput::bytes`](crate::GetObjectOutput::bytes): a transfer that
+    /// is still progressing fails with a timeout when the deadline passes. It
+    /// applies to each attempt separately, not to all retries together.
+    /// Requests that support a per-request `timeout` (for example
+    /// [`GetObjectRequest::timeout`](crate::GetObjectRequest::timeout)) override
+    /// this value. Must be nonzero and representable.
     pub fn request_timeout(mut self, value: Duration) -> Self {
         self.request_timeout = Some(value);
         self
     }
-    /// Maximum idle time for each response read, reset after progress.
+    /// Read idle timeout. Defaults to 50 seconds. Must be nonzero and
+    /// representable.
+    ///
+    /// While the response body is read it is an idle timeout: it bounds each
+    /// read and is reset whenever a read makes progress, so it never limits a
+    /// download that keeps receiving data. Before the response headers arrive,
+    /// however, it is a single deadline measured from the start of the attempt
+    /// and is **not** reset by request-body upload progress. An upload whose
+    /// body takes longer than this to send (and for the service to answer)
+    /// fails with a timeout even if it is still progressing; raise this value
+    /// for large uploads.
     pub fn read_timeout(mut self, value: Duration) -> Self {
         self.read_timeout = Some(value);
         self
@@ -177,20 +211,15 @@ impl ClientBuilder {
         conf.retry_policy = self.retry_policy;
         for (target, value) in [
             (&mut conf.connect_timeout, self.connect_timeout),
-            (&mut conf.request_timeout, self.request_timeout),
             (&mut conf.read_timeout, self.read_timeout),
             (&mut conf.pool_idle_timeout, self.pool_idle_timeout),
             (&mut conf.tcp_keepalive, self.tcp_keepalive),
         ] {
             if let Some(value) = value {
-                if value.is_zero() || std::time::Instant::now().checked_add(value).is_none() {
-                    return Err(FdsError::invalid(
-                        "timeout must be nonzero and representable",
-                    ));
-                }
-                *target = value;
+                *target = validate_timeout(value)?;
             }
         }
+        conf.request_timeout = self.request_timeout.map(validate_timeout).transpose()?;
         // Socket options use integer seconds; reject rounding and oversized
         // values instead of letting the connector silently ignore OS errors.
         if conf.tcp_keepalive.subsec_nanos() != 0 || conf.tcp_keepalive.as_secs() > 32767 {
@@ -210,6 +239,16 @@ impl ClientBuilder {
             .ok_or_else(|| FdsError::invalid("credentials are required"))?;
         Client::with_credentials(credentials, conf)
     }
+}
+
+/// Reject zero and deadlines which cannot be represented as an `Instant`.
+pub(crate) fn validate_timeout(value: Duration) -> Result<Duration> {
+    if value.is_zero() || std::time::Instant::now().checked_add(value).is_none() {
+        return Err(FdsError::invalid(
+            "timeout must be nonzero and representable",
+        ));
+    }
+    Ok(value)
 }
 
 fn validate_endpoint(value: &str) -> Result<Url> {

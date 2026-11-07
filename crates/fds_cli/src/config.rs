@@ -39,6 +39,7 @@ pub struct Connection {
     md5: bool,
     #[arg(long, global = true)]
     connect_timeout_ms: Option<u64>,
+    // Unset keeps the SDK default of no total deadline; set opts in to one.
     #[arg(long, global = true)]
     request_timeout_ms: Option<u64>,
     #[arg(long, global = true)]

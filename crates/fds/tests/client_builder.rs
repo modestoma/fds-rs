@@ -72,7 +72,7 @@ fn limits_and_effective_configuration() {
     let defaults = builder().build().unwrap();
     let conf = defaults.configuration();
     assert_eq!(conf.connect_timeout(), Duration::from_secs(50));
-    assert_eq!(conf.request_timeout(), Duration::from_secs(300));
+    assert_eq!(conf.request_timeout(), None);
     assert_eq!(conf.read_timeout(), Duration::from_secs(50));
     assert_eq!(conf.pool_idle_timeout(), Duration::from_secs(90));
     assert_eq!(conf.tcp_keepalive(), Duration::from_secs(30));
@@ -107,7 +107,7 @@ fn limits_and_effective_configuration() {
         .unwrap();
     let conf = c.configuration();
     assert_eq!(conf.connect_timeout(), d);
-    assert_eq!(conf.request_timeout(), d);
+    assert_eq!(conf.request_timeout(), Some(d));
     assert_eq!(conf.read_timeout(), d);
     assert_eq!(conf.pool_idle_timeout(), d);
     assert_eq!(conf.tcp_keepalive(), d);
@@ -215,18 +215,20 @@ async fn connect_timeout_enforces_tls_handshake_deadline() {
 async fn read_timeout_enforces_header_and_stream_body_stalls() {
     for headers in [false, true] {
         let (endpoint, server) = stalled_server(false, headers).await;
+        // Default configuration: no total deadline, only the read idle timeout.
         let c = builder()
             .endpoint(endpoint)
             .read_timeout(Duration::from_millis(100))
-            .request_timeout(Duration::from_secs(10))
             .build()
             .unwrap();
+        assert_eq!(c.configuration().request_timeout(), None);
         let result = tokio::time::timeout(Duration::from_secs(3), async {
             let resp = c
                 .get_object(&GetObjectRequest {
                     bucket_name: "b".into(),
                     object_name: "o".into(),
                     range: None,
+                    timeout: None,
                 })
                 .await?;
             resp.bytes().await
@@ -240,48 +242,152 @@ async fn read_timeout_enforces_header_and_stream_body_stalls() {
     }
 }
 
-#[tokio::test]
-async fn total_timeout_expires_despite_continuing_body_progress() {
+/// Shortened stand-in for a total deadline. Every slow body below takes well
+/// over this long while making steady progress, far under the read timeout.
+const THRESHOLD: Duration = Duration::from_millis(200);
+const SLOW_BODY_LEN: usize = 12;
+
+/// Serve one request with a body of `SLOW_BODY_LEN` bytes sent one byte every
+/// 40ms (about 480ms in total, i.e. more than twice `THRESHOLD`).
+async fn slow_body_server() -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
+        socket.set_nodelay(true).unwrap();
         let mut buf = [0; 8192];
         assert!(
             socket.read(&mut buf).await.unwrap() > 0,
             "peer closed before sending request bytes"
         );
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
-            .await
-            .unwrap();
-        loop {
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {SLOW_BODY_LEN}\r\n\r\n");
+        if socket.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        for _ in 0..SLOW_BODY_LEN {
+            tokio::time::sleep(Duration::from_millis(40)).await;
             if socket.write_all(b"x").await.is_err() {
-                break;
+                return;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     });
-    let c = builder()
+    (endpoint, task)
+}
+
+/// GET from a fresh slow-body server and read the whole body, guarded by an
+/// outer deadline so a regression cannot hang the test suite.
+async fn get_slow_body(
+    client_builder: fds::ClientBuilder,
+    request: GetObjectRequest,
+) -> (fds::Result<bytes::Bytes>, Duration) {
+    let (endpoint, server) = slow_body_server().await;
+    let c = client_builder
         .endpoint(endpoint)
-        .request_timeout(Duration::from_millis(150))
         .read_timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    let response = c
-        .get_object(&GetObjectRequest {
-            bucket_name: "b".into(),
-            object_name: "o".into(),
-            range: None,
-        })
-        .await
-        .unwrap();
-    let e = tokio::time::timeout(Duration::from_secs(3), response.bytes())
-        .await
-        .unwrap()
-        .unwrap_err();
-    assert!(matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()));
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        c.get_object(&request).await?.bytes().await
+    })
+    .await
+    .expect("outer guard elapsed");
+    let elapsed = started.elapsed();
     server.abort();
+    (result, elapsed)
+}
+
+fn assert_timeout(result: fds::Result<bytes::Bytes>) {
+    let e = result.unwrap_err();
+    assert!(
+        matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()),
+        "expected a timeout, got {e:?}"
+    );
+}
+
+#[tokio::test]
+async fn default_client_reads_slow_body_beyond_total_threshold() {
+    let (result, elapsed) = get_slow_body(builder(), GetObjectRequest::new("b", "o")).await;
+    assert_eq!(result.unwrap().len(), SLOW_BODY_LEN);
+    assert!(elapsed > THRESHOLD, "body finished too fast: {elapsed:?}");
+}
+
+#[tokio::test]
+async fn total_timeout_expires_despite_continuing_body_progress() {
+    let (result, _) = get_slow_body(
+        builder().request_timeout(THRESHOLD),
+        GetObjectRequest::new("b", "o"),
+    )
+    .await;
+    assert_timeout(result);
+}
+
+#[tokio::test]
+async fn per_request_timeout_overrides_client_configuration() {
+    // Applies on a default client, which has no total deadline of its own.
+    let (result, _) = get_slow_body(
+        builder(),
+        GetObjectRequest::new("b", "o").timeout(THRESHOLD),
+    )
+    .await;
+    assert_timeout(result);
+    // A shorter per-request deadline wins over a longer client deadline.
+    let (result, _) = get_slow_body(
+        builder().request_timeout(Duration::from_secs(30)),
+        GetObjectRequest::new("b", "o").timeout(THRESHOLD),
+    )
+    .await;
+    assert_timeout(result);
+    // A longer per-request deadline also wins over a shorter client deadline.
+    let (result, elapsed) = get_slow_body(
+        builder().request_timeout(THRESHOLD),
+        GetObjectRequest::new("b", "o").timeout(Duration::from_secs(30)),
+    )
+    .await;
+    assert_eq!(result.unwrap().len(), SLOW_BODY_LEN);
+    assert!(elapsed > THRESHOLD, "body finished too fast: {elapsed:?}");
+}
+
+#[tokio::test]
+async fn put_object_request_timeout_applies_while_awaiting_response() {
+    let (endpoint, server) = stalled_server(false, false).await;
+    let c = builder()
+        .endpoint(endpoint)
+        .read_timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        PutObjectRequest::new("b", "o", b"hello".to_vec())
+            .timeout(THRESHOLD)
+            .send(&c),
+    )
+    .await
+    .expect("outer guard elapsed");
+    let e = result.unwrap_err();
+    assert!(
+        matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()),
+        "expected a timeout, got {e:?}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn per_request_timeout_is_validated() {
+    let c = builder().build().unwrap();
+    for duration in [Duration::ZERO, Duration::MAX] {
+        let e = c
+            .get_object(&GetObjectRequest::new("b", "o").timeout(duration))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, fds::FdsError::Invalid(_)), "{e:?}");
+        let e = PutObjectRequest::new("b", "o", b"x".to_vec())
+            .timeout(duration)
+            .send(&c)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, fds::FdsError::Invalid(_)), "{e:?}");
+    }
 }
 
 #[tokio::test]

@@ -238,6 +238,7 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
                     bucket_name: bucket.clone(),
                     object_name: object.clone(),
                     range: range.as_deref().map(str::parse).transpose()?,
+                    timeout: None,
                 })
                 .await?;
             if *show_headers {

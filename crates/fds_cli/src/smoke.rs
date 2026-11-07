@@ -82,6 +82,7 @@ pub async fn smoke(
                 bucket_name: bucket.into(),
                 object_name: hello.clone(),
                 range: None,
+                timeout: None,
             })
             .await?
             .bytes()
@@ -100,6 +101,7 @@ pub async fn smoke(
                 bucket_name: bucket.into(),
                 object_name: hello.clone(),
                 range: Some("bytes=0-4".parse().unwrap()),
+                timeout: None,
             })
             .await?
             .bytes()

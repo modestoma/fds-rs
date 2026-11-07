@@ -24,7 +24,7 @@
       "title": "取消默认整体超时，支持单请求超时",
       "type": "fix",
       "document": "tasks/request-timeout.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 1,
       "depends_on": [
         "baseline-green"

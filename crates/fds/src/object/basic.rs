@@ -7,6 +7,7 @@ use bytes::Bytes;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Input of `get_object` (Go `GetObjectRequest`).
 #[derive(Debug, Clone, Default)]
@@ -15,6 +16,10 @@ pub struct GetObjectRequest {
     pub object_name: String,
     /// `Range` header (e.g. `bytes=0-1023`); `None` → not sent.
     pub range: Option<crate::ByteRange>,
+    /// Total deadline for this request, overriding the client-wide
+    /// [`request_timeout`](crate::ClientBuilder::request_timeout); `None` uses
+    /// the client setting. See [`GetObjectRequest::timeout`].
+    pub timeout: Option<Duration>,
 }
 
 /// Input of `copy_object` (Go `CopyObjectRequest`).
@@ -48,10 +53,26 @@ impl GetObjectRequest {
             bucket_name: bucket.into(),
             object_name: object.into(),
             range: None,
+            timeout: None,
         }
     }
     pub fn range(mut self, range: ByteRange) -> Self {
         self.range = Some(range);
+        self
+    }
+    /// Set a total deadline for this request only, overriding the client-wide
+    /// [`request_timeout`](crate::ClientBuilder::request_timeout) whether that is
+    /// set or not.
+    ///
+    /// The deadline runs from connecting until the response body has been fully
+    /// consumed, so it also bounds [`GetObjectOutput::chunk`],
+    /// [`GetObjectOutput::copy_to`] and [`GetObjectOutput::bytes`]: a download
+    /// that is still progressing fails with a timeout once it passes. With
+    /// retries enabled it applies to each attempt separately. The client's
+    /// connect and read idle timeouts still apply. Must be nonzero and
+    /// representable; otherwise sending fails with an invalid-input error.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
     pub async fn send(self, client: &Client) -> Result<GetObjectOutput> {
@@ -102,6 +123,10 @@ impl Client {
             cr.accepted_statuses = &[200, 206];
         }
         cr.headers = headers;
+        cr.timeout = req
+            .timeout
+            .map(crate::config::validate_timeout)
+            .transpose()?;
         Ok(crate::GetObjectOutput::new(self.do_request(cr).await?))
     }
 

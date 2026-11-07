@@ -13,7 +13,7 @@ use crate::constant::{HttpMethod, HTTP_HEADER_AUTHORIZATION, HTTP_HEADER_DATE};
 use crate::encoding::{go_query_escape, QueryValues};
 use crate::error::{FdsError, JsonResponseSource, ResponseError, ResponseErrorKind, Result};
 use crate::metadata::ObjectMetadata;
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
 /// A validated FDS client. Clones share immutable configuration, private
 /// credentials and a connection pool; no caller-owned Arc is required.
@@ -65,6 +65,9 @@ pub(crate) struct ClientRequest<'a> {
     pub body: Option<UploadBody>,
     pub replay_safety: crate::retry::ReplaySafety,
     pub accepted_statuses: &'static [u16],
+    /// Per-attempt total deadline overriding the client-wide `request_timeout`;
+    /// covers consumption of the response body. Callers validate it first.
+    pub timeout: Option<Duration>,
 }
 
 impl<'a> ClientRequest<'a> {
@@ -85,6 +88,7 @@ impl<'a> ClientRequest<'a> {
             body: None,
             accepted_statuses: &[200],
             replay_safety: crate::retry::ReplaySafety::Never,
+            timeout: None,
         }
     }
 }
@@ -122,16 +126,19 @@ impl Client {
         conf: ClientConfiguration,
     ) -> Result<Self> {
         credentials.validate(&conf)?;
-        #[allow(unused_mut)]
         let mut builder = reqwest::Client::builder()
             .connect_timeout(conf.connect_timeout)
-            .timeout(conf.request_timeout)
             .read_timeout(conf.read_timeout)
             .pool_idle_timeout(conf.pool_idle_timeout)
             .tcp_keepalive(conf.tcp_keepalive)
             .pool_max_idle_per_host(100)
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never());
+        // No total deadline unless explicitly configured: reqwest's timeout
+        // also covers body consumption and would cut off long transfers.
+        if let Some(timeout) = conf.request_timeout {
+            builder = builder.timeout(timeout);
+        }
         #[cfg(feature = "cslb")]
         {
             let resolver = crate::cslb::CslbResolver::new(conf.cslb_max_nodes, true, true);
@@ -180,7 +187,13 @@ impl Client {
                 None
             };
             let result = self
-                .send(req.method, url.clone(), headers.clone(), body.take())
+                .send(
+                    req.method,
+                    url.clone(),
+                    headers.clone(),
+                    body.take(),
+                    req.timeout,
+                )
                 .await;
             let delay = if eligible {
                 match &result {
@@ -284,6 +297,7 @@ impl Client {
         url: url::Url,
         mut headers: HeaderMap,
         body: Option<UploadBody>,
+        timeout: Option<Duration>,
     ) -> Result<reqwest::Response> {
         // (3) body: optional Content-MD5 (must be set BEFORE signing).
         let body = body
@@ -324,6 +338,10 @@ impl Client {
         let mut rb = self.inner.http.request(method.into(), url).headers(headers);
         if let Some(b) = body {
             rb = rb.body(b);
+        }
+        // Overrides the client-wide deadline for this attempt only.
+        if let Some(timeout) = timeout {
+            rb = rb.timeout(timeout);
         }
         let mut resp = rb.send().await?;
         if !matches!(

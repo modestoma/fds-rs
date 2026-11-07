@@ -67,7 +67,7 @@ flowchart LR
     t_baseline_green["baseline-green：恢复基线检查全绿（clippy 新 lint） ✅"]
   end
   subgraph G2["批次 2（可并行）"]
-    t_request_timeout["request-timeout：取消默认整体超时，支持单请求超时"]
+    t_request_timeout["request-timeout：取消默认整体超时，支持单请求超时 ✅"]
     t_downloader_io["downloader-io：Downloader 文件 IO 移出 async 线程并减少 fsync"]
   end
   subgraph G3["批次 3"]
@@ -125,11 +125,11 @@ flowchart LR
   t_credentials_provider --> t_docs_release
   t_idempotent_retry --> t_docs_release
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_baseline_green done
+  class t_request_timeout,t_baseline_green done
 ```
 
 - 批次 1：baseline-green✅
-- 批次 2（可并行）：request-timeout、downloader-io
+- 批次 2（可并行）：request-timeout✅、downloader-io
 - 批次 3：error-model
 - 批次 4：public-surface
 - 批次 5：internal-cleanup

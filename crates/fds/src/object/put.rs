@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use std::path::Path;
+use std::time::Duration;
 
 /// Single-use PUT request. The body owns bytes or a known-length stream.
 #[derive(Debug)]
@@ -22,6 +23,7 @@ pub struct PutObjectRequest {
     expect: Option<String>,
     metadata: Option<ObjectMetadata>,
     expires: Option<DateTime<Utc>>,
+    timeout: Option<Duration>,
 }
 
 /// Result of `put_object` / `complete_multipart_upload` (Go `PutObjectResponse`).
@@ -89,6 +91,7 @@ impl PutObjectRequest {
             metadata: None,
             body: body.into(),
             expires: None,
+            timeout: None,
         }
     }
     /// Open a regular file and build a single-use PUT, without sending it.
@@ -113,6 +116,22 @@ impl PutObjectRequest {
     /// Response-signature expiry in UTC, not object TTL.
     pub fn expires(mut self, expires: DateTime<Utc>) -> Self {
         self.expires = Some(expires);
+        self
+    }
+    /// Set a total deadline for this request only, overriding the client-wide
+    /// [`request_timeout`](crate::ClientBuilder::request_timeout) whether that is
+    /// set or not.
+    ///
+    /// The deadline runs from connecting, through uploading the whole body,
+    /// until the response has been read; a large upload that is still
+    /// progressing fails with a timeout once it passes. By default no total
+    /// deadline applies unless the client sets one. The client's connect
+    /// timeout and [`read_timeout`](crate::ClientBuilder::read_timeout) still
+    /// apply; note that the latter also bounds the time until the response
+    /// headers arrive, including the upload itself. Must be nonzero and
+    /// representable; otherwise sending fails with an invalid-input error.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
     pub async fn send(self, client: &Client) -> Result<PutObjectResponse> {
@@ -167,6 +186,10 @@ impl Client {
         insert_header_opt(&mut headers, "expect", &req.expect)?;
 
         let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, HttpMethod::Put);
+        cr.timeout = req
+            .timeout
+            .map(crate::config::validate_timeout)
+            .transpose()?;
         cr.headers = headers;
         cr.metadata = req.metadata.as_ref();
         cr.body = Some(req.body);

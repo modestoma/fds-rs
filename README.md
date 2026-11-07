@@ -103,15 +103,15 @@ Client 内部共享配置、凭据和连接池，可廉价 `clone()` 后交给�
 | `credentials(id, secret)` | 必填，或使用 OAuth token | access key 认证；两者须非空 |
 | `cdn_endpoint(origin)` | 无 | 仅生成 CDN 预签名 URL 时使用，不改变普通 SDK 请求入口 |
 | `connect_timeout(Duration)` | 50 秒 | 建连，包括 TLS |
-| `read_timeout(Duration)` | 50 秒 | 每次响应读取的最大等待，取得进展后重置 |
-| `request_timeout(Duration)` | 300 秒 | 单次请求总期限，包含响应 body 消费 |
+| `read_timeout(Duration)` | 50 秒 | 读响应 body 时是读空闲超时，取得进展后重置；收到响应头之前则是从请求开始计时的单一期限，上传 body 的进展不会重置它 |
+| `request_timeout(Duration)` | 无 | 显式开启单次请求总期限，覆盖响应 body 的流式消费；`GetObjectRequest` / `PutObjectRequest` 的 `.timeout(Duration)` 可按请求覆盖 |
 | `pool_idle_timeout(Duration)` | 90 秒 | 空闲连接在池中保留的时间 |
 | `tcp_keepalive(Duration)` | 30 秒 | 整数秒，1–32767；实际探测由操作系统调度 |
 | `enable_md5_calculate(bool)` | false | 为内存 body 计算十六进制 Content-MD5；文件/流另见上传章节 |
 | `retry_policy(RetryPolicy)` | 不重试 | 只对显式分类的读取生效 |
 | `cslb_max_nodes(usize)` | 20 | 仅 `cslb` feature；必须大于零，限制每个主机保留的 DNS 节点数 |
 
-超时参数均须非零且可表示。慢速大文件传输应同时评估 read timeout 和总 timeout，不能只调大连接超时。
+超时参数均须非零且可表示。默认不设总期限，大对象下载只要持续有进展就不会被打断，卡住的连接由 connect timeout 和 read timeout 发现；开启总期限后，它同样约束 `chunk()` / `copy_to()` / `bytes()` 的读取过程。上传时 read timeout 覆盖“发送 body 到收到响应头”的整个过程，大文件上传需要相应调大 read timeout。
 
 ```rust,no_run
 use fds::{Client, RetryPolicy};
