@@ -2,8 +2,8 @@
 //!
 //! Run (requires a real FDS bucket + credentials):
 //! ```bash
-//! GO_FDS_TEST_ENDPOINT=https://cnbj1.fds.api.xiaomi.com \
-//! GO_FDS_TEST_ACCESS_KEY_ID=... GO_FDS_TEST_ACCESS_KEY_SECRET=... \
+//! FDS_ENDPOINT=https://cnbj1.fds.api.xiaomi.com \
+//! FDS_ACCESS_KEY_ID=... FDS_ACCESS_KEY_SECRET=... \
 //! cargo run --example quickstart -- my-bucket
 //! ```
 
@@ -19,13 +19,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| "my-bucket".into());
 
     let client = Client::builder()
-        .endpoint(
-            std::env::var("GO_FDS_TEST_ENDPOINT")
-                .unwrap_or_else(|_| "https://cnbj1.fds.api.xiaomi.com".into()),
-        )
+        .endpoint(std::env::var("FDS_ENDPOINT")?)
         .credentials(
-            std::env::var("GO_FDS_TEST_ACCESS_KEY_ID")?,
-            std::env::var("GO_FDS_TEST_ACCESS_KEY_SECRET")?,
+            std::env::var("FDS_ACCESS_KEY_ID")?,
+            std::env::var("FDS_ACCESS_KEY_SECRET")?,
         )
         .build()?;
 

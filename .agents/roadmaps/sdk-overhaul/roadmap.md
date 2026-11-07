@@ -112,7 +112,7 @@ flowchart LR
     t_cli_oauth_refresh["cli-oauth-refresh：fds_cli --oauth 改用 StorageTokenProvider 自动续期 ✅"]
   end
   subgraph G16["批次 16"]
-    t_docs_release["docs-release：文档、示例与版本号 0.1.0"]
+    t_docs_release["docs-release：文档、示例与版本号 0.1.0 ✅"]
   end
   t_baseline_green --> t_request_timeout
   t_baseline_green --> t_downloader_io
@@ -141,7 +141,7 @@ flowchart LR
   t_fluent_listing_delete --> t_delete_prefix_options
   t_credentials_provider --> t_cli_oauth_refresh
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_typed_responses,t_object_metadata,t_credentials_provider,t_idempotent_retry,t_baseline_green,t_upload_idle_timeout,t_cslb_internal,t_delete_prefix_options,t_cli_oauth_refresh done
+  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_typed_responses,t_object_metadata,t_credentials_provider,t_idempotent_retry,t_docs_release,t_baseline_green,t_upload_idle_timeout,t_cslb_internal,t_delete_prefix_options,t_cli_oauth_refresh done
 ```
 
 - 批次 1：baseline-green✅
@@ -159,7 +159,7 @@ flowchart LR
 - 批次 13：credentials-provider✅
 - 批次 14：idempotent-retry✅
 - 批次 15：cli-oauth-refresh✅
-- 批次 16：docs-release
+- 批次 16：docs-release✅
 
 ✅ 已完成　⛔ 阻塞　✖️ 已取消。进行中的任务看 `roadmap.py status`（分支存在即进行中）。
 <!-- roadmap:order:end -->

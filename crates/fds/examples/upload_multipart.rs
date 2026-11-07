@@ -1,4 +1,4 @@
-//! Run with FDS_ENDPOINT/FDS_ACCESS_KEY/FDS_SECRET_KEY and bucket, key, file args.
+//! Run with FDS_ENDPOINT/FDS_ACCESS_KEY_ID/FDS_ACCESS_KEY_SECRET and bucket, key, file args.
 use fds::multipart::CleanupPolicy;
 use fds::Client;
 use tokio_util::sync::CancellationToken;
@@ -12,8 +12,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder()
         .endpoint(std::env::var("FDS_ENDPOINT")?)
         .credentials(
-            std::env::var("FDS_ACCESS_KEY")?,
-            std::env::var("FDS_SECRET_KEY")?,
+            std::env::var("FDS_ACCESS_KEY_ID")?,
+            std::env::var("FDS_ACCESS_KEY_SECRET")?,
         )
         .build()?;
     let mut session = client

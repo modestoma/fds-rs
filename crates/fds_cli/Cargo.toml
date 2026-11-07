@@ -1,6 +1,6 @@
 [package]
 name = "fds_cli"
-version = "0.2.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.86"
 description = "Command-line verification tool for the FDS Rust SDK"
@@ -15,7 +15,7 @@ path = "src/main.rs"
 cslb = ["fds/cslb"]
 
 [dependencies]
-fds = { path = "../fds", version = "0.2.0", registry = "artifactory", features = ["manager"] }
+fds = { path = "../fds", version = "0.1.0", registry = "artifactory", features = ["manager"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

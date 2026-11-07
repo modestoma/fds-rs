@@ -4,7 +4,7 @@ GET /b?delimiter=&maxKeys=1000&prefix= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -15,7 +15,7 @@ GET /b?delimiter=%2F&marker=m+k%2B1%2F2&maxKeys=7&prefix=dir%2Fa+b%2Bc.txt HTTP/
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -26,7 +26,7 @@ GET /b?delimiter=&marker=&maxKeys=1000&prefix= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -37,7 +37,7 @@ GET /b?delimiter=&maxKeys=1000&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -46,7 +46,7 @@ GET /b?delimiter=&marker=n+x%2B1&maxKeys=1000&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -57,7 +57,7 @@ GET /b?delimiter=&marker=start&maxKeys=2&prefix= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -66,7 +66,7 @@ GET /b?delimiter=&marker=n&maxKeys=2&prefix= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -78,7 +78,7 @@ content-length: 25
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["a","dir/a b+c.txt","a"]
@@ -90,7 +90,7 @@ content-length: 5
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["x"]
@@ -101,7 +101,7 @@ GET /b?delimiter=&maxKeys=1000&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -111,7 +111,7 @@ content-length: 7
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["p/a"]
@@ -120,7 +120,7 @@ GET /b?delimiter=&marker=m&maxKeys=1000&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -130,7 +130,7 @@ content-length: 9
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["p/b c"]
@@ -141,7 +141,7 @@ GET /b?delimiter=&maxKeys=2&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -151,7 +151,7 @@ content-length: 7
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["p/a"]
@@ -162,7 +162,7 @@ GET /b?delimiter=&marker=&maxKeys=1000&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -172,7 +172,7 @@ content-length: 7
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["p/a"]
@@ -183,7 +183,7 @@ GET /b?delimiter=%2F&marker=m+k%2B1%2F2&maxKeys=1000&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -193,7 +193,7 @@ content-length: 7
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["p/a"]
@@ -202,7 +202,7 @@ GET /b?delimiter=%2F&marker=n+x%2B1&maxKeys=1000&prefix=p%2F HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -212,7 +212,7 @@ content-length: 7
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 ["p/b"]

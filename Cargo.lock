@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "fds"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "base64",
  "bytes",
@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "fds_cli"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",

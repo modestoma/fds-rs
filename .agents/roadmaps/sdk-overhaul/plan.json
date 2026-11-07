@@ -225,7 +225,7 @@
       "title": "文档、示例与版本号 0.1.0",
       "type": "docs",
       "document": "tasks/docs-release.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 8,
       "depends_on": [
         "credentials-provider",

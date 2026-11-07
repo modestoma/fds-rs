@@ -1,14 +1,14 @@
 # 运行语义与数据安全
 
-本文集中说明调用后的状态、资源和失败边界。构造器、默认配置和示例统一见 [SDK 手册](../README.md)；协议依据见 [协议说明](protocol.md)，兼容性变化见 [迁移指南](migration.md)。
+本文集中说明调用后的状态、资源和失败边界。构造器、默认配置和示例统一见 [SDK 手册](../README.md)；协议依据见 [协议说明](protocol.md)。
 
 ## 客户端与请求生命周期
 
-Client 的 clone 共享内部 Arc、凭据、配置、连接池和可选 CSLB resolver。构建时不联网；配置和凭据不提供可变入口，重新配置后旧 clone 不更新。
+Client 的 clone 共享内部 Arc、凭据 provider、配置、连接池和可选 CSLB resolver。构建时不联网；配置不提供可变入口，重新配置后旧 clone 不更新。凭据由 `CredentialsProvider` 在每次请求尝试前（含重试）提供：`credentials` / `storage_token` 是固定凭据，`StorageTokenProvider` 或自定义 provider 可在不重建 Client 的情况下轮换或续期，所有 clone 立即生效。
 
 endpoint 仅接受 HTTP(S) origin，允许端口、IPv6 与根路径 `/`；拒绝端口 0、userinfo、query、fragment、路径前缀、空白及会被解析器消除的 dot 路径。凭据非空且 access ID 必须能安全用于鉴权头。Duration 必须非零且能表示为当前平台期限；TCP keepalive 为 1–32767 整秒；CSLB 节点数必须大于零。
 
-请求构造器本身不发网络请求，执行时由 Client 统一校验 bucket/key 等参数。文件 body 构造会打开文件，但还不发送。读取请求可借用，上传请求拥有且消耗 body。请求链之间没有事务或自动回滚。
+每个操作写作 `client.<操作>(必填参数).<可选项>().send().await`。builder 持有 Client 的 clone 和全部参数，创建和链式设置都不发网络请求；`send()` 消耗 builder，先在本地校验 bucket/key、头部、超时等参数（失败为 InvalidInput、`Dispatch::NotSent`），再发送。上传 body 由 builder 拥有，发送后不能复用。`UploadBody::from_file` 会打开文件，但还不发送。不发请求的操作（预签名）以 `build()` 结束。请求之间没有事务或自动回滚。
 
 连接池每主机最大空闲连接数默认为 100，可用 `pool_max_idle_per_host` 调整，不代表总连接或并发上限。每个请求带 `User-Agent: fds-rs/<版本>`，可用 `user_agent_suffix` 追加应用标识；User-Agent 由 HTTP 层在签名之后添加，不参与签名。CDN origin 只用于显式 CDN 预签名，未配置时报错；普通数据请求始终使用 FDS endpoint。不跟随同源或跨源重定向。
 
@@ -39,9 +39,9 @@ CSLB 在 DNS 解析时轮换首选 IP 并附加备选地址，按 TTL 刷新；�
 | `diagnostic_body()` | 最多 8192 字节 UTF-8 文本；截断或读取不完整反映在 body_truncated |
 | `source()` | 传输错误去掉 URL；JSON 解析源仅保留类别、行、列 |
 
-错误状态只读取受限诊断前缀，正常 JSON 响应仍全量读取，没有通用大小硬上限。SDK 错误 Display/Debug 只打印 kind、SDK 消息、status 和形如标识符的 service code（Debug 另含 dispatch、上下文和按 Display 输出的 source 链），不打印 request ID 和响应体，tracing 仅记录 method，Authorization 标记 sensitive。显式诊断访问器仍返回可能含敏感内容的服务原文；调用者构造的错误、模型、raw response、其他依赖日志不受这些格式化规则保护。
+错误状态只读取受限诊断前缀，正常 JSON 响应仍全量读取，没有通用大小硬上限。SDK 错误 Display/Debug 只打印 kind、SDK 消息、status 和形如标识符的 service code（Debug 另含 dispatch、上下文和按 Display 输出的 source 链），不打印 request ID 和响应体，tracing 仅记录 method，Authorization 标记 sensitive。显式诊断访问器仍返回可能含敏感内容的服务原文；调用者构造的错误、模型、响应头视图、其他依赖日志不受这些格式化规则保护。
 
-OAuth 的服务错误丢弃 body、request ID 和 service code，仅保留状态/kind；raw response 的 URL query 被移除。显式读取 token、body、header 后仍须按应用规则使用。
+OAuth 的服务错误丢弃 body、request ID 和 service code，仅保留状态/kind；是否按 OAuth 脱敏由该次请求实际使用的凭据决定。显式读取 token、body、header 后仍须按应用规则使用。
 
 ## 流式上传与读取
 
@@ -71,7 +71,7 @@ SET 序列化是 rawMeta map（按 key 排序），basicInfo 接收是 rawMeta.e
 
 ACL Add 省略 action，Delete 发送 action=delete，并携带要增删的 grant 集合；没有 replace。创建桶 canned ACL 多值以逗号连接，空列表不发送。对象 ACL 的 version_id 不代表其他数据接口支持版本寻址。
 
-小写 expires 和预签名大写 Expires 都表示签名到期，不是对象生命周期；expires_in 在构造时计算一次时间，拒绝不足 1 ms 或溢出，绝对时间构造允许历史时间。元数据与专用 setter 不应重复设置同一个 HTTP 头。
+小写 expires 和预签名大写 Expires 都表示签名到期，不是对象生命周期；expires_in 在 `build()` 时计算一次时间，拒绝不足 1 ms 或溢出，绝对时间构造允许历史时间。元数据与专用 setter 不应重复设置同一个 HTTP 头。
 
 ## 分页与批量删除
 
@@ -93,7 +93,13 @@ marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环�
 
 `delete_prefix(bucket, prefix)` 默认只按 bucket 和 prefix 选择对象（不带 delimiter、不带 marker）；显式的 `.marker(m)` 从 m 之后开始（m 计入已见 marker），`.delimiter(d)` 只删当前层（commonPrefixes 不删除也不深入）。逐页执行，首个逐项失败（kind 为 PartialFailure）或请求错误即停，错误的 `partial_delete_output()` 保留先前结果。它使用记住本次全部 marker 的严格已见集合，在删除当前页前拒绝循环和前缀外 key；与普通分页的常数空间循环检测不同。后续未列举项不在结果中，并发新增不保证被清空。累计结果与 marker 集合随处理量增长，海量任务可由应用分批持久化。
 
-## 重试与超时
+## 超时
+
+默认不设整体期限。每个请求只受两项约束：`connect_timeout`（默认 50 秒，含 TLS）和 `read_timeout`（默认 50 秒）。`read_timeout` 是按进度重置的 I/O 空闲超时，覆盖三个阶段：上传时每传出一块 body（最多 64 KiB）重置；等待响应头从最后一次上传进展开始计时（无 body 的请求从请求开始计时）；读响应 body 时每收到数据重置。因此持续推进的大对象上传和下载不会被打断，对端停止读取上传 body、上传完成后迟迟不返回响应头、或响应 body 停止到达时，超过阈值即以 `ErrorKind::Timeout` 失败。收到响应头之前的超时 `dispatch()` 为 `Unknown`（请求可能已到达服务端），读 body 时的超时为 `Sent`。
+
+`request_timeout` 或各请求 builder 的 `.timeout(Duration)` 显式开启单次请求的总期限，覆盖从建连、上传 body 到 `chunk()` / `copy_to()` / `bytes()` / `into_stream()` / `into_async_read()` 读完响应的整个过程；它不覆盖重试之间的等待和全部重试的总时间。托管传输（`upload_file`、`download_file`）发送多个请求，没有单请求 `.timeout`，每个请求仍受 connect 和空闲超时约束。
+
+## 重试
 
 默认关闭 SDK 重试。每个操作按自身语义分为三类（不按 HTTP 动词）：读取、幂等写、永不重试。启用 RetryPolicy 后，读取且无 body/可克隆 Bytes body 的请求可重试，包括对象 GET/HEAD（含 `download_file` 的 HEAD）、列举、basicInfo、metadata/ACL 和 Bucket 信息/lifecycle/accessLog 读取、endpoint 发现和 app bucket 列举；前缀删除仅其列举步骤适用。
 
@@ -103,7 +109,7 @@ marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环�
 
 max_retries 不含首次，范围 0–100；initial_delay 必须大于零且不大于 max_delay，max_delay 不超过 60 秒。等待采用指数退避和当前上限 50%–100% 的随机抖动，Retry-After 支持秒数和 HTTP 日期；作为等待下限，超过最大等待时放弃重试，过去日期按零，无效值忽略。
 
-每次尝试重新准备头、Date 和签名。耗尽返回最后错误；TLS 配置错误也可能耗尽重试预算，不保证每个 connect 错误都是瞬时故障。request_timeout 约束单次请求及 body 消费，不覆盖所有重试的总时间；整体期限由调用者包裹 tokio::time::timeout。取消 future 停止后续尝试，不撤销远端写入。
+每次尝试重新准备头、Date 和签名。耗尽返回最后错误；TLS 配置错误也可能耗尽重试预算，不保证每个 connect 错误都是瞬时故障。request_timeout（显式开启时）约束单次尝试及 body 消费，不覆盖所有重试的总时间；整体期限由调用者包裹 tokio::time::timeout。取消 future 停止后续尝试，不撤销远端写入。
 
 ## 分片会话与恢复
 

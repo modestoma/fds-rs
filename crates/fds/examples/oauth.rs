@@ -15,8 +15,9 @@ async fn provisioned_application(
         .exchange_storage_token(app, oauth_app, access_token, OAuthProvider::QQ)
         .send()
         .await?;
-    // Retain expires_at for scheduling an explicit exchange using fresh provider
-    // credentials. Existing client clones retain their original token.
+    // storage_token never refreshes: existing client clones keep this token until
+    // it expires. For automatic refresh use
+    // credentials_provider(fds::credentials::StorageTokenProvider::new(exchange)).
     let _expires_at = token.expires_at();
     let client = Client::builder()
         .endpoint(origin)

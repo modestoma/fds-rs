@@ -4,7 +4,8 @@
 
 适用于 Rust 服务端、命令行和原生客户端；当前不提供浏览器/WASM 接口或 Kotlin/Swift 封装。终端应用不要内置长期 Access Key Secret，可使用服务端签发的短期预签名 URL，或已开通的 OAuth 认证。
 
-本文是 `fds` 1.0.0 的完整调用入口。示例函数只有被调用时才执行请求，服务权限与地区支持以实际 FDS 环境为准。
+本文是 `fds` 0.1.0 的完整调用入口。示例函数只有被调用时才执行请求，服务权限与地区支持以实际 FDS 环境为准。crate 级 rustdoc（`cargo doc -p fds --open`）另有快速上手、builder 约定、错误处理和 feature 的英文概述。
+
 ## 目录
 
 - [依赖与运行环境](#依赖与运行环境)
@@ -29,10 +30,11 @@
 - [组合功能示例](#组合功能示例)
 - [能力边界与参考文档](#能力边界与参考文档)
 - [Workspace 与 CLI](#workspace-与-cli)
+- [许可证](#许可证)
 
 ## 依赖与运行环境
 
-仓库声明的最低 Rust 版本为 1.86。`fds` 1.0.0 已发布到公司内网 Cargo 源，需要在可访问内网的环境中下载。
+仓库声明的最低 Rust 版本为 1.86。`fds` 和 `fds_cli` 的当前版本均为 0.1.0，通过公司内网 Cargo 源（registry 名 `artifactory`）分发，需要在可访问内网的环境中下载；发布前可用 path 依赖指向本仓库的 `crates/fds`。
 
 在项目的 `.cargo/config.toml` 或全局 `~/.cargo/config.toml` 中添加以下配置，保留已有配置：
 
@@ -46,7 +48,7 @@ credential-provider = "cargo:token"
 
 ```toml
 [dependencies]
-fds = { version = "1.0.0", registry = "artifactory" }
+fds = { version = "0.1.0", registry = "artifactory" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }
 bytes = "1"
 futures-util = "0.3"
@@ -57,12 +59,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 | feature | 默认开启 | 功能与选择 |
 | --- | --- | --- |
-| 核心 SDK | 始终 | Bucket、对象、OAuth、手动及托管分片、流式读写、读取重试 |
+| 核心 SDK | 始终 | Bucket、对象、OAuth 与凭据 provider、手动及托管分片上传、流式读写、可选重试（读取，及显式开启的幂等写） |
 | `manager` | 是 | `Client::download_file`（`DownloadFile`）、断点与请求限流（`RequestLimiter`） |
 | `cslb` | 否 | 让 Client 通过内部 CSLB DNS resolver 解析主机；不增加公开模块或类型 |
 
-只用核心：`fds = { version = "1.0.0", registry = "artifactory", default-features = false }`。
-启用 CSLB：`fds = { version = "1.0.0", registry = "artifactory", features = ["cslb"] }`。
+只用核心：`fds = { version = "0.1.0", registry = "artifactory", default-features = false }`。
+启用 CSLB：`fds = { version = "0.1.0", registry = "artifactory", features = ["cslb"] }`。
 独立 CLI 操作见 [CLI 手册](docs/cli.md)。
 
 运行 `cargo check` 验证依赖解析和构建。如果提示需要认证，配置环境变量 `CARGO_REGISTRIES_ARTIFACTORY_TOKEN`，值为 `Bearer <TOKEN>`，使用具有读取权限的 Artifactory 令牌。不要将令牌写入仓库。网络、证书或版本不存在的问题需要分别排查。
@@ -137,9 +139,16 @@ fn configured_client(endpoint: &str, id: &str, secret: &str) -> fds::Result<Clie
 }
 ```
 
-### 请求与所有权
+### 调用约定与所有权
 
-通常使用 `Request::new(...).option(...).send(&client).await`。也可把请求传给对应 Client 方法：读取及控制类多接收 `&Request`；`put_object` 和 `upload_part` 接收拥有 body 的请求值，发送后不能复用。`.send()` 本身也消耗请求构造器。`generate()` 只在本地生成 URL，不是异步请求。
+每个操作都只有一种写法：`client.<操作>(必填参数).<可选项>(..).send().await`。
+
+- Client 方法只接收必填参数（bucket、key、body、ACL 等），bucket 和 key 接受 `impl Into<String>`，返回以操作命名的 builder，例如 `get_object` 返回 `fds::object::GetObject`。builder 持有 Client 的廉价 clone 和全部参数，只能从 Client 方法创建。服务发现与 token 交换同样从 `fds::oauth::FdsServiceClient` 开始。
+- 可选项是按值链式调用的方法，不调用即不发送。开关型选项是无参方法（如 `.move_to_trash()`、`.resume()`、`.cdn()`），不接收 `bool`；也不用空字符串表示“未设置”。
+- `send()` 消耗 builder 并返回 future。名字、头部、超时、分片编号等本地校验都在 `send()` 中、发送之前完成，失败时返回 `ErrorKind::InvalidInput`，`dispatch()` 为 `Dispatch::NotSent`。builder 标注了 `#[must_use]`，不 await 就不会发出任何请求。上传 body 由 builder 拥有，发送后不能复用；需要重发时重新构造 body。
+- 发请求的 builder 都有 `.timeout(Duration)`，为该请求设置总期限并覆盖 Client 的 `request_timeout`；幂等写的 builder 另有 `.retry(RetryMode)`（见[重试和整体期限](#重试和整体期限)）。
+- 不发请求的操作以 `build()` 结束（`presign_object`），没有可选项的操作是普通方法（`absolute_object_url`）。托管传输发送多个请求，没有单请求 `.timeout`：`upload_file(..).start()` 返回可查看进度的 `MultipartUpload` 会话，`download_file(..).send()` 执行一次下载。
+- 返回值都是类型化模型：时间为 `DateTime<Utc>`，大小为 `u64`，可能缺失的字段为 `Option`，预签名和普通 URL 返回 `url::Url`。
 
 单次请求成功后，后续步骤失败不会回滚已经发生的上传、复制、授权或删除。业务流程需要自行保留进度和处理部分完成状态。
 
@@ -701,7 +710,7 @@ async fn abandon(session: &MultipartUploadSession) -> fds::Result<()> {
 
 create 与 complete 支持 `.content_type(...)`、`.cache_control(...)`、`.content_encoding(...)`、`.content_md5(...)` 和 `.user_metadata(...)`（`upload_file` 同样支持，并在 create 与 complete 时各发送一次），complete 另支持 `.expires(...)`；四个 builder 都支持 `.timeout(...)`。part 支持和 PUT 一样的 UploadBody，可显式 `.content_md5(...)`。跨进程恢复时不需要会话对象：`client.upload_part(bucket, key, upload_id, number, body)`、`client.complete_multipart_upload(bucket, key, upload_id, parts)` 和 `client.abort_multipart_upload(bucket, key, upload_id)` 直接接收持久化的 upload ID，会话上的同名方法返回同样的 builder。
 
-分片编号是 `NonZeroU16`（不能为 0），`send` 时再检查不超过 `fds::multipart::MAX_PART_NUMBER`（10,000），否则返回 `InvalidInput` 且不发送。服务端分片尺寸、数量和地区限制需单独满足；库内 `MIN_PART_SIZE`/`MAX_PART_SIZE` 常量不代表所有接口都自动检查，更不能当成各地区统一约束。
+分片编号是 `NonZeroU16`（不能为 0），`send` 时再检查不超过 `fds::multipart::MAX_PART_NUMBER`（10,000），否则返回 `InvalidInput` 且不发送。服务端分片尺寸、数量和地区限制需单独满足：手动分片接口不检查分片尺寸，托管上传的本地选项限制（见下一节）也不能当成各地区统一约束。
 
 初始化超时可能已创建远端会话但没有收到 ID。part 失败可能已被接收。complete 失败可能已经完成对象：保留 upload ID、回执和目标身份，先核对远端结果，再决定下一步；不要在 complete 错误后自动 abort 或重发。SDK 没有 list-parts 或通用的跨进程续传协调接口。
 
@@ -1000,7 +1009,7 @@ fn refreshing_client(exchange_origin: &str, object_origin: &str, app_id: &str,
 ```
 
 - `StaticCredentials`：固定凭据，`credentials` / `storage_token` 即其快捷方式；构建时校验。
-- `StorageTokenProvider`：首次请求时交换 token（也可用 `.with_token(token)` 预置已交换的 token）；token 剩余有效期不超过提前量时重新交换。提前量默认 5 分钟（`DEFAULT_REFRESH_MARGIN`），可用 `.refresh_margin(..)` 修改；对 provider 自己交换的 token，提前量最多取其有效期的一半，避免短期 token 每次请求都交换。并发请求共享同一次交换（single-flight），provider 的 clone 共享缓存。交换失败时，等待该次交换的请求都在发送前失败：缓存的 token 已过期返回 `CredentialsExpired`，否则返回 `Unauthenticated`，交换错误作为 `source()`；失败不缓存，下一次请求会重新交换；过期 token 永远不会被发出。交换本身仍只尝试一次。provider 的 OAuth access token 本身需要刷新时，由应用实现 `CredentialsProvider`。
+- `StorageTokenProvider`：首次请求时交换 token（也可用 `.with_token(token)` 预置已交换的 token）；token 剩余有效期不超过提前量时重新交换。提前量默认 5 分钟（`DEFAULT_REFRESH_MARGIN`），可用 `.refresh_margin(..)` 修改；对 provider 自己交换的 token，提前量最多取其有效期的一半，避免短期 token 每次请求都交换。已知边界：`.with_token` 预置的 token 有效期对 SDK 未知，按完整提前量判断，不适用这个半寿命上限，剩余有效期不超过提前量时第一个请求就会再交换一次（真实 token 约一周有效，一般不会遇到）。并发请求共享同一次交换（single-flight），provider 的 clone 共享缓存。交换失败时，等待该次交换的请求都在发送前失败：缓存的 token 已过期返回 `CredentialsExpired`，否则返回 `Unauthenticated`，交换错误作为 `source()`；失败不缓存，下一次请求会重新交换；过期 token 永远不会被发出。交换本身仍只尝试一次。provider 的 OAuth access token 本身需要刷新时，由应用实现 `CredentialsProvider`。
 - 自定义 provider 返回的凭据在每次尝试前校验，无效时该请求在发送前失败，错误种类与构建时相同。
 - 预签名是同步的本地操作，只能使用静态 access key；storage token 或其他 provider 返回 `ConfigInvalid`。`list_app_buckets` 要求 provider 当次返回的是 storage token，否则返回 `ConfigInvalid`，请求不发出。
 - SDK 不从环境变量或配置文件自动发现凭据。
@@ -1130,17 +1139,30 @@ cargo run --locked -p fds --example oauth_inventory -- BUCKET PREFIX
 
 环境变量：`FDS_OAUTH_ORIGIN`（交换入口）、`FDS_ENDPOINT`（对象入口）、`FDS_APP_ID`、`FDS_OAUTH_APP_ID`、`FDS_PROVIDER_TOKEN`。两处 origin 都由应用明确配置。程序不修改 Bucket 或对象，但 token 交换仍可能创建/续期凭据。示例使用 `storage_token`，没有自动刷新；长时间统计若 token 到期会返回错误。需要自动续期时可改用 `StorageTokenProvider`（见[刷新与轮换凭据](#刷新与轮换凭据)）。
 
-更多单功能程序：[流上传](crates/fds/examples/upload_stream.rs)、[分页](crates/fds/examples/pagination.rs)、[对象请求](crates/fds/examples/object_requests.rs)、[下载管理器](crates/fds/examples/download.rs)、[托管分片](crates/fds/examples/upload_multipart.rs)。既有示例的环境变量名称可能不同，以各文件入口说明为准。
+### 全部示例程序
+
+示例位于 `crates/fds/examples`，`scripts/check.sh` 在每种 feature 组合下编译全部示例。需要连接服务的示例统一读取 `FDS_ENDPOINT`、`FDS_ACCESS_KEY_ID`、`FDS_ACCESS_KEY_SECRET`（OAuth 示例见上文），运行方式为 `cargo run --locked -p fds --example <名称> -- <参数>`。
+
+| 示例 | 内容 | 是否联网 |
+| --- | --- | --- |
+| [quickstart](crates/fds/examples/quickstart.rs) | PUT → GET → 列举 → 预签名 | 是，参数为 Bucket |
+| [object_requests](crates/fds/examples/object_requests.rs) | Range 读取、类型化响应头、预签名；另读 `FDS_BUCKET` | 是 |
+| [upload_stream](crates/fds/examples/upload_stream.rs) | 文件 body 与已知长度的流 body | 仅编译，`main` 不发请求 |
+| [upload_verify](crates/fds/examples/upload_verify.rs) | 组合示例 1 | 是 |
+| [upload_multipart](crates/fds/examples/upload_multipart.rs) | 托管分片上传、合作式取消与失败后读取进度 | 是 |
+| [multipart_recovery](crates/fds/examples/multipart_recovery.rs) | 对象往返、分页、ACL，以及手动分片失败时保留恢复上下文 | 仅编译，`main` 不发请求 |
+| [pagination](crates/fds/examples/pagination.rs) | 按对象惰性遍历前缀；另读 `FDS_BUCKET` | 是 |
+| [copy_prefix](crates/fds/examples/copy_prefix.rs) | 组合示例 2 | 是 |
+| [download](crates/fds/examples/download.rs) | 并发、可续传的文件下载（`manager`） | 是 |
+| [download_memory](crates/fds/examples/download_memory.rs) | 下载内存基准的客户端，配合 `scripts/benchmark_download.py`（`manager`，见[验证指南](docs/validation.md#本地下载基准)） | 只连本地基准服务 |
+| [oauth](crates/fds/examples/oauth.rs) | storage token 交换与 app Bucket 列举 | 仅编译，`main` 不发请求 |
+| [oauth_inventory](crates/fds/examples/oauth_inventory.rs) | 组合示例 3 | 是 |
 
 ## 能力边界与参考文档
 
 当前不提供 POST 创建、归档恢复、multipart copy、typed MULTI_BLOB、list-parts 自动恢复、未知长度上传、条件写防覆盖或通用版本化读写。协议常量或源 YAML 中出现某个名字不代表已有对应可调用功能。
 
 日常调用以本文为准。补充资料统一见 [文档导航](docs/README.md)，原始接口及 SDK 映射见 [API 索引](docs/open_api/README.md)。
-
-## 许可证
-
-Apache-2.0。
 
 ## Workspace 与 CLI
 
@@ -1149,10 +1171,14 @@ Apache-2.0。
 从内网源安装 CLI：先将上面的 registry 配置添加到全局 `~/.cargo/config.toml`，然后执行：
 
 ```sh
-cargo install fds_cli --version 1.0.0 --registry artifactory --locked
+cargo install fds_cli --version 0.1.0 --registry artifactory --locked
 fds_cli --help
 ```
 
 默认安装到 `~/.cargo/bin`（自定义 `CARGO_HOME` 时为 `$CARGO_HOME/bin`），确保该目录在 `PATH` 中。下载认证方式与 SDK 相同。
 
 本地开发可使用 `cargo run -p fds_cli -- --help` 或 `cargo install --path crates/fds_cli --locked`。不再提供 SDK 的 `cli` feature 或旧命令兼容层。完整命令与 SDK 映射见 [CLI 使用手册](docs/cli.md)。
+
+## 许可证
+
+Apache-2.0。

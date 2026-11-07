@@ -1,11 +1,13 @@
-//! Compile-only migration contract against the real SDK; main performs no I/O.
+//! Compile-only tour: object round trip, listing pages, ACL, and a manual
+//! multipart upload that keeps its recovery context (upload ID, error kind,
+//! dispatch, status) when a part or the completion fails. main performs no I/O.
 use fds::acl::{AccessControlList, AclAction};
 use fds::object::ByteRange;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 
 #[allow(dead_code)]
-async fn migrate(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
+async fn round_trip_and_multipart(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     client
         .put_object(bucket, key, b"hello".to_vec())
         .content_type("text/plain")

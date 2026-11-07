@@ -3,7 +3,7 @@ GET /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -14,7 +14,7 @@ range: bytes=0-4
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -24,7 +24,7 @@ HEAD /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -34,7 +34,7 @@ HEAD /b/o HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -44,7 +44,7 @@ GET /b/dir%2Fa%20b%2Bc.txt?metadata= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -62,7 +62,7 @@ content-length: 11
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 hello world
@@ -73,7 +73,7 @@ content-length: 0
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -85,7 +85,7 @@ content-length: 12
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 hello stream
@@ -97,7 +97,7 @@ content-length: 6
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 md5 me
@@ -109,7 +109,7 @@ content-length: 11
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 from a file
@@ -120,7 +120,7 @@ content-length: 48
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 {"srcBucketName":"sb","srcObjectName":"src/x y"}
@@ -130,7 +130,7 @@ PUT /b/dir%2Fa%20b%2Bc.txt?renameTo=new%2Fx+y%2Bz HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -140,7 +140,7 @@ PUT /b/dir%2Fa%20b%2Bc.txt?restore= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -151,7 +151,7 @@ content-type: application/json; charset=UTF-8
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -162,7 +162,7 @@ content-type: application/json; charset=UTF-8
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -172,7 +172,7 @@ DELETE /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -183,7 +183,7 @@ content-length: 35
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 {"rawMeta":{"x-xiaomi-meta-k":"v"}}
@@ -193,7 +193,7 @@ GET /b/dir%2Fa%20b%2Bc.txt?basicInfo= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -203,7 +203,7 @@ GET /b/dir%2Fa%20b%2Bc.txt?acl= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -213,7 +213,7 @@ GET /b/o?acl=&versionId=v+1 HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -223,7 +223,7 @@ GET /b/o?acl= HTTP/1.1
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 
@@ -234,7 +234,7 @@ content-length: 144
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 {"accessControlList":[{"grantee":{"id":"user1","displayName":""},"permission":"FULL_CONTROL","type":"USER"}],"owner":{"id":"","displayName":""}}
@@ -245,7 +245,7 @@ content-length: 137
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 {"accessControlList":[{"grantee":{"id":"user1","displayName":""},"permission":"WRITE","type":"USER"}],"owner":{"id":"","displayName":""}}
@@ -256,7 +256,7 @@ content-length: 141
 date: <date>
 authorization: Galaxy-V2 AKID:<signature>
 accept: */*
-user-agent: fds-rs/0.2.0
+user-agent: fds-rs/0.1.0
 host: <host>
 --- body ---
 {"accessControlList":[{"grantee":{"id":"ALL_USERS","displayName":""},"permission":"READ","type":"GROUP"}],"owner":{"id":"","displayName":""}}

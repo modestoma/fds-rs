@@ -31,7 +31,7 @@
 | [官方 StorageAccessToken 模型](https://github.com/XiaoMi/galaxy-fds-sdk-android/blob/c38a867971786ce3c5807b4c1db218b7387e1064/src/main/java/com/xiaomi/infra/galaxy/fds/android/model/StorageAccessToken.java) | 模型标注毫秒；结合 REST 示例 Date 与 expireTime=1486806381536 相隔约一周，推断为 Unix epoch 毫秒，使用 DateTime<Utc>，不作为相对 TTL。 |
 | [官方 OAuth 认证说明](https://docs.api.xiaomi.com/en/fds/request-authentication/0Auth.html) 与 [Bucket 定义](open_api/Bucket.yaml) | appId 与 token 共同认证。list_app_buckets 自动采用交换绑定的 appId，不提供任意 appId 覆盖；保留 orgId 等六个 Bucket 字段。服务端仍决定当前用户和应用可见范围。 |
 
-发现主机只做格式校验，不代表其可信或可达；调用方确认后才能绑定凭据。交换与使用 token 必须采用 HTTPS（本地 loopback IP 测试除外）。appId 固定为交换输入，过期后显式重新交换并构建新 Client，既有 clone 不更新；不提供 Weixin 参数或自动切换入口。实际 appId、region、provider 和 Bucket 权限需由服务方开通。
+发现主机只做格式校验，不代表其可信或可达；调用方确认后才能绑定凭据。交换与使用 token 必须采用 HTTPS（本地 loopback IP 测试除外）。appId 固定为交换输入。`storage_token` 设置的 token 不会续期，过期后需重新交换并构建新 Client；`StorageTokenProvider` 在 token 剩余有效期不超过提前量时重复同一交换请求，Client 及其 clone 无需重建，交换本身仍只尝试一次。不提供 Weixin 参数或自动切换 endpoint 的入口。实际 appId、region、provider 和 Bucket 权限需由服务方开通。
 
 ## CDN 预取与刷新
 

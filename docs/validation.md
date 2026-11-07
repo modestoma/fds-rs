@@ -13,9 +13,9 @@ rustup toolchain install 1.86.0 --profile minimal
 bash scripts/check.sh
 ```
 
-完整脚本执行格式、严格 Clippy、五组 feature 测试/目标编译、rustdoc、CLI help，以及 Rust 1.86 的核心/默认/全功能检查。测试串行执行，避免 tracing subscriber 测试互相干扰；Cargo 可能下载依赖，但普通测试不访问真实 FDS。
+完整脚本执行格式、严格 Clippy、四组 feature（默认、仅核心、全部、仅 cslb）的 fds 测试与全目标编译（含 examples 和 doctest）、fds_cli 测试、rustdoc、CLI help，以及 Rust 1.86 的核心/默认/全功能检查。测试串行执行，避免 tracing subscriber 测试互相干扰；Cargo 可能下载依赖，但普通测试不访问真实 FDS。
 
-文档检查验证本地链接与锚点；API 索引检查验证 35 份 YAML 的文件覆盖、33 项操作映射和 SHA-256。它们不证明请求行为或线上兼容性。
+文档检查验证本地链接与锚点，并扫描已退役的 API 名称与文件；API 索引检查验证 35 份 YAML 的文件覆盖、33 项操作映射和 SHA-256。它们不证明请求行为或线上兼容性。
 
 ## 真实对象往返
 

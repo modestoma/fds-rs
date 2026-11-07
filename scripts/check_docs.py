@@ -36,10 +36,13 @@ for path in documents:
         elif url.fragment and target.suffix == ".md" and unquote(url.fragment) not in anchors(target):
             errors.append(f"{path.relative_to(root)}: missing heading {link}")
 
-# Intentional migration history belongs in prose, not callable retired examples.
+# Removed APIs, files and conventions must not reappear in docs or code.
 retired = ["create_bucket_with_acl", "set_bucket_acl_with_action", "UploadPartList",
            "raw_metadata", "raw_iter", "lookup(", "set_limiter", "cslb-prometheus",
-           "async-channel"]
+           "async-channel", "migration.md", "ManagerError", "DeleteObjectsError",
+           "MultipartUploadError", "DownloadRequest", "GetObjectRequest",
+           "PutObjectRequest", "ListObjectsRequest", "UploadPartRequest", "into_raw",
+           "_with_response", "send(&client)", "fds::download", "GO_FDS_TEST"]
 files = [*documents, root / "Cargo.toml", root / "Cargo.lock", *sorted((root / "crates").rglob("Cargo.toml"))]
 for directory in ("crates",):
     files.extend((root / directory).rglob("*.rs"))
@@ -48,6 +51,30 @@ for path in files:
     for token in retired:
         if token in content:
             errors.append(f"{path.relative_to(root)}: retired API/feature {token}")
+# Every example is listed in the README, which links to its source.
+readme = (root / "README.md").read_text()
+examples = sorted((root / "crates/fds/examples").glob("*.rs"))
+for example in examples:
+    if f"](crates/fds/examples/{example.name})" not in readme:
+        errors.append(f"README.md: example {example.name} is not linked")
+
+# Documented dependency versions follow the crate versions.
+def crate_version(name):
+    manifest = (root / "crates" / name / "Cargo.toml").read_text()
+    return re.search(r'^version = "([^"]+)"', manifest, re.M).group(1)
+version = crate_version("fds")
+if crate_version("fds_cli") != version:
+    errors.append("crates/fds_cli/Cargo.toml: version differs from crates/fds")
+for path in documents:
+    content = path.read_text()
+    for found in re.findall(r'(?:fds|fds_cli)\s*=\s*\{\s*version\s*=\s*"([^"]+)"', content):
+        if found != version:
+            errors.append(f"{path.relative_to(root)}: dependency version {found} != {version}")
+    for found in re.findall(r"--version\s+(\d+\.\d+\.\d+)", content):
+        if found != version:
+            errors.append(f"{path.relative_to(root)}: install version {found} != {version}")
+
 if errors:
     raise SystemExit("\n".join(errors))
-print(f"{checked} local Markdown targets exist; retired API/feature scan passed")
+print(f"{checked} local Markdown targets exist; {len(examples)} examples linked; "
+      f"documented version {version}; retired API/feature scan passed")

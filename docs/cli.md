@@ -320,7 +320,7 @@ fds_cli --retries 2 --retry-initial-ms 100 --retry-max-ms 1000 object head demo-
 fds_cli --diagnostics object get demo-bucket demo/missing.txt # 失败时输出详细响应诊断
 ```
 
-成功请求只验证配置入口；要验证超时和重试触发，使用可控延迟/503 服务。SDK 不重试写操作，也不重新读取已经开始消费的成功响应 body。诊断可能包含敏感服务端文本。
+成功请求只验证配置入口；要验证超时和重试触发，使用可控延迟/503 服务。`--retries` 只开启读取类请求的重试，CLI 不开启 SDK 的幂等写重试（`retry_idempotent_writes`），因此上传、删除等写操作都只发送一次；已经开始消费的成功响应 body 也不会重新读取。默认没有整体期限，`--read-timeout-ms` 是按进度重置的空闲超时，持续推进的大文件上传和下载不会被它打断。诊断可能包含敏感服务端文本。
 
 ## CSLB
 
