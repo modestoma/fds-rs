@@ -100,6 +100,29 @@
 - rustdoc 公开项审计（解析 `target/doc/fds/all.html`）：104 个公开项，按名称去重无重复；公开模块只有根、`acl`、`bucket`、`credentials`、`manager`、`multipart`、`oauth`、`object`，没有 `constant`、`encoding`、`auth`、`cslb`；没有 `ACL` / `URL` 命名、`*Request` 结构体、`HttpMethod` / `HttpRange` / `parse_range`；`Client` 的 64 个方法中没有 `does_*`、`generate_*`、`*_with_response`；所有 rustdoc 页面中没有 `reqwest::` 类型。
 - 未运行：`tests/live_acceptance.rs`、fds_cli `smoke`（需要真实 FDS 凭证，用户本地执行）。
 
+## 组合验证（协调者，2026-11-08）
+
+19 个任务全部合入后，在 main 最新提交（`docs: align docs and examples with the final API; version 0.1.0`）上，于主工作目录完整运行 `bash scripts/check.sh`，退出码 0。日志中共 170 个 `test result: ok`，没有失败，也没有 warning 或 error 行。被忽略的用例如下：
+
+- `live_object_roundtrip` 和 `live_oauth_discovery_and_read`：需要 `FDS_LIVE=1` 和真实凭证；
+- `de::lenient` 的 doctest：私有宏，本来就标了 `ignore`。
+
+自动检查已覆盖 AC-1 至 AC-3、AC-6、AC-8、AC-9 的自动部分，以及 AC-4、AC-5、AC-7、AC-10 的自动部分。
+
+## 需要用户亲自确认的项
+
+1. 评审 rustdoc：运行 `cargo doc -p fds --all-features --open`，确认 API 形态和命名（AC-4、AC-5）。
+2. 评审 README 和 `docs/`（AC-10）。
+3. 在本地用真实凭证运行 `FDS_LIVE=1 cargo test -p fds --test live_acceptance -- --ignored`，以及 `fds_cli smoke`（AC-7、AC-8，以及 AC-1、AC-6、AC-9 的真实服务部分）。
+4. 确认 AC-7 的例外清单（决定记录 revision 5、6、7、8），确认无误后再给出验收结论。
+
+## 已知遗留（不阻塞验收）
+
+- `StorageTokenProvider::with_token` 预置的 token 不适用半寿命上限。真实 token 有效期约一周，实际不受影响；已写入 README 和 rustdoc。
+- fds_cli 的 `delete-prefix` 中有一层页检查错误文本映射，用来保持旧输出。如果以后 SDK 统一了这两条错误文本，这层映射可以删除。
+- `.claude/skills/fds-cli/SKILL.md` 仍要求设置 `GO_FDS_TEST_*` 变量，endpoint 也不带 scheme，和 fds_cli 实际读取的 `FDS_*` 变量、要求完整 origin 不一致。该文件不在本 Roadmap 范围内，Agent 也没有写权限。
+- Windows 下的写入分支，以及非 unix、非 windows 平台的 fallback，都没有编译验证。
+
 ## 用户结论
 
 尚未提交验收。通过时记录用户原话或确认来源；驳回时记录原因和新增的返工任务。
