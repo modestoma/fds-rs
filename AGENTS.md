@@ -8,6 +8,10 @@
 
 本地验证以 `scripts/check.sh` 为准，包括 fmt、clippy `-D warnings`、各 feature 组合的测试与 check、fds_cli 测试、`cargo doc -D warnings`、MSRV 1.86、文档与覆盖率脚本、`git diff --check`。项目当前没有 CI。
 
+## Git 提交
+
+提交消息中禁止写入 `Co-Authored-By:` 或其他类似的署名、协作归属标记。
+
 ## Roadmap 工作流
 
 本仓库的 Roadmap 记录在 `.agents/roadmaps/<roadmap-id>/`，单个 Issue 记录在 `.agents/issues/`，都纳入 Git。
