@@ -1,0 +1,259 @@
+{
+  "schema_version": 3,
+  "id": "sdk-overhaul",
+  "title": "FDS Rust SDK 设计重构（0.1.0）",
+  "revision": 1,
+  "status": "draft",
+  "base_branch": "main",
+  "merge_mode": "local",
+  "approved_revision": null,
+  "approval_ref": null,
+  "max_parallel": 3,
+  "pending_questions": [],
+  "tasks": [
+    {
+      "key": "request-timeout",
+      "title": "取消默认整体超时，支持单请求超时",
+      "type": "fix",
+      "document": "tasks/request-timeout.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "baseline-green"
+      ],
+      "resources": [
+        "crates/fds/src/config.rs",
+        "crates/fds/src/client.rs",
+        "crates/fds/tests/client_builder.rs",
+        "crates/fds_cli/src/config.rs"
+      ]
+    },
+    {
+      "key": "downloader-io",
+      "title": "Downloader 文件 IO 移出 async 线程并减少 fsync",
+      "type": "perf",
+      "document": "tasks/downloader-io.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "baseline-green"
+      ],
+      "resources": [
+        "crates/fds/src/manager",
+        "crates/fds/tests/download_safety.rs",
+        "crates/fds/tests/manager.rs"
+      ]
+    },
+    {
+      "key": "error-model",
+      "title": "错误模型重构为 FdsError + ErrorKind",
+      "type": "refactor",
+      "document": "tasks/error-model.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "request-timeout",
+        "downloader-io"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "public-surface",
+      "title": "收缩公开 API 面并清理死代码",
+      "type": "refactor",
+      "document": "tasks/public-surface.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "error-model"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "internal-cleanup",
+      "title": "内部实现去冗余：serde 样板、header、脱敏、HTTP 配置",
+      "type": "refactor",
+      "document": "tasks/internal-cleanup.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "public-surface"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "fluent-object",
+      "title": "建立流式 builder 模式并迁移对象基础操作",
+      "type": "feat",
+      "document": "tasks/fluent-object.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "internal-cleanup"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "fluent-bucket",
+      "title": "Bucket 与 OAuth 操作迁移到流式 builder",
+      "type": "feat",
+      "document": "tasks/fluent-bucket.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "fluent-object"
+      ],
+      "resources": [
+        "crates/fds/src/bucket.rs",
+        "crates/fds/src/acl.rs",
+        "crates/fds/src/oauth.rs",
+        "crates/fds/tests",
+        "crates/fds/examples",
+        "crates/fds_cli/src/bucket.rs",
+        "crates/fds_cli/tests"
+      ]
+    },
+    {
+      "key": "fluent-listing-delete",
+      "title": "列举与批量删除迁移到流式 builder",
+      "type": "feat",
+      "document": "tasks/fluent-listing-delete.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "fluent-object"
+      ],
+      "resources": [
+        "crates/fds/src/object/listing.rs",
+        "crates/fds/src/object/delete.rs",
+        "crates/fds/tests",
+        "crates/fds/examples",
+        "crates/fds_cli/src/object.rs",
+        "crates/fds_cli/tests"
+      ]
+    },
+    {
+      "key": "fluent-multipart-manager",
+      "title": "分片上传与 Downloader 迁移到流式 builder",
+      "type": "feat",
+      "document": "tasks/fluent-multipart-manager.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "fluent-object"
+      ],
+      "resources": [
+        "crates/fds/src/object/multipart.rs",
+        "crates/fds/src/multipart.rs",
+        "crates/fds/src/manager",
+        "crates/fds/tests",
+        "crates/fds/examples",
+        "crates/fds_cli/src/transfer.rs",
+        "crates/fds_cli/tests"
+      ]
+    },
+    {
+      "key": "typed-responses",
+      "title": "返回值类型化与精简",
+      "type": "feat",
+      "document": "tasks/typed-responses.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "fluent-bucket",
+        "fluent-listing-delete",
+        "fluent-multipart-manager"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "object-metadata",
+      "title": "ObjectMetadata 拆分系统字段与用户元数据",
+      "type": "feat",
+      "document": "tasks/object-metadata.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "typed-responses"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "credentials-provider",
+      "title": "可刷新的凭证 provider",
+      "type": "feat",
+      "document": "tasks/credentials-provider.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "object-metadata"
+      ],
+      "resources": [
+        "crates/fds/src/oauth.rs",
+        "crates/fds/src/config.rs",
+        "crates/fds/src/client.rs",
+        "crates/fds/src/error.rs",
+        "crates/fds/tests",
+        "crates/fds/examples",
+        "crates/fds_cli/src/config.rs",
+        "crates/fds_cli/src/service.rs"
+      ]
+    },
+    {
+      "key": "idempotent-retry",
+      "title": "幂等写操作的可选重试",
+      "type": "feat",
+      "document": "tasks/idempotent-retry.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "object-metadata"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "docs-release",
+      "title": "文档、示例与版本号 0.1.0",
+      "type": "docs",
+      "document": "tasks/docs-release.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [
+        "credentials-provider",
+        "idempotent-retry"
+      ],
+      "resources": [
+        "*"
+      ]
+    },
+    {
+      "key": "baseline-green",
+      "title": "恢复基线检查全绿（clippy 新 lint）",
+      "type": "chore",
+      "document": "tasks/baseline-green.md",
+      "status": "planned",
+      "reviewed_revision": 1,
+      "depends_on": [],
+      "resources": [
+        "crates/fds/src/cslb",
+        "scripts/check.sh"
+      ]
+    }
+  ],
+  "acceptance": null,
+  "history": []
+}
