@@ -52,3 +52,8 @@
 - 示例 endpoint `https://cnbj1.fds.api.xiaomi.com` 换成占位符 `https://fds.example.com`（根 README、crate README、`lib.rs` 各 1 处，用户决定）。
 - **保留**：`x-xiaomi-meta-*` 头名（线上协议）和 OAuth 的 XiaoMi provider、`.xiaomi_mac()`（公开 API，改名属于破坏性变更）。`docs/` 不在本次范围内。
 - 验证：`bash scripts/check.sh` 退出码 0。
+
+## 后续：首次自动发版失败（0.1.1）
+
+- CI 上 `progressing_upload_outlasts_idle_threshold` 失败：Linux 回环发送缓冲区自动扩到数 MiB，测试服务端限速读取尾部时客户端已无进展可报。测试改为最后 8 MiB 不限速读取（`a50e22c`），之后 CI 通过。
+- semantic-release 在 generateNotes 失败：`conventional-changelog-conventionalcommits@10` 需要 `conventional-changelog-writer@9`，而 semantic-release 25 自带的 release-notes-generator 14 用的是 writer 8。preset 固定为 `^9.3.1`。本地在临时 clone 中用完整配置（去掉 github 插件）dry run，生成了 0.1.1 的 release notes；再手动执行 prepareCmd（`set_version.py 0.1.1`、`cargo update --workspace`、`check_docs.py`）和 `cargo publish --workspace --dry-run`，两个包都能以 0.1.1 打包。失败发生在打 tag 之前，没有发布任何内容。之前只验证了 commit-analyzer，漏掉了 notes 生成这一步。
