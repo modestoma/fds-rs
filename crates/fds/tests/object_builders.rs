@@ -186,7 +186,11 @@ async fn output_preserves_errors_and_raw_escape_hatch() {
         .send(&client)
         .await
         .unwrap();
-    assert_eq!(output.into_raw().bytes().await.unwrap(), "ok");
+    // The idle-timed response body keeps the raw response's length and URL.
+    let raw = output.into_raw();
+    assert_eq!(raw.content_length(), Some(2));
+    assert_eq!(raw.url().path(), "/b/ok");
+    assert_eq!(raw.bytes().await.unwrap(), "ok");
     error.assert_async().await;
     ok.assert_async().await;
 }

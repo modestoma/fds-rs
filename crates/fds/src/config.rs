@@ -59,8 +59,9 @@ impl ClientConfiguration {
     pub fn request_timeout(&self) -> Option<Duration> {
         self.request_timeout
     }
-    /// Read idle timeout, reset after each successful read. Defaults to 50
-    /// seconds. See [`ClientBuilder::read_timeout`].
+    /// I/O idle timeout, reset by upload progress, by the response headers
+    /// and by each response-body read. Defaults to 50 seconds. See
+    /// [`ClientBuilder::read_timeout`].
     pub fn read_timeout(&self) -> Duration {
         self.read_timeout
     }
@@ -147,10 +148,8 @@ impl ClientBuilder {
     ///
     /// By default there is **no** total deadline: requests are bounded only by
     /// [`connect_timeout`](Self::connect_timeout) and
-    /// [`read_timeout`](Self::read_timeout), so a streaming download keeps
-    /// running for as long as it makes progress. Uploads are different: see
-    /// [`read_timeout`](Self::read_timeout) for how it bounds the time spent
-    /// sending a request body.
+    /// [`read_timeout`](Self::read_timeout), so a streaming download or an
+    /// upload keeps running for as long as it makes progress.
     ///
     /// Once set, the deadline runs from connecting until the response body has
     /// been fully consumed. It therefore also covers streaming reads through
@@ -166,17 +165,32 @@ impl ClientBuilder {
         self.request_timeout = Some(value);
         self
     }
-    /// Read idle timeout. Defaults to 50 seconds. Must be nonzero and
-    /// representable.
+    /// I/O idle timeout for every request. Defaults to 50 seconds. Must be
+    /// nonzero and representable.
     ///
-    /// While the response body is read it is an idle timeout: it bounds each
-    /// read and is reset whenever a read makes progress, so it never limits a
-    /// download that keeps receiving data. Before the response headers arrive,
-    /// however, it is a single deadline measured from the start of the attempt
-    /// and is **not** reset by request-body upload progress. An upload whose
-    /// body takes longer than this to send (and for the service to answer)
-    /// fails with a timeout even if it is still progressing; raise this value
-    /// for large uploads.
+    /// It limits how long an attempt may go without progress, never how long
+    /// a transfer takes in total, so a large upload or download that keeps
+    /// moving data is not cut off:
+    ///
+    /// - **Sending the request body:** reset each time the transport takes the
+    ///   next piece of the body (at most 64 KiB), which happens as fast as the
+    ///   connection drains it. An upload the peer stops reading fails after
+    ///   this long.
+    /// - **Waiting for the response headers:** measured from the last upload
+    ///   progress, or from the start of the attempt for requests without a
+    ///   body (this includes connecting, which is also bounded by
+    ///   [`connect_timeout`](Self::connect_timeout)).
+    /// - **Reading the response body:** bounds each read and is reset whenever
+    ///   a read receives data; time the caller spends between reads does not
+    ///   count.
+    ///
+    /// Expiry fails with [`ErrorKind::Timeout`]. Before the response headers
+    /// arrive the request may already have reached the service, so the error's
+    /// [`dispatch`](crate::Error::dispatch) is
+    /// [`Dispatch::Unknown`](crate::Dispatch::Unknown); while reading the body
+    /// it is [`Dispatch::Sent`](crate::Dispatch::Sent). To bound the total
+    /// duration as well, set [`request_timeout`](Self::request_timeout) or a
+    /// per-request `timeout`.
     pub fn read_timeout(mut self, value: Duration) -> Self {
         self.read_timeout = Some(value);
         self

@@ -126,9 +126,11 @@ impl Client {
         conf: ClientConfiguration,
     ) -> Result<Self> {
         credentials.validate(&conf)?;
+        // `read_timeout` is deliberately not given to reqwest: its version is
+        // a fixed deadline until the response headers, which upload progress
+        // does not reset. `send` enforces it as an idle timeout instead.
         let mut builder = reqwest::Client::builder()
             .connect_timeout(conf.connect_timeout)
-            .read_timeout(conf.read_timeout)
             .pool_idle_timeout(conf.pool_idle_timeout)
             .tcp_keepalive(conf.tcp_keepalive)
             .pool_max_idle_per_host(100)
@@ -213,6 +215,7 @@ impl Client {
                     {
                         policy.delay(retries, None)
                     }
+                    Err(SendFailure::IdleTimeout) => policy.delay(retries, None),
                     _ => None,
                 }
             } else {
@@ -298,9 +301,19 @@ impl Client {
         body: Option<UploadBody>,
         timeout: Option<Duration>,
     ) -> std::result::Result<reqwest::Response, SendFailure> {
-        // (3) body: optional Content-MD5 (must be set BEFORE signing).
+        // (3) body: optional Content-MD5 (must be set BEFORE signing). The
+        // clock starts now: upload progress and the header wait are measured
+        // against `read_timeout` from here.
+        let idle = self.inner.configuration.read_timeout;
+        let clock = crate::idle::ProgressClock::new();
         let body = body
-            .map(|body| body.prepare(&mut headers, self.inner.configuration.enable_md5_calculate))
+            .map(|body| {
+                body.prepare(
+                    &mut headers,
+                    self.inner.configuration.enable_md5_calculate,
+                    clock.clone(),
+                )
+            })
             .transpose()?;
 
         // (6) Date — GMT; the SAME string is signed and sent.
@@ -342,28 +355,38 @@ impl Client {
         if let Some(timeout) = timeout {
             rb = rb.timeout(timeout);
         }
-        let mut resp = rb.send().await.map_err(SendFailure::Transport)?;
+        // Idle watchdog until the response headers arrive: fires once neither
+        // a body piece was pulled nor headers arrived for `read_timeout`.
+        // Dropping the send future aborts the attempt.
+        let resp = tokio::select! {
+            biased;
+            result = rb.send() => result.map_err(SendFailure::Transport)?,
+            () = clock.stalled(idle) => return Err(SendFailure::IdleTimeout),
+        };
+
+        // Rebuild the response around an idle-timed body, retaining the
+        // headers, status and transport extensions. reqwest Response Debug
+        // includes its URL: without access keys, remove credential query
+        // parameters even from raw response escape hatches.
+        use reqwest::ResponseBuilderExt;
+        let mut url = resp.url().clone();
         if !matches!(
             self.inner.credentials,
             crate::oauth::Credentials::AccessKey(..)
         ) {
-            // reqwest Response Debug includes its URL. Remove credential query
-            // parameters even from raw response escape hatches, retaining
-            // the streaming body, headers, status and transport extensions.
-            use reqwest::ResponseBuilderExt;
-            let mut safe_url = resp.url().clone();
-            safe_url.set_query(None);
-            let safe_parts = http::Response::builder()
-                .url(safe_url)
-                .body(())
-                .unwrap()
-                .into_parts()
-                .0;
-            let raw: http::Response<reqwest::Body> = resp.into();
-            let (mut parts, body) = raw.into_parts();
-            parts.extensions.extend(safe_parts.extensions);
-            resp = reqwest::Response::from(http::Response::from_parts(parts, body));
+            url.set_query(None);
         }
+        let url_parts = http::Response::builder()
+            .url(url)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let raw: http::Response<reqwest::Body> = resp.into();
+        let (mut parts, body) = raw.into_parts();
+        parts.extensions.extend(url_parts.extensions);
+        let body = reqwest::Body::wrap(crate::idle::IdleBody::new(body, idle));
+        let resp = reqwest::Response::from(http::Response::from_parts(parts, body));
 
         // Status/retry decisions belong to the operation-aware caller.
         Ok(resp)
@@ -427,11 +450,13 @@ impl Client {
 
 const DIAGNOSTIC_LIMIT: usize = 8192;
 
-/// A failed attempt: local preparation errors are final, transport errors may
-/// be retried by `do_request` for eligible requests.
+/// A failed attempt: local preparation errors are final, transport errors and
+/// idle timeouts may be retried by `do_request` for eligible requests.
 pub(crate) enum SendFailure {
     Local(Error),
     Transport(reqwest::Error),
+    /// No upload progress and no response headers within `read_timeout`.
+    IdleTimeout,
 }
 impl From<Error> for SendFailure {
     fn from(error: Error) -> Self {
@@ -443,6 +468,7 @@ impl SendFailure {
         match self {
             Self::Local(error) => error,
             Self::Transport(error) => Error::send_failure(error),
+            Self::IdleTimeout => Error::idle_timeout(),
         }
     }
 }

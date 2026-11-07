@@ -359,6 +359,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "http-body",
  "md-5",
  "mockito",
  "percent-encoding",

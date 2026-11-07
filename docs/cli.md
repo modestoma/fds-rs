@@ -313,7 +313,7 @@ fds_cli --oauth ./oauth.json object get demo-bucket demo/hello.txt --out ./oauth
 ```bash
 fds_cli --connect-timeout-ms 5000 object head demo-bucket demo/hello.txt # 设置连接超时
 fds_cli --request-timeout-ms 30000 object get demo-bucket demo/hello.txt # 设置整个请求的截止时间
-fds_cli --read-timeout-ms 10000 object get demo-bucket demo/hello.txt # 设置读取空闲超时
+fds_cli --read-timeout-ms 10000 object get demo-bucket demo/hello.txt # 设置 I/O 空闲超时（上传、等待响应、读取）
 fds_cli --pool-idle-timeout-ms 60000 object list demo-bucket --all # 设置连接池空闲时间
 fds_cli --tcp-keepalive-secs 30 object list demo-bucket --all # 设置 TCP keepalive
 fds_cli --retries 2 --retry-initial-ms 100 --retry-max-ms 1000 object head demo-bucket demo/hello.txt # 设置只读请求重试

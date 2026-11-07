@@ -259,7 +259,7 @@
       "title": "上传请求按进度重置的空闲超时",
       "type": "fix",
       "document": "tasks/upload-idle-timeout.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 2,
       "depends_on": [
         "error-model"

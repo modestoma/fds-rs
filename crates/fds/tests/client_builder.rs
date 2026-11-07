@@ -371,6 +371,163 @@ async fn put_object_request_timeout_applies_while_awaiting_response() {
     server.abort();
 }
 
+/// How the upload server below treats the request body.
+#[derive(Clone, Copy)]
+enum Upload {
+    /// Read `UPLOAD_STEP` bytes every `UPLOAD_TICK`, then answer after
+    /// `UPLOAD_ANSWER_DELAY`.
+    Steady,
+    /// Read `STALL_AFTER` bytes, then stop reading without answering.
+    Stall,
+    /// Read the whole body as fast as possible, then never answer.
+    NoAnswer,
+}
+
+/// Upload sizes: large enough that kernel socket buffers plus the transport's
+/// own buffer cannot absorb a meaningful part of the body.
+const UPLOAD_LEN: usize = 16 << 20;
+const UPLOAD_STEP: usize = 1 << 20;
+const UPLOAD_TICK: Duration = Duration::from_millis(50);
+const UPLOAD_ANSWER_DELAY: Duration = Duration::from_millis(100);
+const STALL_AFTER: usize = 256 << 10;
+
+/// Serve one upload. The listener's small receive buffer is inherited by the
+/// accepted socket, so the client feels the server's reading pace quickly.
+async fn upload_server(mode: Upload) -> (String, tokio::task::JoinHandle<()>) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(16 << 10).unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = socket.listen(1).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if socket.read(&mut byte).await.unwrap_or(0) == 0 {
+                return;
+            }
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+        let length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .expect("upload carries a content length")
+            .trim()
+            .parse()
+            .unwrap();
+        let mut buf = vec![0; 64 << 10];
+        let mut read = 0;
+        match mode {
+            Upload::Steady => {
+                let mut target = 0;
+                while target < length {
+                    tokio::time::sleep(UPLOAD_TICK).await;
+                    target = (target + UPLOAD_STEP).min(length);
+                    if !read_up_to(&mut socket, &mut buf, &mut read, target).await {
+                        return;
+                    }
+                }
+            }
+            Upload::Stall => {
+                read_up_to(&mut socket, &mut buf, &mut read, STALL_AFTER.min(length)).await;
+                std::future::pending::<()>().await;
+            }
+            Upload::NoAnswer => {
+                read_up_to(&mut socket, &mut buf, &mut read, length).await;
+                std::future::pending::<()>().await;
+            }
+        }
+        tokio::time::sleep(UPLOAD_ANSWER_DELAY).await;
+        let receipt = r#"{"bucketName":"b","objectName":"o"}"#;
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{receipt}",
+            receipt.len()
+        );
+        let _ = socket.write_all(answer.as_bytes()).await;
+    });
+    (endpoint, task)
+}
+
+/// Read from `socket` until `read` reaches `limit`; false once the peer is gone.
+async fn read_up_to(
+    socket: &mut tokio::net::TcpStream,
+    buf: &mut [u8],
+    read: &mut usize,
+    limit: usize,
+) -> bool {
+    while *read < limit {
+        let want = buf.len().min(limit - *read);
+        match socket.read(&mut buf[..want]).await {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => *read += n,
+        }
+    }
+    true
+}
+
+/// PUT `body` to a fresh upload server with `THRESHOLD` as the idle timeout,
+/// guarded by an outer deadline so a regression cannot hang the suite.
+async fn put_with_idle_threshold(
+    mode: Upload,
+    body: fds::UploadBody,
+) -> (fds::Result<fds::PutObjectResponse>, Duration) {
+    let (endpoint, server) = upload_server(mode).await;
+    let c = builder()
+        .endpoint(endpoint)
+        .read_timeout(THRESHOLD)
+        .build()
+        .unwrap();
+    assert_eq!(c.configuration().request_timeout(), None);
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        c.put_object(PutObjectRequest::new("b", "o", body)),
+    )
+    .await
+    .expect("outer guard elapsed");
+    let elapsed = started.elapsed();
+    server.abort();
+    (result, elapsed)
+}
+
+#[tokio::test]
+async fn progressing_upload_outlasts_idle_threshold() {
+    // One in-memory chunk: progress must still be visible while it drains.
+    let (result, elapsed) =
+        put_with_idle_threshold(Upload::Steady, vec![7; UPLOAD_LEN].into()).await;
+    let receipt = result.expect("a progressing upload must not time out");
+    assert_eq!(receipt.object_name, "o");
+    // The upload plus the answer delay took several idle periods in total.
+    assert!(
+        elapsed > THRESHOLD * 2,
+        "upload finished too fast to prove anything: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn stalled_upload_times_out_with_unknown_dispatch() {
+    let chunks = (0..UPLOAD_LEN / UPLOAD_STEP)
+        .map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from(vec![7; UPLOAD_STEP])));
+    let body = fds::UploadBody::from_stream(futures_util::stream::iter(chunks), UPLOAD_LEN as u64);
+    let (result, elapsed) = put_with_idle_threshold(Upload::Stall, body).await;
+    let e = result.unwrap_err();
+    assert_eq!(e.kind(), fds::ErrorKind::Timeout, "{e:?}");
+    assert_eq!(e.dispatch(), fds::Dispatch::Unknown, "{e:?}");
+    assert!(elapsed >= THRESHOLD, "timed out too early: {elapsed:?}");
+}
+
+#[tokio::test]
+async fn missing_answer_after_upload_times_out() {
+    let (result, elapsed) =
+        put_with_idle_threshold(Upload::NoAnswer, vec![7; UPLOAD_STEP].into()).await;
+    let e = result.unwrap_err();
+    assert_eq!(e.kind(), fds::ErrorKind::Timeout, "{e:?}");
+    assert_eq!(e.dispatch(), fds::Dispatch::Unknown, "{e:?}");
+    assert!(elapsed >= THRESHOLD, "timed out too early: {elapsed:?}");
+}
+
 #[tokio::test]
 async fn per_request_timeout_is_validated() {
     let c = builder().build().unwrap();

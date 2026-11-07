@@ -75,7 +75,8 @@ pub enum ErrorKind {
     /// empty or invalid JSON, an oversized body, or a receipt/listing that does
     /// not match the request.
     ProtocolViolation,
-    /// A connect, total-request or read deadline elapsed.
+    /// The connect timeout, a total request deadline or the I/O idle timeout
+    /// (`read_timeout`, which also covers stalled uploads) elapsed.
     Timeout,
     /// The connection failed or broke (DNS, TCP, TLS, reset) without a timeout.
     Transport,
@@ -427,6 +428,20 @@ impl Error {
         Self::new(kind, message)
             .with_dispatch(dispatch)
             .with_source(error.without_url())
+    }
+
+    /// Neither upload progress nor response headers within `read_timeout`.
+    /// The request may already have reached the service.
+    pub(crate) fn idle_timeout() -> Self {
+        Self::new(
+            ErrorKind::Timeout,
+            "request timed out before a response arrived",
+        )
+        .with_dispatch(Dispatch::Unknown)
+        .with_source(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "no request progress or response within the read timeout",
+        ))
     }
 
     /// A `reqwest` failure while reading a received response body.

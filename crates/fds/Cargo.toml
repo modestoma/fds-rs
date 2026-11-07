@@ -26,6 +26,7 @@ base64 = "0.22"
 hex = "0.4"
 bytes = "1"
 http = "1"
+http-body = "1"
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 futures-util = "0.3"
 thiserror = "2"

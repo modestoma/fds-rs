@@ -126,10 +126,10 @@ impl PutObjectRequest {
     /// until the response has been read; a large upload that is still
     /// progressing fails with a timeout once it passes. By default no total
     /// deadline applies unless the client sets one. The client's connect
-    /// timeout and [`read_timeout`](crate::ClientBuilder::read_timeout) still
-    /// apply; note that the latter also bounds the time until the response
-    /// headers arrive, including the upload itself. Must be nonzero and
-    /// representable; otherwise sending fails with an invalid-input error.
+    /// timeout and idle [`read_timeout`](crate::ClientBuilder::read_timeout)
+    /// still apply; the latter is reset by upload progress, so it only fails an
+    /// upload that stops moving. Must be nonzero and representable; otherwise
+    /// sending fails with an invalid-input error.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self

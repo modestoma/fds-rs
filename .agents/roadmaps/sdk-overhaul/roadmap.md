@@ -74,7 +74,7 @@ flowchart LR
     t_error_model["error-model：错误模型重构为 FdsError + ErrorKind ✅"]
   end
   subgraph G4["批次 4"]
-    t_upload_idle_timeout["upload-idle-timeout：上传请求按进度重置的空闲超时"]
+    t_upload_idle_timeout["upload-idle-timeout：上传请求按进度重置的空闲超时 ✅"]
   end
   subgraph G5["批次 5"]
     t_public_surface["public-surface：收缩公开 API 面并清理死代码"]
@@ -130,13 +130,13 @@ flowchart LR
   t_idempotent_retry --> t_docs_release
   t_error_model --> t_upload_idle_timeout
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_request_timeout,t_downloader_io,t_error_model,t_baseline_green done
+  class t_request_timeout,t_downloader_io,t_error_model,t_baseline_green,t_upload_idle_timeout done
 ```
 
 - 批次 1：baseline-green✅
 - 批次 2（可并行）：request-timeout✅、downloader-io✅
 - 批次 3：error-model✅
-- 批次 4：upload-idle-timeout
+- 批次 4：upload-idle-timeout✅
 - 批次 5：public-surface
 - 批次 6：internal-cleanup
 - 批次 7：fluent-object

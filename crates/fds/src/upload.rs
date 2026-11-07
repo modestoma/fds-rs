@@ -1,11 +1,12 @@
 //! Owned uploads with explicit length and checksum semantics.
-use std::{fmt, io, path::Path, pin::Pin};
+use std::{fmt, io, path::Path, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue};
 use tokio_util::io::ReaderStream;
 
+use crate::idle::{ProgressClock, TrackedBody};
 use crate::{Error, Result};
 
 type ByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send>>;
@@ -90,10 +91,13 @@ impl UploadBody {
         }
     }
 
+    /// Finalize headers and build the single-use HTTP body. Every piece the
+    /// transport pulls (at most 64 KiB) records progress on `clock`.
     pub(crate) fn prepare(
         self,
         headers: &mut HeaderMap,
         calculate_md5: bool,
+        clock: Arc<ProgressClock>,
     ) -> Result<reqwest::Body> {
         // Finalize body headers before signing. Never permit metadata to replace framing.
         if headers.contains_key("transfer-encoding") || headers.contains_key("content-length") {
@@ -113,12 +117,12 @@ impl UploadBody {
             );
         }
         headers.insert("content-length", HeaderValue::from(self.length));
-        match self.source {
+        let stream: ByteStream = match self.source {
             // Keep each HTTP attempt single-use even for replayable SDK bytes.
             // Callers may explicitly build another attempt via try_clone().
-            Source::Bytes(bytes) => Ok(reqwest::Body::wrap_stream(futures_util::stream::once(
-                async move { Ok::<_, io::Error>(bytes) },
-            ))),
+            Source::Bytes(bytes) => Box::pin(futures_util::stream::once(async move {
+                Ok::<_, io::Error>(bytes)
+            })),
             Source::Stream(stream) => {
                 let stream = futures_util::stream::try_unfold(
                     (stream, self.length),
@@ -148,9 +152,10 @@ impl UploadBody {
                         }
                     },
                 );
-                Ok(reqwest::Body::wrap_stream(stream))
+                Box::pin(stream)
             }
-        }
+        };
+        Ok(reqwest::Body::wrap_stream(TrackedBody::new(stream, clock)))
     }
 }
 
@@ -171,7 +176,9 @@ mod tests {
             assert_eq!(bytes.as_ptr(), pointer);
         }
         let mut headers = HeaderMap::new();
-        let http_body = body.prepare(&mut headers, false).unwrap();
+        let http_body = body
+            .prepare(&mut headers, false, ProgressClock::new())
+            .unwrap();
         let request = reqwest::Client::new()
             .put("http://localhost/")
             .body(http_body)

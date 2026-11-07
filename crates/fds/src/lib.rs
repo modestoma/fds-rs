@@ -36,6 +36,7 @@ pub(crate) mod de;
 pub mod download;
 pub mod encoding;
 pub mod error;
+mod idle;
 #[cfg(feature = "manager")]
 pub mod manager;
 pub mod metadata;
