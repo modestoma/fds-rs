@@ -1,0 +1,69 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Delete objects related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces: 
+  - application/json
+paths:
+  /{bucketname}:
+    put:
+      summary: 删除指定Bucket下多个object
+      description: 必须拥有Bucket的`WRITE`权限才能执行该操作
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: deleteObjects
+          in: query
+          description: 表示删除多个Object，值为空
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: body
+          in: body
+          type: object
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+          description: 需要删除的Object名字列表
+      tags:
+        - delete objects
+      responses:
+        200:
+          description: 请求成功，可能有object删除失败，需要查看返回的结果
+          schema:
+            type: array
+            items:
+              properties:
+                object_name:
+                  type: string
+                  description: 删除失败的Object名字
+                  format: int32
+                error_code:
+                  type: string
+                  description: 错误码
+                error_description:
+                  type: string
+                  description: 错误描

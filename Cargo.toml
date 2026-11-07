@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/fds", "crates/fds_cli"]
+resolver = "2"

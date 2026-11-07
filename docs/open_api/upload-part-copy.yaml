@@ -1,0 +1,85 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Upload part copy related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+paths:
+  /{bucketname}/{objectname}:
+    put:
+      summary: 复制一个分片
+      description: 必须先通过初始化接口以MULTI_BLOB模式获取一个合法的uploadId
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: objectname
+          in: path
+          description: 上传的Object名字
+          required: true
+          type: string
+        - name: uploadId
+          in: query
+          description: 初始化分片上传后获取的uploadId，仅支持MULTI_BLOB模式
+          required: true
+          type: string
+        - name: partNumber
+          in: query
+          description: 分片编号
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: false
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: x-xiaomi-copy-source
+          in: header
+          description: /sourcebucket/sourceobject<br>sourceobject 需要 urlencode，若原文件存储类型为ARCHIVE，必须先解冻
+          required: true
+          type: string
+        - name: x-xiaomi-copy-source-range
+          in: header
+          description: bytes=first-last<br>源Object的拷贝范围，例如设置bytes=0-9，表示拷贝0到9这10个字符<br>- 不指定该请求头时，表示拷贝整个源Object<br>- 需要满足分片上传的单片大小限制，当指定范围无效时，返回失败
+          required: false
+          type: string
+      tags:
+        - upload part copy
+      responses:
+        200:
+          description: 请求成功
+          schema:
+            $ref: '#/definitions/UploadPartResult'
+definitions:
+  UploadPartResult:
+    type: object
+    properties:
+      partNumber:
+        type: integer
+        format: int32
+        description: 分片编号
+      etag:
+        type: string
+        description: 分片etag
+      partSize:
+        type: integer
+        format: int64
+        description: 分片大小
+      lastModified:
+        type: integer
+        format: int64
+        description: 毫秒时间戳

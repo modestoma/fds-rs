@@ -1,0 +1,87 @@
+use crate::{Client, HttpMethod};
+
+use super::*;
+
+fn client() -> Client {
+    Client::builder()
+        .endpoint("https://cnbj1.fds.api.xiaomi.com")
+        .cdn_endpoint("https://cdn.cnbj1.fds.api.mi-img.com")
+        .credentials("AKID", "sk")
+        .build()
+        .unwrap()
+}
+
+#[test]
+fn basic_info_entry_list_metadata() {
+    // Server may return title-case (e.g. "Standard"); the string wrapper accepts it.
+    let json = r#"{"size":10,"uploadTime":1,"storageClass":"Standard","metadataBean":{"rawMeta":{"entry":[{"key":"content-type","value":"image/png"}]}}}"#;
+    let info: ObjectBasicInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(info.size, 10);
+    assert_eq!(
+        info.storage_class_type.as_ref().map(|s| s.as_str()),
+        Some("Standard")
+    );
+    assert_eq!(info.metadata.get("content-type"), Some("image/png"));
+}
+
+#[test]
+fn object_listing_tolerates_null_fields() {
+    // FDS returns `null` (not absent) for marker/nextMarker/delimiter and for
+    // empty slices — Go tolerates it, and so must we.
+    let json = r#"{"name":"b","prefix":"manifest/","maxKeys":100,"marker":null,"truncated":false,"nextMarker":null,"delimiter":null,"objects":[{"name":"manifest/a","size":3,"owner":null,"lastModified":null}],"commonPrefixes":null}"#;
+    let l: ObjectListing = serde_json::from_str(json).unwrap();
+    assert_eq!(l.bucket_name, "b");
+    assert_eq!(l.marker, "");
+    assert_eq!(l.next_marker, "");
+    assert_eq!(l.delimiter, "");
+    assert!(l.common_prefixes.is_empty());
+    assert_eq!(l.object_summaries.len(), 1);
+    assert_eq!(l.object_summaries[0].object_name, "manifest/a");
+    assert!(l.object_summaries[0].last_modified.is_none());
+}
+
+#[test]
+fn presigned_get_url_shape() {
+    let ts = chrono::DateTime::from_timestamp_millis(1_752_400_000_000).unwrap();
+    let url = client()
+        .generate_presigned_url(&GeneratePresignedURLRequest {
+            cdn: false,
+            bucket_name: "b".into(),
+            object_name: "o".into(),
+            method: HttpMethod::Get,
+            expiration: ts,
+            metadata: None,
+        })
+        .unwrap();
+    // Query is sorted: Expires < GalaxyAccessKeyId; Signature appended raw.
+    assert!(url.starts_with(
+            "https://cnbj1.fds.api.xiaomi.com/b/o?Expires=1752400000000&GalaxyAccessKeyId=AKID&Signature="
+        ));
+    // No "metadata" subresource for GET.
+    assert!(!url.contains("metadata"));
+}
+
+#[test]
+fn presigned_head_url_has_metadata_subresource() {
+    let ts = chrono::DateTime::from_timestamp_millis(1_752_400_000_000).unwrap();
+    let url = client()
+        .generate_presigned_url(&GeneratePresignedURLRequest {
+            cdn: false,
+            bucket_name: "b".into(),
+            object_name: "o".into(),
+            method: HttpMethod::Head,
+            expiration: ts,
+            metadata: None,
+        })
+        .unwrap();
+    assert!(url.contains("metadata="));
+    assert!(url.contains("&Signature="));
+}
+
+#[test]
+fn absolute_url() {
+    let u = client()
+        .generate_absolute_object_url("b", "dir/o.txt")
+        .unwrap();
+    assert_eq!(u, "https://cnbj1.fds.api.xiaomi.com/b/dir%2Fo.txt");
+}

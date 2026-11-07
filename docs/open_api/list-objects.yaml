@@ -1,0 +1,120 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: List objects related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - application/json
+paths:
+  /{bucketname}:
+    get:
+      summary: 获取某个Bucket下的Object列表
+      description: 需要有Bucket的`READ`权限，返回的结果可能被分页，需要多次调用才能获取完整列表;服务端将Object按名字的字典返回给客户端
+      parameters:
+        - name: bucketname
+          in: path
+          description: bucket名字
+          required: true
+          type: string
+        - name: prefix
+          in: query
+          description: 需要列出的Object名的前缀
+          required: true
+          type: string
+        - name: delimiter
+          in: query
+          description: 具体使用请参考详细的例子。__如果delimieter不是空，且prefix不是空字符串，那么prefix必须以delimiter为结尾__
+          required: false
+          type: string
+        - name: marker
+          in: query
+          description: 通过之前一次调用list-objects接口获取；格式类似字符串`bucket_name/start_object_name`，返回的object字典序都不比strat_object_name小
+          required: false
+          type: string
+        - name: maxKeys
+          in: query
+          description: 指定最多返回的Object数量，服务端最多返回min(maxKeys, 1000)个object，可能更少
+          type: string
+          required: false
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+      tags:
+        - list objects
+      responses:
+        200:
+          description: 请求成功
+          schema:
+            $ref: '#/definitions/ListObjectsResult'
+definitions:
+  ListObjectsResult:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Bucket的名字
+      prefix:
+        type: string
+        description: 调用时指定的prefix
+      maxKeys:
+        type: string
+        description: 调用时指定的maxKeys
+      marker:
+        type: string
+        description: 调用时指定的marker
+      truncated:
+        type: boolean
+        description: 结果是否被分页，如果是true，表示bucket下还有字典序更大的满足条件的Object没有被返回
+      nextMarker:
+        type: string
+        description: 如果truncated是true，表示下次一次调用需要指定的请求参数`marker`的值
+      objects:
+        type: array
+        description: object列表
+        items:
+          $ref: '#/definitions/ObjectBean'
+      commonPrefixes:
+        type: array
+        description: 如果调用时指定了`delimiter`参数，那么FDS会把`delimiter`作为分割符分割object的名字，并且把分割后除了最后一部分外的各段前缀作为`目录`，commonPrefixes保存了当前prefix下的所有`目录`。
+        items:
+          type: string
+      delimiter:
+        type: string
+        description: 调用时传入的delimiter参数
+  ObjectBean:
+    type: object
+    properties:
+      name:
+        type: string
+        description: object名字
+      owner:
+          $ref: '#/definitions/OwnerBean'
+      uploadTime:
+        type: integer
+        format: int64
+        description: 上传时间戳（UTC），单位毫秒
+      size:
+        type: integer
+        format: int64
+        description: 文件大小
+  OwnerBean:
+    type: object
+    properties:
+      id:
+        type: string
+        description: 拥有者ID

@@ -1,0 +1,88 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: OAuth related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - application/json
+paths:
+  /:
+    get:
+      summary: 获取自己创建的Bucket列表
+      description: |
+        获取所有自己创建的Bucket列表
+      parameters:
+        - name: appId
+          in: query
+          description: 在dev.xiaomi.com上申请的appId
+          required: true
+          type: string
+      tags:
+        - List Bucket
+      responses:
+        200:
+          description: Bucket列表
+          schema:
+            $ref: '#/definitions/ListAllBucketsResult'
+        default:
+          description: Unexpected error
+          schema:
+            $ref: '#/definitions/Error'
+definitions:
+  OwnerBean:
+    type: object
+    properties:
+      id:
+        type: string
+        description: 所有者ID
+      displayName:
+        type: string
+        description: 所有者名称
+  BucketBean:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Bucket名字
+      orgId:
+        type: string
+        description: 所属的团队ID
+      creationTime:
+        type: integer
+        format: int64
+        description: 创建时间戳，单位毫秒
+      usedSpace:
+        type: integer
+        format: int64
+        description: 使用空间，单位byte
+      numObjects:
+        type: integer
+        format: int64
+        description: Bucket下的Object个数统计
+  ListAllBucketsResult:
+    type: object
+    properties:
+      owner:
+        $ref: '#/definitions/OwnerBean'
+      buckets:
+        type: array
+        items:
+          $ref: '#/definitions/BucketBean'
+  Error:
+    type: object
+    properties:
+      code:
+        type: integer
+        format: int32
+      message:
+        type: string
+      fields:
+        type: string

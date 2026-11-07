@@ -1,0 +1,76 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Upload part related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+paths:
+  /{bucketname}/{objectname}:
+    put:
+      summary: 上传一个分片
+      description: 必须先通过初始化接口获取一个合法的uploadId
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: objectname
+          in: path
+          description: 上传的Object名字
+          required: true
+          type: string
+        - name: uploadId
+          in: query
+          description: 初始化分片上传后获取的uploadId
+          required: true
+          type: string
+        - name: partNumber
+          in: query
+          description: 分片编号
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: false
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: body
+          in: body
+          description: 分片内容
+          required: true
+          type: binary
+      tags:
+        - upload part
+      responses:
+        200:
+          description: 请求成功
+          schema:
+            $ref: '#/definitions/UploadPartResult'
+definitions:
+  UploadPartResult:
+    type: object
+    properties:
+      partNumber:
+        type: integer
+        format: int32
+        description: 分片编号
+      etag:
+        type: string
+        description: 分片etag
+      partSize:
+        type: integer
+        format: int64
+        description: 分片大小

@@ -1,0 +1,30 @@
+[package]
+name = "fds_cli"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.86"
+description = "Command-line verification tool for the FDS Rust SDK"
+license = "Apache-2.0"
+publish = ["artifactory"]
+
+[[bin]]
+name = "fds_cli"
+path = "src/main.rs"
+
+[features]
+cslb = ["fds/cslb"]
+
+[dependencies]
+fds = { path = "../fds", version = "0.2.0", registry = "artifactory", features = ["manager"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+governor = "0.6"
+
+[dev-dependencies]
+mockito = "1"

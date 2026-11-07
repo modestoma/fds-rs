@@ -1,0 +1,44 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Get object meta related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+paths:
+  /{bucketname}/{objectname}:
+    head:
+      summary: 获取object的meta信息
+      description: 必须拥有Object的`READ`权限才能执行该操作
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: objectname
+          in: path
+          description: Object名字
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: false
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+      tags:
+        - get object meta
+      responses:
+        200:
+          description: 请求成功，返回http头部中包含object的meta信息

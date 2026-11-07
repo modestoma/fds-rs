@@ -1,0 +1,54 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Create Bucket related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - |
+paths:
+  /{bucketname}:
+    put:
+      summary: 新建Bucket
+      description: 需要有创建资源的权限，或者是团队的Admin；创建Bucket的个数有Quota限制，具体信息参考FAQ
+      parameters:
+        - name: bucketname
+          in: path
+          description: bucket名字
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: x-xiaomi-meta-acl
+          in: header
+          description: 指定Bucket权限，可选的值包括`PUBLIC_READ`, `PUBLIC_WRITE`, `PUBLIC_READ_OBJECTS`, `PUBLIC_SSO_WRITE`, `AUTHENTICATED_READ`, `AUTHENTICATED_WRITE`， `AUTHENTICATED_SSO_WRITE`多个值之间用`,`分隔
+          required: false
+          type: string
+        - name: orgId
+          in: query
+          description: 指定Bucket所属的团队, 如果没有指定，在用户的默认团队下创建
+          type: string
+          required: false
+      tags:
+        - create-bucket
+      responses:
+        200:
+          description: 请求成功
+        409:
+          description: 已经存在同名的Bucket
+        

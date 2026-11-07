@@ -1,0 +1,54 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: ListBuckets related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - application/json
+paths:
+  /:
+    get:
+      summary: 根据地区码和后端服务获取endpoint
+      description: 建议通过cdn获取
+      parameters:
+        - name: endpoint
+          in: query
+          description: 表明此请求用于获取endpoint
+          required: true
+          type: string
+        - name: region
+          in: query
+          description: 地区码
+          required: true
+          type: string
+        - name: service
+          in: query
+          description: 后端服务
+          required: query
+          type: string
+      tags:
+        - get-endpoint
+      responses:
+        200:
+          description: endpoint
+          schema:
+            $ref: '#/definitions/GetEndpointResult'
+        400:
+          description: 错误信息
+          schema:
+
+definitions:
+  GetEndpointResult:
+    type: object
+    properties:
+      EndpointResult:
+        type: string
+

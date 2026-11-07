@@ -1,0 +1,335 @@
+//! Local transport checks; no live FDS credentials or service are used.
+use fds::{Client, GetObjectRequest, PutObjectRequest};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn builder() -> fds::ClientBuilder {
+    Client::builder()
+        .endpoint("http://127.0.0.1:1")
+        .credentials("AKID", "secret-value")
+}
+
+#[test]
+fn origins_and_credentials_are_validated_without_networking() {
+    for origin in [
+        "",
+        "example.com",
+        "ftp://example.com",
+        "https://",
+        "https://user:secret@example.com",
+        "https://@example.com",
+        "https://example.com?token=secret",
+        "https://example.com#fragment",
+        "https://example.com/prefix",
+        "https://example.com/a/..",
+        "https://example.com/./",
+        " https://example.com",
+        "https://example.com\\path",
+        "http://localhost:0",
+        "http://localhost:99999",
+    ] {
+        assert!(builder().endpoint(origin).build().is_err(), "{origin}");
+        assert!(
+            builder().cdn_endpoint(origin).build().is_err(),
+            "CDN {origin}"
+        );
+    }
+    for origin in [
+        "http://localhost:8080",
+        "http://[::1]:8080/",
+        "https://example.com/",
+    ] {
+        assert!(builder().endpoint(origin).build().is_ok(), "{origin}");
+    }
+    assert!(Client::builder().credentials("ak", "sk").build().is_err());
+    assert!(Client::builder()
+        .endpoint("https://example.com")
+        .build()
+        .is_err());
+    for (id, secret) in [
+        ("", "sk"),
+        ("ak", ""),
+        ("a:b", "sk"),
+        ("a\nb", "sk"),
+        ("a b", "sk"),
+    ] {
+        assert!(builder().credentials(id, secret).build().is_err());
+    }
+    let debug = format!(
+        "{:?}",
+        builder().endpoint("http://user:secret-value@example.com")
+    );
+    assert!(!debug.contains("secret-value"));
+    let client = builder().build().unwrap();
+    assert!(!format!("{client:?}").contains("secret-value"));
+    assert!(!format!("{client:?}").contains("AKID"));
+    fn send_sync_clone<T: Send + Sync + Clone>() {}
+    send_sync_clone::<Client>();
+}
+
+#[test]
+fn limits_and_effective_configuration() {
+    let defaults = builder().build().unwrap();
+    let conf = defaults.configuration();
+    assert_eq!(conf.connect_timeout(), Duration::from_secs(50));
+    assert_eq!(conf.request_timeout(), Duration::from_secs(300));
+    assert_eq!(conf.read_timeout(), Duration::from_secs(50));
+    assert_eq!(conf.pool_idle_timeout(), Duration::from_secs(90));
+    assert_eq!(conf.tcp_keepalive(), Duration::from_secs(30));
+    assert!(!conf.enable_md5_calculate());
+    for duration in [Duration::ZERO, Duration::MAX] {
+        for b in [
+            builder().connect_timeout(duration),
+            builder().request_timeout(duration),
+            builder().read_timeout(duration),
+            builder().pool_idle_timeout(duration),
+            builder().tcp_keepalive(duration),
+        ] {
+            assert!(b.build().is_err());
+        }
+    }
+    for d in [
+        Duration::from_millis(1),
+        Duration::from_millis(1500),
+        Duration::from_secs(32768),
+    ] {
+        assert!(builder().tcp_keepalive(d).build().is_err());
+    }
+    let d = Duration::from_secs(7);
+    let c = builder()
+        .connect_timeout(d)
+        .request_timeout(d)
+        .read_timeout(d)
+        .pool_idle_timeout(d)
+        .tcp_keepalive(d)
+        .enable_md5_calculate(true)
+        .build()
+        .unwrap();
+    let conf = c.configuration();
+    assert_eq!(conf.connect_timeout(), d);
+    assert_eq!(conf.request_timeout(), d);
+    assert_eq!(conf.read_timeout(), d);
+    assert_eq!(conf.pool_idle_timeout(), d);
+    assert_eq!(conf.tcp_keepalive(), d);
+    assert!(conf.enable_md5_calculate());
+    assert!(conf.cdn_endpoint().is_none());
+    let cloned = c.clone();
+    assert!(std::ptr::eq(c.configuration(), cloned.configuration()));
+    #[cfg(feature = "cslb")]
+    {
+        assert!(builder().cslb_max_nodes(0).build().is_err());
+        assert_eq!(
+            builder()
+                .cslb_max_nodes(3)
+                .build()
+                .unwrap()
+                .configuration()
+                .cslb_max_nodes(),
+            3
+        );
+    }
+}
+
+#[tokio::test]
+async fn explicit_cdn_and_md5_keep_wire_behavior() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("PUT", "/b/o")
+        .match_header("content-md5", "5d41402abc4b2a76b9719d911017c592")
+        .with_body(r#"{"bucketName":"b","objectName":"o"}"#)
+        .create_async()
+        .await;
+    let c = builder()
+        .endpoint(server.url())
+        .cdn_endpoint("https://cdn.example.com")
+        .enable_md5_calculate(true)
+        .build()
+        .unwrap();
+    c.put_object(PutObjectRequest::new("b", "o", b"hello".to_vec()))
+        .await
+        .unwrap();
+    m.assert_async().await;
+    let req = fds::GeneratePresignedURLRequest {
+        bucket_name: "b".into(),
+        object_name: "a/b +".into(),
+        cdn: true,
+        method: fds::HttpMethod::Get,
+        expiration: chrono::Utc::now(),
+        metadata: None,
+    };
+    assert!(c
+        .generate_presigned_url(&req)
+        .unwrap()
+        .starts_with("https://cdn.example.com/b/a%2Fb%20%2B?"));
+    assert!(builder()
+        .build()
+        .unwrap()
+        .generate_presigned_url(&req)
+        .is_err());
+}
+
+async fn stalled_server(tls: bool, headers: bool) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!(
+        "{}://{}",
+        if tls { "https" } else { "http" },
+        listener.local_addr().unwrap()
+    );
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0; 8192];
+        assert!(
+            socket.read(&mut buf).await.unwrap() > 0,
+            "peer closed before sending request bytes"
+        );
+        if headers {
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx")
+                .await
+                .unwrap();
+        }
+        std::future::pending::<()>().await;
+    });
+    (endpoint, task)
+}
+
+#[tokio::test]
+async fn connect_timeout_enforces_tls_handshake_deadline() {
+    let (endpoint, server) = stalled_server(true, false).await;
+    let c = builder()
+        .endpoint(endpoint)
+        .connect_timeout(Duration::from_millis(100))
+        .request_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let e = tokio::time::timeout(Duration::from_secs(3), c.does_bucket_exist("b"))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()));
+    server.abort();
+}
+
+#[tokio::test]
+async fn read_timeout_enforces_header_and_stream_body_stalls() {
+    for headers in [false, true] {
+        let (endpoint, server) = stalled_server(false, headers).await;
+        let c = builder()
+            .endpoint(endpoint)
+            .read_timeout(Duration::from_millis(100))
+            .request_timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            let resp = c
+                .get_object(&GetObjectRequest {
+                    bucket_name: "b".into(),
+                    object_name: "o".into(),
+                    range: None,
+                })
+                .await?;
+            resp.bytes().await
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(result.unwrap_err(), fds::FdsError::Http(ref source) if source.is_timeout())
+        );
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn total_timeout_expires_despite_continuing_body_progress() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0; 8192];
+        assert!(
+            socket.read(&mut buf).await.unwrap() > 0,
+            "peer closed before sending request bytes"
+        );
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+            .await
+            .unwrap();
+        loop {
+            if socket.write_all(b"x").await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    let c = builder()
+        .endpoint(endpoint)
+        .request_timeout(Duration::from_millis(150))
+        .read_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let response = c
+        .get_object(&GetObjectRequest {
+            bucket_name: "b".into(),
+            object_name: "o".into(),
+            range: None,
+        })
+        .await
+        .unwrap();
+    let e = tokio::time::timeout(Duration::from_secs(3), response.bytes())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(e, fds::FdsError::Http(ref source) if source.is_timeout()));
+    server.abort();
+}
+
+#[tokio::test]
+async fn cloned_clients_reuse_pool_and_expired_idle_connections_are_replaced() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let count = Arc::new(AtomicUsize::new(0));
+    let accepted = count.clone();
+    let server = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            accepted.fetch_add(1, Ordering::SeqCst);
+            connections.spawn(async move {
+                let mut buf = [0; 1];
+                loop {
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        if socket.read(&mut buf).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        request.push(buf[0]);
+                    }
+                    if socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let client = builder()
+        .endpoint(endpoint)
+        .pool_idle_timeout(Duration::from_millis(300))
+        .build()
+        .unwrap();
+    assert!(client.does_bucket_exist("b").await.unwrap());
+    assert!(client.clone().does_bucket_exist("b").await.unwrap());
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    assert!(client.clone().does_bucket_exist("b").await.unwrap());
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    server.abort();
+}

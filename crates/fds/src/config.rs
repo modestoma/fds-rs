@@ -1,0 +1,238 @@
+//! Validated client configuration and construction.
+use crate::{
+    error::{FdsError, Result},
+    Client,
+};
+use std::{fmt, time::Duration};
+use url::Url;
+
+/// Immutable effective settings. Obtain through [`Client::configuration`].
+#[derive(Debug, Clone)]
+pub struct ClientConfiguration {
+    pub(crate) endpoint: Url,
+    pub(crate) retry_policy: crate::RetryPolicy,
+    pub(crate) cdn_endpoint: Option<Url>,
+    pub(crate) enable_md5_calculate: bool,
+    pub(crate) connect_timeout: Duration,
+    pub(crate) request_timeout: Duration,
+    pub(crate) read_timeout: Duration,
+    pub(crate) pool_idle_timeout: Duration,
+    pub(crate) tcp_keepalive: Duration,
+    #[cfg(feature = "cslb")]
+    pub(crate) cslb_max_nodes: usize,
+}
+
+impl ClientConfiguration {
+    fn for_endpoint(endpoint: Url) -> Self {
+        Self {
+            endpoint,
+            retry_policy: crate::RetryPolicy::default(),
+            cdn_endpoint: None,
+            enable_md5_calculate: false,
+            connect_timeout: Duration::from_secs(50),
+            request_timeout: Duration::from_secs(300),
+            read_timeout: Duration::from_secs(50),
+            pool_idle_timeout: Duration::from_secs(90),
+            tcp_keepalive: Duration::from_secs(30),
+            #[cfg(feature = "cslb")]
+            cslb_max_nodes: 20,
+        }
+    }
+    pub fn retry_policy(&self) -> &crate::RetryPolicy {
+        &self.retry_policy
+    }
+    pub fn endpoint(&self) -> &Url {
+        &self.endpoint
+    }
+    pub fn cdn_endpoint(&self) -> Option<&Url> {
+        self.cdn_endpoint.as_ref()
+    }
+    pub fn enable_md5_calculate(&self) -> bool {
+        self.enable_md5_calculate
+    }
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
+    }
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+    pub fn read_timeout(&self) -> Duration {
+        self.read_timeout
+    }
+    pub fn pool_idle_timeout(&self) -> Duration {
+        self.pool_idle_timeout
+    }
+    pub fn tcp_keepalive(&self) -> Duration {
+        self.tcp_keepalive
+    }
+    #[cfg(feature = "cslb")]
+    pub fn cslb_max_nodes(&self) -> usize {
+        self.cslb_max_nodes
+    }
+}
+
+/// Builds a client without networking. Credentials are omitted from Debug.
+#[derive(Default)]
+pub struct ClientBuilder {
+    endpoint: Option<String>,
+    retry_policy: crate::RetryPolicy,
+    cdn_endpoint: Option<String>,
+    credentials: Option<crate::oauth::Credentials>,
+    md5: bool,
+    connect_timeout: Option<Duration>,
+    request_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
+    pool_idle_timeout: Option<Duration>,
+    tcp_keepalive: Option<Duration>,
+    #[cfg(feature = "cslb")]
+    cslb_max_nodes: Option<usize>,
+}
+
+impl fmt::Debug for ClientBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientBuilder").finish_non_exhaustive()
+    }
+}
+
+impl ClientBuilder {
+    /// Opt-in retries for explicitly classified reads. Writes remain single-attempt.
+    pub fn retry_policy(mut self, value: crate::RetryPolicy) -> Self {
+        self.retry_policy = value;
+        self
+    }
+    /// Full http(s) origin URL; no credentials, query, fragment or path prefix.
+    pub fn endpoint(mut self, value: impl Into<String>) -> Self {
+        self.endpoint = Some(value.into());
+        self
+    }
+    /// Explicit CDN origin, used only by requests for a presigned CDN URL.
+    pub fn cdn_endpoint(mut self, value: impl Into<String>) -> Self {
+        self.cdn_endpoint = Some(value.into());
+        self
+    }
+    pub fn credentials(mut self, id: impl Into<String>, secret: impl Into<String>) -> Self {
+        self.credentials = Some(crate::oauth::Credentials::AccessKey(
+            id.into(),
+            secret.into(),
+        ));
+        self
+    }
+    /// Use an exchanged token. The last credential setter wins. Refresh by
+    /// exchanging again and building a new client; existing clones stay unchanged.
+    pub fn storage_token(mut self, token: crate::oauth::StorageAccessToken) -> Self {
+        self.credentials = Some(crate::oauth::Credentials::OAuth(token));
+        self
+    }
+    pub(crate) fn anonymous(mut self) -> Self {
+        self.credentials = Some(crate::oauth::Credentials::Anonymous);
+        self
+    }
+    /// Calculate hexadecimal Content-MD5 for in-memory request bodies.
+    pub fn enable_md5_calculate(mut self, value: bool) -> Self {
+        self.md5 = value;
+        self
+    }
+    /// Connection establishment timeout, including TLS. Must be nonzero.
+    pub fn connect_timeout(mut self, value: Duration) -> Self {
+        self.connect_timeout = Some(value);
+        self
+    }
+    /// Total request deadline through consumption of the response body.
+    pub fn request_timeout(mut self, value: Duration) -> Self {
+        self.request_timeout = Some(value);
+        self
+    }
+    /// Maximum idle time for each response read, reset after progress.
+    pub fn read_timeout(mut self, value: Duration) -> Self {
+        self.read_timeout = Some(value);
+        self
+    }
+    /// Time unused connections remain eligible for pool reuse.
+    pub fn pool_idle_timeout(mut self, value: Duration) -> Self {
+        self.pool_idle_timeout = Some(value);
+        self
+    }
+    /// Idle duration before TCP keepalive probes; OS scheduling applies.
+    /// Must be a whole number of seconds in 1..=32767.
+    pub fn tcp_keepalive(mut self, value: Duration) -> Self {
+        self.tcp_keepalive = Some(value);
+        self
+    }
+    /// Maximum DNS nodes retained per CSLB host (not an HTTP concurrency limit).
+    #[cfg(feature = "cslb")]
+    pub fn cslb_max_nodes(mut self, value: usize) -> Self {
+        self.cslb_max_nodes = Some(value);
+        self
+    }
+
+    pub fn build(self) -> Result<Client> {
+        let endpoint = validate_endpoint(self.endpoint.as_deref().ok_or(FdsError::Endpoint)?)?;
+        let mut conf = ClientConfiguration::for_endpoint(endpoint);
+        conf.cdn_endpoint = self
+            .cdn_endpoint
+            .as_deref()
+            .map(validate_endpoint)
+            .transpose()?;
+        conf.enable_md5_calculate = self.md5;
+        conf.retry_policy = self.retry_policy;
+        for (target, value) in [
+            (&mut conf.connect_timeout, self.connect_timeout),
+            (&mut conf.request_timeout, self.request_timeout),
+            (&mut conf.read_timeout, self.read_timeout),
+            (&mut conf.pool_idle_timeout, self.pool_idle_timeout),
+            (&mut conf.tcp_keepalive, self.tcp_keepalive),
+        ] {
+            if let Some(value) = value {
+                if value.is_zero() || std::time::Instant::now().checked_add(value).is_none() {
+                    return Err(FdsError::invalid(
+                        "timeout must be nonzero and representable",
+                    ));
+                }
+                *target = value;
+            }
+        }
+        // Socket options use integer seconds; reject rounding and oversized
+        // values instead of letting the connector silently ignore OS errors.
+        if conf.tcp_keepalive.subsec_nanos() != 0 || conf.tcp_keepalive.as_secs() > 32767 {
+            return Err(FdsError::invalid(
+                "tcp_keepalive must be whole seconds in 1..=32767",
+            ));
+        }
+        #[cfg(feature = "cslb")]
+        if let Some(value) = self.cslb_max_nodes {
+            if value == 0 {
+                return Err(FdsError::invalid("cslb_max_nodes must be positive"));
+            }
+            conf.cslb_max_nodes = value;
+        }
+        let credentials = self
+            .credentials
+            .ok_or_else(|| FdsError::invalid("credentials are required"))?;
+        Client::with_credentials(credentials, conf)
+    }
+}
+
+fn validate_endpoint(value: &str) -> Result<Url> {
+    // Reject normalizations which could silently remove a caller's path prefix,
+    // userinfo, or whitespace before URL parsing.
+    let (_, authority_path) = value.split_once("://").ok_or(FdsError::Endpoint)?;
+    let authority = authority_path.split('/').next().unwrap_or("");
+    let path = authority_path.strip_prefix(authority).unwrap_or("");
+    if value.chars().any(|c| c.is_whitespace() || c.is_control())
+        || value.contains(['\\', '?', '#'])
+        || authority.contains('@')
+        || !(path.is_empty() || path == "/")
+    {
+        return Err(FdsError::Endpoint);
+    }
+    let url = Url::parse(value).map_err(|_| FdsError::Endpoint)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port() == Some(0)
+    {
+        return Err(FdsError::Endpoint);
+    }
+    Ok(url)
+}

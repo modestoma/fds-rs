@@ -1,0 +1,176 @@
+{
+  "access_id": "AKID",
+  "access_secret": "test-secret",
+  "endpoint": "cnbj1.fds.api.xiaomi.com",
+  "absolute_urls": [
+    {
+      "bucket": "b",
+      "object": "a/b.txt",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/a%2Fb.txt"
+    },
+    {
+      "bucket": "hello",
+      "object": "dir1/dir2/build.log",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/hello/dir1%2Fdir2%2Fbuild.log"
+    },
+    {
+      "bucket": "b",
+      "object": "a b/c.txt",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/a%20b%2Fc.txt"
+    },
+    {
+      "bucket": "b",
+      "object": "x+y",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/x%2By"
+    },
+    {
+      "bucket": "b",
+      "object": "中文/文件.txt",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/%E4%B8%AD%E6%96%87%2F%E6%96%87%E4%BB%B6.txt"
+    },
+    {
+      "bucket": "b",
+      "object": "a?b#c",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/a%3Fb%23c"
+    },
+    {
+      "bucket": "b",
+      "object": "tilde~star*.txt",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/tilde~star%2A.txt"
+    },
+    {
+      "bucket": "mybucket",
+      "object": "",
+      "expected": "https://cnbj1.fds.api.xiaomi.com/mybucket"
+    }
+  ],
+  "signatures": [
+    {
+      "secret": "test-secret",
+      "method": "GET",
+      "url": "https://cnbj1.fds.api.xiaomi.com/mybucket/a%2Fb.txt",
+      "headers": {
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT"
+      },
+      "expected": "eLWBVj8/hVaql2paSsuZbuIIlOI="
+    },
+    {
+      "secret": "test-secret",
+      "method": "GET",
+      "url": "https://cnbj1.fds.api.xiaomi.com/mybucket/obj?acl=",
+      "headers": {
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT"
+      },
+      "expected": "Er//9dWpVqXIgMZqBollkQCen5E="
+    },
+    {
+      "secret": "test-secret",
+      "method": "GET",
+      "url": "https://cnbj1.fds.api.xiaomi.com/b/o?partNumber=3\u0026uploadId=U1",
+      "headers": {
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT"
+      },
+      "expected": "SGlu1ywbMTNZFi6rE5OryCWW8qk="
+    },
+    {
+      "secret": "test-secret",
+      "method": "GET",
+      "url": "https://cnbj1.fds.api.xiaomi.com/b/dir%20a%2Fb%20c.txt",
+      "headers": {
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT"
+      },
+      "expected": "bNs4QeLiogMu8lDwfkjBMPYpRng="
+    },
+    {
+      "secret": "test-secret",
+      "method": "GET",
+      "url": "https://cnbj1.fds.api.xiaomi.com/b/o",
+      "headers": {
+        "content-type": "image/png",
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT",
+        "x-xiaomi-meta-uid": "1000"
+      },
+      "expected": "LAT3PtESVtSXiXgAKYRp+zUU7xU="
+    },
+    {
+      "secret": "test-secret",
+      "method": "PUT",
+      "url": "https://cnbj1.fds.api.xiaomi.com/b/o?uploads=",
+      "headers": {
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT",
+        "x-xiaomi-meta-uid": "1000",
+        "x-xiaomi-multipart-upload-mode": "MULTI_BLOB"
+      },
+      "expected": "QmnxoCuLvgpxDoAPQ0yYj5nfx9Y="
+    },
+    {
+      "secret": "test-secret",
+      "method": "PUT",
+      "url": "https://cnbj1.fds.api.xiaomi.com/b/o",
+      "headers": {
+        "content-md5": "abc123def456",
+        "content-type": "application/octet-stream",
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT"
+      },
+      "expected": "PoTIbobXPwQr3ErtKwo+Dn06f3g="
+    },
+    {
+      "secret": "test-secret",
+      "method": "GET",
+      "url": "https://cnbj1.fds.api.xiaomi.com/b/%E4%B8%AD%E6%96%87%2F%E6%96%87%E4%BB%B6.txt",
+      "headers": {
+        "date": "Mon, 13 Jul 2026 10:00:00 GMT"
+      },
+      "expected": "mElKnFpxwnBM0uGmRYMUfcoytI4="
+    }
+  ],
+  "presigned_urls": [
+    {
+      "cdn": false,
+      "bucket": "b",
+      "object": "o",
+      "method": "GET",
+      "expiration_millis": 1752400000000,
+      "metadata": null,
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/o?Expires=1752400000000\u0026GalaxyAccessKeyId=AKID\u0026Signature=/fY0AFWKuHGrBVvHNqTEaBQwZhw="
+    },
+    {
+      "cdn": false,
+      "bucket": "b",
+      "object": "o",
+      "method": "HEAD",
+      "expiration_millis": 1752400000000,
+      "metadata": null,
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/o?Expires=1752400000000\u0026GalaxyAccessKeyId=AKID\u0026metadata=\u0026Signature=RnbUHQh7wJ7kzYKbmQlMq7Y5Ycw="
+    },
+    {
+      "cdn": false,
+      "bucket": "b",
+      "object": "dir/a b.txt",
+      "method": "GET",
+      "expiration_millis": 1752400000000,
+      "metadata": null,
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/dir%2Fa%20b.txt?Expires=1752400000000\u0026GalaxyAccessKeyId=AKID\u0026Signature=ola3uj+ogZgtmeYfb8fXtNGAH3M="
+    },
+    {
+      "cdn": true,
+      "bucket": "b",
+      "object": "o",
+      "method": "GET",
+      "expiration_millis": 1752400000000,
+      "metadata": null,
+      "expected": "https://cdn.cnbj1.fds.api.mi-img.com/b/o?Expires=1752400000000\u0026GalaxyAccessKeyId=AKID\u0026Signature=/fY0AFWKuHGrBVvHNqTEaBQwZhw="
+    },
+    {
+      "cdn": false,
+      "bucket": "b",
+      "object": "o",
+      "method": "GET",
+      "expiration_millis": 1752400000000,
+      "metadata": {
+        "x-xiaomi-meta-uid": "1000"
+      },
+      "expected": "https://cnbj1.fds.api.xiaomi.com/b/o?Expires=1752400000000\u0026GalaxyAccessKeyId=AKID\u0026Signature=bDHec4/7ZAiQOLUdOfdcneTPOqY="
+    }
+  ]
+}

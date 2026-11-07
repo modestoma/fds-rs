@@ -1,0 +1,84 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Get bucket acl related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - application/json
+paths:
+  /{bucketname}:
+    get:
+      summary: 获取Bucket的ACL列表
+      description: 必须有Bucket的`READ`权限才能执行该操作
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: acl
+          in: query
+          description: 表示该请求获取Bucket的ACL，值为空
+          required: true
+          type: string
+      tags:
+        - get bucket acl
+      responses:
+        200:
+          description: Bucket ACL信息
+          schema:
+            $ref: '#/definitions/AccessControlPolicy'
+definitions:
+  AccessControlPolicy:
+    type: object
+    properties:
+      owner:
+        $ref: '#/definitions/OwnerBean'
+      accessControlList:
+        type: array
+        items:
+          $ref: '#/definitions/GrantBean'
+  GrantBean:
+    type: object
+    properties:
+      grantee:
+        $ref: '#/definitions/GranteeBean'
+      permission:
+        type: string
+        description: 权限描述，包括`READ`, `WRITE`, `READ_OBJECTS`, `FULL_CONTROL`, `SSO_WRITE`
+      type:
+        type: string
+        description: 授权对象类型，包括`USER`, `GROUP`
+  GranteeBean:
+    type: object
+    properties:
+      id:
+        type: string
+        description: 用户ID
+  OwnerBean:
+    type: object
+    properties:
+      id:
+        type: string
+        description: 所有者ID
+      displayName:
+        type: string
+        description: 所有者名称

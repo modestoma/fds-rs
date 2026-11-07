@@ -1,0 +1,73 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: ListBuckets related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - application/json
+paths:
+  /:
+    get:
+      summary: 获取创建的Bucket列表
+      description: |
+      parameters:
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: authorizedBuckets
+          in: query
+          description: 如果包含这个请求参数，返回的bucket列表里包含所有被授权的bucket
+          required: false
+          type: string
+      tags:
+        - list-bucket
+      responses:
+        200:
+          description: bucket列表
+          schema:
+            $ref: '#/definitions/ListAllBucketsResult'
+definitions:
+  ListAllBucketsResult:
+    type: object
+    properties:
+      owner:
+          $ref: '#/definitions/OwnerBean'
+      buckets:
+        type: array
+        items:
+          $ref: '#/definitions/BucketBean'
+  OwnerBean:
+    type: object
+    description: 拥有者信息
+    properties:
+      id:
+        type: string
+        description: 拥有者ID
+      displayName:
+        type: string
+        description: 拥有者名字
+  BucketBean:
+    type: object
+    description: bucket信息
+    properties:
+      name: 
+        type: string
+        description: bucket名字
+      orgId:
+        type: string
+        description: 拥有者ID

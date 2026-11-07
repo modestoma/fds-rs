@@ -1,0 +1,53 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Restore Archive Object related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+paths:
+  /{bucketname}/{objectname}:
+    put:
+      summary: 恢复被删除的文件，被删除文件会被保留7天
+      description: 必须是Bucket的拥有者
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: objectname
+          in: path
+          description: 上传的Object名字
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: restoreArchive
+          in: query
+          description: 表示暂时还原归档 Object，值为空
+          required: true
+          type: string
+      tags:
+        - restore archive object
+      responses:
+        200:
+          description: 对已经 restore 成功的归档 Object 调用，延迟还原时间
+        202:
+          description: 对归档 Object 第一次调用 restoreArchivedObject 接口
+        409:
+          description: 已经成功调用过 restoreArchivedObject 接口，且 Object 仍处于解冻中，再次调用时返回, 表示服务端正在执行解冻操作

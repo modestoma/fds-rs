@@ -1,0 +1,3 @@
+[registries.artifactory]
+index = "sparse+https://pkgs.d.xiaomi.net/artifactory/api/cargo/cargo-local/index/"
+credential-provider = "cargo:token"

@@ -1,0 +1,44 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Abort multipart upload related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+paths:
+  /{bucketname}/{objectname}:
+    delete:
+      summary: 取消分片上传
+      description: |
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: objectname
+          in: path
+          description: Object名字
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: uploadId
+          in: query
+          description: 初始化分片上传获取的uploadId
+          required: true
+          type: string
+      tags:
+        - abort multipart upload
+      responses:
+        200:
+          description: 请求成功

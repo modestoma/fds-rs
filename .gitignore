@@ -1,0 +1,5 @@
+/target
+/fds_cli
+.DS_Store
+# skill-creator eval workspaces (regenerable scratch: run outputs, benchmark, review.html)
+.claude/skills/*-workspace/

@@ -1,0 +1,758 @@
+//! HTTP client core and request pipeline. Ports `fds/fds.go`.
+//!
+//! 🔴 This is the second byte-critical point (after signing): URL construction
+//! and the exact ordering of "assemble headers → set Date → sign → set
+//! Authorization → send". See the request pipeline below.
+
+use crate::upload::UploadBody;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
+use crate::auth;
+use crate::config::{ClientBuilder, ClientConfiguration};
+use crate::constant::{HttpMethod, HTTP_HEADER_AUTHORIZATION, HTTP_HEADER_DATE};
+use crate::encoding::{go_query_escape, QueryValues};
+use crate::error::{FdsError, JsonResponseSource, ResponseError, ResponseErrorKind, Result};
+use crate::metadata::ObjectMetadata;
+use std::{fmt, sync::Arc};
+
+/// A validated FDS client. Clones share immutable configuration, private
+/// credentials and a connection pool; no caller-owned Arc is required.
+///
+/// ```
+/// # fn main() -> fds::Result<()> {
+/// let client = fds::Client::builder()
+///     .endpoint("https://cnbj1.fds.api.xiaomi.com")
+///     .credentials("access-id", "secret")
+///     .build()?;
+/// let shared = client.clone();
+/// assert_eq!(shared.configuration().endpoint(), client.configuration().endpoint());
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct Client {
+    inner: Arc<ClientInner>,
+}
+
+impl AsRef<Client> for Client {
+    fn as_ref(&self) -> &Client {
+        self
+    }
+}
+
+struct ClientInner {
+    http: reqwest::Client,
+    configuration: ClientConfiguration,
+    credentials: crate::oauth::Credentials,
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client")
+            .field("configuration", &self.inner.configuration)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Normalized internal request with an owned, known-length body.
+pub(crate) struct ClientRequest<'a> {
+    pub bucket: &'a str,
+    pub object: &'a str,
+    pub method: HttpMethod,
+    pub query: QueryValues,
+    pub headers: HeaderMap,
+    pub metadata: Option<&'a ObjectMetadata>,
+    pub body: Option<UploadBody>,
+    pub replay_safety: crate::retry::ReplaySafety,
+    pub accepted_statuses: &'static [u16],
+}
+
+impl<'a> ClientRequest<'a> {
+    pub(crate) fn read_only(mut self) -> Self {
+        self.replay_safety = crate::retry::ReplaySafety::ReadOnly;
+        self
+    }
+
+    /// A bare request with empty query/headers/metadata/body.
+    pub(crate) fn new(bucket: &'a str, object: &'a str, method: HttpMethod) -> Self {
+        Self {
+            bucket,
+            object,
+            method,
+            query: QueryValues::new(),
+            headers: HeaderMap::new(),
+            metadata: None,
+            body: None,
+            accepted_statuses: &[200],
+            replay_safety: crate::retry::ReplaySafety::Never,
+        }
+    }
+}
+
+impl Client {
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::default()
+    }
+
+    pub fn configuration(&self) -> &ClientConfiguration {
+        &self.inner.configuration
+    }
+
+    pub(crate) fn require_oauth(&self) -> Result<()> {
+        if matches!(self.inner.credentials, crate::oauth::Credentials::OAuth(_)) {
+            Ok(())
+        } else {
+            Err(FdsError::invalid(
+                "app bucket listing requires an exchanged storage token",
+            ))
+        }
+    }
+
+    pub(crate) fn access_keys(&self) -> Result<(&str, &str)> {
+        match &self.inner.credentials {
+            crate::oauth::Credentials::AccessKey(id, secret) => Ok((id, secret)),
+            _ => Err(FdsError::invalid(
+                "Galaxy-V2 presigning requires access key credentials",
+            )),
+        }
+    }
+
+    pub(crate) fn with_credentials(
+        credentials: crate::oauth::Credentials,
+        conf: ClientConfiguration,
+    ) -> Result<Self> {
+        credentials.validate(&conf)?;
+        #[allow(unused_mut)]
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(conf.connect_timeout)
+            .timeout(conf.request_timeout)
+            .read_timeout(conf.read_timeout)
+            .pool_idle_timeout(conf.pool_idle_timeout)
+            .tcp_keepalive(conf.tcp_keepalive)
+            .pool_max_idle_per_host(100)
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never());
+        #[cfg(feature = "cslb")]
+        {
+            let resolver = crate::cslb::CslbResolver::new(conf.cslb_max_nodes, true, true);
+            builder = builder.dns_resolver(Arc::new(resolver));
+        }
+        Ok(Self {
+            inner: Arc::new(ClientInner {
+                http: builder.build()?,
+                configuration: conf,
+                credentials,
+            }),
+        })
+    }
+
+    /// Run a request and return the raw response (Go `do`). `cdn` is always
+    /// false in the request pipeline (only presigned URLs may use the CDN host).
+    pub(crate) async fn do_request(&self, req: ClientRequest<'_>) -> Result<reqwest::Response> {
+        let mut query = req.query;
+        if let crate::oauth::Credentials::OAuth(token) = &self.inner.credentials {
+            token.validate()?;
+            query.add("appId", token.app_id());
+            query.add("storageAccessToken", token.token());
+        }
+        let query = query.encode();
+        let url = self.build_request_url(req.bucket, req.object, &query, false)?;
+
+        let mut headers = req.headers;
+        if let Some(md) = req.metadata {
+            for (k, v) in md.iter() {
+                let name = HeaderName::from_bytes(k.as_bytes())
+                    .map_err(|e| FdsError::invalid(e.to_string()))?;
+                let val = HeaderValue::from_str(v).map_err(|e| FdsError::invalid(e.to_string()))?;
+                headers.append(name, val);
+            }
+        }
+
+        let mut body = req.body;
+        let eligible = matches!(req.replay_safety, crate::retry::ReplaySafety::ReadOnly)
+            && body.as_ref().is_none_or(|body| body.try_clone().is_some());
+        let policy = &self.inner.configuration.retry_policy;
+        let mut retries = 0;
+        loop {
+            let replay = if eligible {
+                body.as_ref().and_then(UploadBody::try_clone)
+            } else {
+                None
+            };
+            let result = self
+                .send(req.method, url.clone(), headers.clone(), body.take())
+                .await;
+            let delay = if eligible {
+                match &result {
+                    Ok(resp)
+                        if !req.accepted_statuses.contains(&resp.status().as_u16())
+                            && matches!(resp.status().as_u16(), 429 | 502 | 503 | 504) =>
+                    {
+                        policy.delay(retries, Some(resp.headers()))
+                    }
+                    Err(FdsError::Http(error))
+                        if !error.is_body()
+                            && (error.is_connect() || error.is_timeout() || error.is_request()) =>
+                    {
+                        policy.delay(retries, None)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(delay) = delay {
+                drop(result);
+                tokio::time::sleep(delay).await;
+                body = replay;
+                retries += 1;
+            } else {
+                return check_response_status(result?, req.accepted_statuses)
+                    .await
+                    .map_err(|error| self.redact_error(error));
+            }
+        }
+    }
+
+    /// Decode a required JSON response; an empty body is a protocol error.
+    pub(crate) async fn do_json<T>(&self, req: ClientRequest<'_>) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        self.do_json_limited(req, usize::MAX).await
+    }
+
+    pub(crate) async fn do_json_limited<T: serde::de::DeserializeOwned>(
+        &self,
+        req: ClientRequest<'_>,
+        limit: usize,
+    ) -> Result<T> {
+        let mut resp = self.do_request(req).await?;
+        let mut error = response_error(&resp, ResponseErrorKind::BodyRead);
+        if !matches!(
+            self.inner.credentials,
+            crate::oauth::Credentials::AccessKey(..)
+        ) {
+            error.request_id = None;
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = match resp.chunk().await {
+            Ok(chunk) => chunk,
+            Err(source) => {
+                error.source = Some(Box::new(source.without_url()));
+                return Err(error.into());
+            }
+        } {
+            if chunk.len() > limit.saturating_sub(bytes.len()) {
+                error.kind = ResponseErrorKind::BodyTooLarge;
+                return Err(error.into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.is_empty() {
+            error.kind = ResponseErrorKind::EmptyJson;
+            return Err(error.into());
+        }
+        serde_json::from_slice(&bytes).map_err(|source| {
+            error.kind = ResponseErrorKind::InvalidJson;
+            if matches!(
+                self.inner.credentials,
+                crate::oauth::Credentials::AccessKey(..)
+            ) {
+                set_diagnostic_body(&mut error, &bytes, bytes.len() > DIAGNOSTIC_LIMIT);
+            }
+            error.source = Some(Box::new(JsonResponseSource {
+                category: source.classify(),
+                line: source.line(),
+                column: source.column(),
+            }));
+            error.into()
+        })
+    }
+
+    /// Convenience: run a request and discard the response body.
+    pub(crate) async fn do_discard(&self, req: ClientRequest<'_>) -> Result<()> {
+        let _ = self.do_request(req).await?;
+        Ok(())
+    }
+
+    /// The core send: body handling → Date → sign → Authorization → send →
+    /// status check (Go `doRequest`). Ordering is load-bearing.
+    async fn send(
+        &self,
+        method: HttpMethod,
+        url: url::Url,
+        mut headers: HeaderMap,
+        body: Option<UploadBody>,
+    ) -> Result<reqwest::Response> {
+        // (3) body: optional Content-MD5 (must be set BEFORE signing).
+        let body = body
+            .map(|body| body.prepare(&mut headers, self.inner.configuration.enable_md5_calculate))
+            .transpose()?;
+
+        // (6) Date — GMT; the SAME string is signed and sent.
+        let date = chrono::Utc::now()
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        headers.insert(
+            HeaderName::from_static(HTTP_HEADER_DATE),
+            HeaderValue::from_str(&date).map_err(|e| FdsError::invalid(e.to_string()))?,
+        );
+
+        match &self.inner.credentials {
+            crate::oauth::Credentials::AccessKey(id, secret) => {
+                let sig = auth::sign(secret, method.as_str(), url.as_str(), &headers)?;
+                let mut value = HeaderValue::from_str(&format!("Galaxy-V2 {id}:{sig}"))
+                    .map_err(|_| FdsError::invalid("invalid authorization header"))?;
+                value.set_sensitive(true);
+                headers.insert(HeaderName::from_static(HTTP_HEADER_AUTHORIZATION), value);
+            }
+            crate::oauth::Credentials::OAuth(token) => {
+                token.validate()?;
+                headers.insert(
+                    HeaderName::from_static(HTTP_HEADER_AUTHORIZATION),
+                    HeaderValue::from_static("OAuth"),
+                );
+            }
+            crate::oauth::Credentials::Anonymous => {}
+        }
+
+        tracing::debug!(method = method.as_str(), ">>> FDS request");
+
+        // (9) send. `.body()` (never `.json()`) so reqwest does not inject a
+        // Content-Type that would corrupt the signature.
+        let mut rb = self.inner.http.request(method.into(), url).headers(headers);
+        if let Some(b) = body {
+            rb = rb.body(b);
+        }
+        let mut resp = rb.send().await?;
+        if !matches!(
+            self.inner.credentials,
+            crate::oauth::Credentials::AccessKey(..)
+        ) {
+            // reqwest Response Debug includes its URL. Remove credential query
+            // parameters even from raw response escape hatches, retaining
+            // the streaming body, headers, status and transport extensions.
+            use reqwest::ResponseBuilderExt;
+            let mut safe_url = resp.url().clone();
+            safe_url.set_query(None);
+            let safe_parts = http::Response::builder()
+                .url(safe_url)
+                .body(())
+                .unwrap()
+                .into_parts()
+                .0;
+            let raw: http::Response<reqwest::Body> = resp.into();
+            let (mut parts, body) = raw.into_parts();
+            parts.extensions.extend(safe_parts.extensions);
+            resp = reqwest::Response::from(http::Response::from_parts(parts, body));
+        }
+
+        // Status/retry decisions belong to the operation-aware caller.
+        Ok(resp)
+    }
+
+    fn redact_error(&self, mut error: FdsError) -> FdsError {
+        if !matches!(
+            self.inner.credentials,
+            crate::oauth::Credentials::AccessKey(..)
+        ) {
+            if let FdsError::Response(response) = &mut error {
+                response.body.clear();
+                response.service_code = None;
+                response.request_id = None;
+            }
+        }
+        error
+    }
+
+    /// Build the request URL (Go `buildRequestURL`). 🔴 The object name is
+    /// `go_query_escape`d then `+`→`%20` (so `/`→`%2F`, space→`%20`); the bucket
+    /// is not encoded. The pre-encoded string is parsed once and never
+    /// re-encoded downstream.
+    pub(crate) fn build_request_url(
+        &self,
+        bucket: &str,
+        object: &str,
+        params: &str,
+        cdn: bool,
+    ) -> Result<url::Url> {
+        let endpoint = if cdn {
+            self.inner
+                .configuration
+                .cdn_endpoint
+                .as_ref()
+                .ok_or_else(|| FdsError::invalid("CDN endpoint is not configured"))?
+        } else {
+            &self.inner.configuration.endpoint
+        };
+
+        let escaped = go_query_escape(object).replace('+', "%20");
+
+        let mut s = endpoint.as_str().to_owned();
+        if !bucket.is_empty() {
+            s.push_str(bucket);
+        }
+        if !object.is_empty() {
+            s.push('/');
+            s.push_str(&escaped);
+        }
+        if !params.is_empty() {
+            s.push('?');
+            s.push_str(params);
+        }
+
+        url::Url::parse(&s).map_err(|e| FdsError::invalid(format!("build_request_url: {e}")))
+    }
+}
+
+const DIAGNOSTIC_LIMIT: usize = 8192;
+
+fn response_error(resp: &reqwest::Response, kind: ResponseErrorKind) -> ResponseError {
+    ResponseError {
+        status: resp.status().as_u16(),
+        kind,
+        service_code: None,
+        // Best-effort header conventions, not a required FDS response schema.
+        request_id: ["x-xiaomi-request-id", "x-request-id"]
+            .iter()
+            .find_map(|name| {
+                resp.headers()
+                    .get(*name)?
+                    .to_str()
+                    .ok()
+                    .map(|s| s.chars().take(256).collect())
+            }),
+        body: String::new(),
+        truncated: false,
+        source: None,
+    }
+}
+
+fn set_diagnostic_body(error: &mut ResponseError, bytes: &[u8], truncated: bool) {
+    let end = bytes.len().min(DIAGNOSTIC_LIMIT);
+    error.body = String::from_utf8_lossy(&bytes[..end]).into_owned();
+    // Lossy UTF-8 replacement can expand the byte count.
+    let mut end = error.body.len().min(DIAGNOSTIC_LIMIT);
+    while !error.body.is_char_boundary(end) {
+        end -= 1;
+    }
+    error.truncated = truncated || end < error.body.len();
+    error.body.truncate(end);
+    if !error.truncated {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+            let text = |key: &str| {
+                value.get(key).and_then(|v| match v {
+                    serde_json::Value::String(s) => Some(s.chars().take(256).collect::<String>()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+            };
+            error.service_code = text("code").or_else(|| text("errorCode"));
+            if error.request_id.is_none() {
+                error.request_id = text("requestId");
+            }
+        }
+    }
+}
+
+/// Only an operation's explicit allowlist may produce success.
+async fn check_response_status(
+    mut resp: reqwest::Response,
+    allowed: &[u16],
+) -> Result<reqwest::Response> {
+    if allowed.contains(&resp.status().as_u16()) {
+        return Ok(resp);
+    }
+    let mut error = response_error(&resp, ResponseErrorKind::UnexpectedStatus);
+    let mut bytes = Vec::new();
+    // Read only a bounded prefix, including one byte to detect truncation.
+    while bytes.len() <= DIAGNOSTIC_LIMIT {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = chunk.len().min(DIAGNOSTIC_LIMIT + 1 - bytes.len());
+                bytes.extend_from_slice(&chunk[..take]);
+            }
+            Ok(None) => break,
+            Err(source) => {
+                error.source = Some(Box::new(source.without_url()));
+                break;
+            }
+        }
+    }
+    let incomplete = bytes.len() > DIAGNOSTIC_LIMIT || error.source.is_some();
+    set_diagnostic_body(&mut error, &bytes, incomplete);
+    Err(error.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client() -> Client {
+        Client::builder()
+            .endpoint("https://cnbj1.fds.api.xiaomi.com")
+            .cdn_endpoint("https://cdn.cnbj1.fds.api.mi-img.com")
+            .credentials("ak", "sk")
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn url_plain_object() {
+        let c = test_client();
+        let u = c.build_request_url("b", "a/b.txt", "", false).unwrap();
+        assert_eq!(u.as_str(), "https://cnbj1.fds.api.xiaomi.com/b/a%2Fb.txt");
+    }
+
+    #[test]
+    fn url_object_with_dirs_encodes_slash() {
+        let c = test_client();
+        let u = c
+            .build_request_url("hello", "dir1/dir2/build.log", "", false)
+            .unwrap();
+        assert_eq!(
+            u.as_str(),
+            "https://cnbj1.fds.api.xiaomi.com/hello/dir1%2Fdir2%2Fbuild.log"
+        );
+    }
+
+    #[test]
+    fn url_object_with_space_and_plus() {
+        let c = test_client();
+        let u = c.build_request_url("b", "a b/c.txt", "", false).unwrap();
+        assert_eq!(
+            u.as_str(),
+            "https://cnbj1.fds.api.xiaomi.com/b/a%20b%2Fc.txt"
+        );
+        let u2 = c.build_request_url("b", "x+y", "", false).unwrap();
+        assert_eq!(u2.as_str(), "https://cnbj1.fds.api.xiaomi.com/b/x%2By");
+    }
+
+    #[test]
+    fn url_unicode_object() {
+        let c = test_client();
+        let u = c
+            .build_request_url("b", "中文/文件.txt", "", false)
+            .unwrap();
+        assert_eq!(
+            u.as_str(),
+            "https://cnbj1.fds.api.xiaomi.com/b/%E4%B8%AD%E6%96%87%2F%E6%96%87%E4%BB%B6.txt"
+        );
+    }
+
+    #[test]
+    fn url_bucket_only_and_root() {
+        let c = test_client();
+        let u = c.build_request_url("b", "", "", false).unwrap();
+        assert_eq!(u.as_str(), "https://cnbj1.fds.api.xiaomi.com/b");
+        let root = c.build_request_url("", "", "", false).unwrap();
+        assert_eq!(root.as_str(), "https://cnbj1.fds.api.xiaomi.com/");
+    }
+
+    #[test]
+    fn url_with_params() {
+        let c = test_client();
+        let u = c.build_request_url("b", "o", "acl=", false).unwrap();
+        assert_eq!(u.as_str(), "https://cnbj1.fds.api.xiaomi.com/b/o?acl=");
+    }
+
+    #[test]
+    fn url_cdn_host() {
+        let c = test_client();
+        let u = c.build_request_url("b", "o", "", true).unwrap();
+        assert_eq!(u.as_str(), "https://cdn.cnbj1.fds.api.mi-img.com/b/o");
+    }
+
+    #[test]
+    fn url_encoding_survives_roundtrip_to_signed_resource() {
+        // The pre-encoded path must survive url::parse so the signer decodes it
+        // back to the literal object name.
+        let c = test_client();
+        let u = c
+            .build_request_url("b", "dir a/b c.txt", "", false)
+            .unwrap();
+        let decoded = percent_encoding::percent_decode_str(u.path())
+            .decode_utf8_lossy()
+            .into_owned();
+        assert_eq!(decoded, "/b/dir a/b c.txt");
+    }
+}
+
+#[cfg(test)]
+mod response_security_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<String>>);
+    impl tracing::field::Visit for Capture {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .lock()
+                .unwrap()
+                .push_str(&format!("{}={value:?}\n", field.name()));
+        }
+    }
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target().starts_with("fds::")
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            values.record(&mut self.clone());
+        }
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            event.record(&mut self.clone());
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn request_trace_omits_tokens_keys_and_signatures() {
+        const CHILD_ENV: &str = "FDS_REQUEST_TRACE_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Callsite interests are process-global. Run this private-request
+            // test alone so parallel tests cannot initialize its callsites with
+            // a different subscriber. Keep arbitrary sensitive query coverage.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "client::response_security_tests::request_trace_omits_tokens_keys_and_signatures",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("start isolated tracing test");
+            assert!(
+                output.status.success(),
+                "isolated tracing test failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+        let captured = Capture(Arc::new(Mutex::new(String::new())));
+        // Installed before the runtime/HTTP stack; every thread in this child
+        // observes the same subscriber, including first callsite registration.
+        tracing::subscriber::set_global_default(captured.clone()).unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(assert_request_trace_is_redacted(captured));
+    }
+
+    async fn assert_request_trace_is_redacted(captured: Capture) {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("GET", "/b/private-object")
+            .expect(2)
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+        let client = Client::builder()
+            .endpoint(server.url())
+            .credentials("private-ak", "private-sk")
+            .build()
+            .unwrap();
+        let mut req = ClientRequest::new("b", "private-object", HttpMethod::Get);
+        req.query.add("storageAccessToken", "private-token");
+        req.query.add("Signature", "private-signature");
+        client.do_request(req).await.unwrap();
+        assert!(captured.0.lock().unwrap().contains("FDS request"));
+        let exchange = server.mock("GET", "/")
+            .match_query(mockito::Matcher::Any)
+            .with_body(serde_json::json!({"token":"private-storage-token", "expireTime":(chrono::Utc::now()+chrono::Duration::days(1)).timestamp_millis()}).to_string())
+            .create_async().await;
+        let input = crate::StorageTokenRequest::new(
+            "private-app",
+            "private-oauth-app",
+            "private-oauth-token",
+            crate::OAuthProvider::XiaoMi,
+        )
+        .xiaomi_mac("private-openid", "private-mac-key", "HmacSHA1");
+        let token = crate::FdsServiceClient::new(server.url())
+            .unwrap()
+            .exchange_storage_token(&input)
+            .await
+            .unwrap();
+        let oauth = Client::builder()
+            .endpoint(server.url())
+            .storage_token(token)
+            .build()
+            .unwrap();
+        oauth
+            .do_request(ClientRequest::new("b", "private-object", HttpMethod::Get))
+            .await
+            .unwrap();
+        exchange.assert_async().await;
+        let output = captured.0.lock().unwrap().clone();
+        // Access-key GET, OAuth token exchange, and storage-token GET.
+        assert_eq!(output.matches("FDS request").count(), 3);
+        for sensitive in [
+            "private-",
+            "http://",
+            "storageAccessToken",
+            "Signature",
+            "Galaxy-V2",
+        ] {
+            assert!(
+                !output.contains(sensitive),
+                "unexpected diagnostic: {output}"
+            );
+        }
+        m.assert_async().await;
+    }
+}
+
+#[cfg(test)]
+mod retry_safety_tests {
+    use super::*;
+    use std::time::Duration;
+    #[tokio::test]
+    async fn semantic_default_deny_and_body_replayability_are_independent() {
+        let mut server = mockito::Server::new_async().await;
+        let client = Client::builder()
+            .endpoint(server.url())
+            .credentials("ak", "sk")
+            .retry_policy(
+                crate::RetryPolicy::new(2, Duration::from_millis(1), Duration::from_millis(2))
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        for (key, method, read, stream, attempts) in [
+            ("unclassified_get", HttpMethod::Get, false, false, 1),
+            ("unsafe_post", HttpMethod::Post, false, false, 1),
+            ("read_stream", HttpMethod::Get, true, true, 1),
+            ("read_bytes", HttpMethod::Get, true, false, 3),
+        ] {
+            let m = server
+                .mock(method.as_str(), format!("/b/{key}").as_str())
+                .with_status(503)
+                .expect(attempts)
+                .create_async()
+                .await;
+            let mut req = ClientRequest::new("b", key, method);
+            if read {
+                req = req.read_only();
+            }
+            req.body = Some(if stream {
+                UploadBody::from_stream(
+                    futures_util::stream::iter([Ok(bytes::Bytes::from_static(b"x"))]),
+                    1,
+                )
+            } else {
+                vec![b'x'].into()
+            });
+            assert!(client.do_request(req).await.is_err());
+            m.assert_async().await;
+        }
+    }
+}

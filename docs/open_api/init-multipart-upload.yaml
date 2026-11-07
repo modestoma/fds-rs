@@ -1,0 +1,61 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Init multipart upload related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+paths:
+  /{bucketname}/{objectname}:
+    put:
+      summary: 初始化分片上传
+      description: 必须拥有Bucket的`WRITE`权限才能执行该操作
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: objectname
+          in: path
+          description: Object名字
+          required: true
+          type: string
+        - name: uploads
+          in: query
+          description: 表示初始化分片上传，值为空
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: false
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+      tags:
+        - init multipart upload
+      responses:
+        200:
+          description: 请求成功，返回用于后续上传的分片ID
+          schema:
+            type: object
+            properties:
+              bucketName:
+                type: string
+                description: Bucket名字
+              objectName: 
+                type: string
+                description: Object名字
+              uploadId:
+                type: string
+                description: 后续上传需要携带id

@@ -1,0 +1,4 @@
+500:
+  description: Internal Server Error
+  type: integer
+  format: int32

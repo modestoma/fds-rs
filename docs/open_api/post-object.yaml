@@ -1,0 +1,86 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Post object related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+paths:
+  /{bucketname}/:
+    post:
+      summary: 上传object，服务端将会返回上传的Object名字，保证唯一，不会覆盖已有Object
+      description: 必须拥有Bucket的`WRITE`权限才能执行该操作
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: expires
+          in: query
+          description: 如果上传成功，返回的签名的过期时间戳（UTC），单位毫秒，默认30天
+          required: false
+          type: string
+        - name: body
+          in: body
+          description: Object内容
+          required: true
+          type: binary
+        - name: contentType
+          in: form-data
+          description: 通过参数指定文件的contentType
+          required: false
+          type: string
+        - name: cannedAcl
+          in: form-data
+          description: 通过参数指定文件的权限
+          required: false
+          type: string
+        - name: key
+          in: form
+          description: 通过参数指定object名字，未指定则自动生成唯一名字
+          required: false
+          type: string
+      tags:
+        - post object
+      responses:
+        200:
+          description: 请求成功
+          schema:
+            $ref: '#/definitions/PutObjectResult'
+definitions:
+  PutObjectResult:
+    type: object
+    properties:
+      bucketname:
+        type: string
+        description: Bucket名字
+        format: int32
+      objectName:
+        type: string
+        description: Object名字
+      accessKeyId:
+        type: string
+        description: 签名用的accessKeyId
+      signature:
+        type: string
+        description: 用于下载这个Object的签名
+      expires: 
+        type: string
+        description: 签名失效时间戳（UTC），单位毫秒，默认有效时间30天

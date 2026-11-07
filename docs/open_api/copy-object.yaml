@@ -1,0 +1,70 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Copy object related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - |
+paths:
+  /{dst_bucketname}/{dst_objectname}:
+    put:
+      summary: 将一个src_objectname从src_bucketname复制到dst_bucketname，并重命名为dst_objectname
+      description: 只有具有有源Object读权限和目标Object位置写权限的key才可以执行操作
+      parameters:
+        - name: dst_bucketname
+          in: path
+          description: 目标bucket名字
+          required: true
+          type: string
+        - name: dst_objectname
+          in: path
+          description: 目标object名字
+          required: true
+          type: string
+        - name: cp
+          in: query
+          description: 标识此请求为copy请求，可以为空
+          required: true
+          type: string
+        - name: authorization
+          in: header
+          description: 认证信息，计算方式参考签名认证相关文档
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: body
+          in: body
+          description: 源Bucket名和源Object名
+          required: true
+          type: object
+          schema:
+            $ref: '#/definitions/CopyObjectBean'
+      tags:
+        - create-bucket
+      responses:
+        200:
+          description: 请求成功
+        409:
+          description: 已经存在同名的Bucket
+definitions:
+  CopyObjectBean:
+    type: object
+    properties:
+      srcBucketName:
+        type: string
+        description: 源Bucket名字
+      srcObjectName:
+        type: string
+        description: 源Object名字

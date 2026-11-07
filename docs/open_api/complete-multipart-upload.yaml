@@ -1,0 +1,103 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: Complete multipart upload related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces: 
+  - application/json
+paths:
+  /{bucketname}/{objectname}:
+    put:
+      summary: 完成分片上传
+      description: 组合各个分片为一个Object
+      parameters:
+        - name: bucketname
+          in: path
+          description: Bucket名字
+          required: true
+          type: string
+        - name: objectname
+          in: path
+          description: Object名字
+          required: true
+          type: string
+        - name: Date
+          in: header
+          description: 请求时间
+          required: true
+          type: string
+        - name: uploadId
+          in: query
+          description: 初始化分片上传获取的uploadId
+          required: true
+          type: string
+        - name: expires
+          in: query
+          description: 如果上传成功，返回的签名的过期时间戳（UTC），单位毫秒，默认30天
+          required: false
+          type: string
+        - name: content-type
+          in: header
+          description: object的content-type
+          required: false
+          type: string
+        - name: body
+          in: body
+          description: 需要合并的分片列表
+          required: true
+          type: string
+          schema:
+            properties:
+              uploadPartResultList:
+                type: array
+                items:
+                    $ref: '#/definitions/UploadPartResult'
+      tags:
+        - complete multipart upload
+      responses:
+        200:
+          description: 请求成功
+          schema:
+            $ref: '#/definitions/PutObjectResult'
+definitions:
+  PutObjectResult:
+    type: object
+    properties:
+      bucketname:
+        type: string
+        description: Bucket名字
+        format: int32
+      objectName:
+        type: string
+        description: Object名字
+      accessKeyId:
+        type: string
+        description: 签名用的accessKeyId
+      signature:
+        type: string
+        description: 用来下载这个Object的签名
+      expires: 
+        type: strin
+        description: 签名失效时间戳（UTC），单位毫秒，默认有效时间30天
+  UploadPartResult:
+    type: object
+    properties:
+      partNumber:
+        type: integer
+        format: int32
+        description: 分片编号
+      etag:
+        type: string
+        description: 分片ID
+      partSize:
+        type: integer
+        format: int64
+        description: 分片大小

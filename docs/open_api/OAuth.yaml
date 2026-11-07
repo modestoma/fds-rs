@@ -1,0 +1,80 @@
+# as a demonstration of an API spec in YAML
+swagger: '2.0'
+info:
+  title: FDS Restful API
+  description: OAuth related api supported by FDS
+  version: "1.0.0"
+# the domain of the service
+host: awsbj0.fds.api.xiaomi.com
+# array of all schemes that your API supports
+schemes:
+  - https
+  - http
+# will be prefixed to all paths
+produces:
+  - application/json
+paths:
+  /:
+    get:
+      summary: 获取OAuth存储令牌
+      description: |
+        OAuth认证，使用OAuth认证前请仔细阅读FDS相关文档，并给我们发送申请邮件
+      parameters:
+        - name: storageAccessToken
+          in: query
+          description: 占位符,不需要有值
+          required: true
+          type: string
+        - name: appId
+          in: query
+          description: 在dev.xiaomi.com上申请的appId
+          required: true
+          type: string
+        - name: oauthAccessToken
+          in: query
+          description: 通过三方OAuth认证获取的访问令牌
+          required: true
+          type: string
+        - name: oauthOpenId
+          in: query
+          description: 通过`XiaoMi`OAuth认证时必须包含，用户的OpenID
+          required: false
+          type: string
+        - name: oauthAppId
+          in: query
+          description: 通过三方OAuth认证对应的appId
+          required: true
+          type: string
+        - name: oauthProvider
+          in: query
+          description: 三方OAuth，可以是`XiaoMi`, `QQ`, `Sina`, `RenRen`
+          required: true
+          type: string
+        - name: oauthMacKey
+          in: query
+          description: 通过`XiaoMi`OAuth认证时必须包含，在获取授权码时返回的签名密钥
+          required: false
+          type: string
+        - name: oauthMacAlgorithm
+          in: query
+          description: 通过`XiaoMi`OAuth认证时必须包含，在获取授权码时返回的签名算法
+          required: false
+          type: string
+      tags:
+        - OAuth
+      responses:
+        200:
+          description: 获取的OAuth存储令牌
+          schema:
+            $ref: '#/definitions/StorageAccessTokenResult'
+definitions:
+  StorageAccessTokenResult:
+    type: object
+    properties:
+      token:
+        type: string
+        description: 由FDS生成的访问令牌
+      expireTime:
+        type: integer
+        format: int64
+        description: 有效期限（1周）
