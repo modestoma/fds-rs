@@ -3,7 +3,7 @@
   "id": "sdk-overhaul",
   "title": "FDS Rust SDK 设计重构（0.1.0）",
   "revision": 8,
-  "status": "awaiting_acceptance",
+  "status": "accepted",
   "base_branch": "main",
   "merge_mode": "local",
   "approved_revision": 8,
@@ -325,7 +325,11 @@
       ]
     }
   ],
-  "acceptance": null,
+  "acceptance": {
+    "revision": 8,
+    "user_confirmation": "2026-11-08 用户在会话中回复\"验收通过\"（revision 8，本地 main）",
+    "accepted_at": "2026-11-07T17:39:46Z"
+  },
   "history": [
     {
       "revision": 2,
