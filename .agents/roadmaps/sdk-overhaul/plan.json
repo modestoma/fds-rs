@@ -9,7 +9,15 @@
   "approved_revision": 7,
   "approval_ref": "2026-11-07 用户在提问中选择：旧 meta key \"接受为例外（推荐）\"；空系统头 \"接受（推荐）\"；退化 key \"拒绝并记例外（推荐）\"；授权范围同前",
   "max_parallel": 3,
-  "pending_questions": [],
+  "pending_questions": [
+    {
+      "id": "cli-oauth-refresh",
+      "text": "fds_cli 的 --oauth 是否改用 StorageTokenProvider 自动续期？改则长时间运行的命令在 token 过期时从\"报错退出 1\"变为\"自动续期后成功\"（需记为 AC-7 例外）；不改则保持显式交换一次的静态 token。",
+      "tasks": [
+        "docs-release"
+      ]
+    }
+  ],
   "tasks": [
     {
       "key": "request-timeout",
