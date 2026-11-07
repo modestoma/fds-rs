@@ -93,14 +93,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `build()` 校验配置并创建 HTTP 客户端，不校验远端凭据有效性。endpoint 是完整的 HTTP(S) origin，例如 `https://cnbj1.fds.api.xiaomi.com`，允许端口；不能携带 Bucket 路径、用户信息、query 或 fragment。生产凭据应使用 HTTPS。Bucket 名称需满足服务的命名规则，SDK 不完整校验这些业务规则。Bucket 和 object key 分开传入，key 使用原始字符串，如 `logs/设备 A.txt`；SDK 负责编码，不要先百分号编码。
 
-Client 内部共享配置、凭据和连接池，可廉价 `clone()` 后交给多个异步任务。不要每次请求都重建客户端。配置通过 `client.configuration()` 的同名 getter 读取；修改配置或轮换凭据时创建新 Client，旧 clone 保持原配置。
+Client 内部共享配置、凭据 provider 和连接池，可廉价 `clone()` 后交给多个异步任务。不要每次请求都重建客户端。配置通过 `client.configuration()` 的同名 getter 读取；修改配置时创建新 Client，旧 clone 保持原配置。需要轮换凭据时使用 `credentials_provider`（见[刷新与轮换凭据](#刷新与轮换凭据)），Client 每次请求尝试前向 provider 取当前凭据，无需重建。
 
 ### 配置选项
 
 | builder 方法 | 默认值 | 作用与限制 |
 | --- | --- | --- |
 | `endpoint(origin)` | 必填 | FDS 请求 origin |
-| `credentials(id, secret)` | 必填，或使用 OAuth token | access key 认证；两者须非空 |
+| `credentials(id, secret)` | 必填，或使用 OAuth token / provider | access key 认证；两者须非空。`StaticCredentials` 的快捷方式 |
+| `storage_token(token)` | 无 | 使用已交换的 storage token，不自动续期。`StaticCredentials` 的快捷方式 |
+| `credentials_provider(provider)` | 无 | 每次请求尝试前（含重试）向 `fds::credentials::CredentialsProvider` 取凭据；三个凭据 setter 最后一个生效 |
 | `cdn_endpoint(origin)` | 无 | 仅生成 CDN 预签名 URL 时使用，不改变普通 SDK 请求入口 |
 | `connect_timeout(Duration)` | 50 秒 | 建连，包括 TLS |
 | `read_timeout(Duration)` | 50 秒 | 所有请求的 I/O 空闲超时，只限制无进展的时长：上传时每传出一块 body（最多 64 KiB）重置；等待响应头从最后一次上传进展开始计时（无 body 的请求从请求开始计时）；读响应 body 时每次读到数据重置 |
@@ -834,7 +836,7 @@ fn public_link(client: &Client, bucket: &str, key: &str) -> fds::Result<Url> {
 }
 ```
 
-预签名仅支持 access key Client，OAuth Client 返回错误。生成操作不联网、不验证对象存在或凭据是否有效。`expires_in` 的有效期从调用 `build()` 时计算，不是实际交付 URL 时，至少 1 ms；绝对时间用 `.expires_at(DateTime<Utc>)`。两者必须设置其一，method 默认 GET。
+预签名仅支持静态 access key Client（`credentials` 或 `StaticCredentials`），OAuth Client 或自定义 provider 返回 `ConfigInvalid`。生成操作不联网、不验证对象存在或凭据是否有效。`expires_in` 的有效期从调用 `build()` 时计算，不是实际交付 URL 时，至少 1 ms；绝对时间用 `.expires_at(DateTime<Utc>)`。两者必须设置其一，method 默认 GET。
 
 接收方必须使用签名时的 HTTP method 与参与签名的头；例如上传示例使用相同 Content-Type。参与签名的头由 `.content_type(...)`、`.content_md5(...)` 和 `.user_metadata(...)` 设置。SDK 返回 `url::Url`，其 `as_str()` / `Display` 就是签名时的完整字符串；原样使用，不要再用 `Url` 的 setter 修改 query 或重复编码 Signature。`absolute_object_url` 同样返回 `Url`。该协议 Expires 是毫秒时间戳，HEAD 预签名还附带 metadata 子资源。URL 包含临时访问凭证，应经受控渠道交付，不放公开日志。
 
@@ -973,7 +975,35 @@ provider 为 XiaoMi、QQ、Sina、RenRen。app ID、OAuth app ID、provider toke
 
 `StorageAccessToken` 提供 `app_id()`、`expires_at()`、`is_expired()` 和敏感访问器 `token()`；过期时间是 UTC 绝对时间，接口不提供任意字符串手动构造 token 的公开入口。交换始终只尝试一次。token 绑定 appId，`list_app_buckets` 自动使用该 appId，返回 `AppBucketList { owner, buckets }`；`AppBucket` 含 `bucket_name`、`org_id`、`creation_time`（`DateTime<Utc>`）、`used_space`、`object_count`（`u64`），每个字段都必须出现。
 
-OAuth Client 普通对象 API 共用 token 认证；`credentials` 与 `storage_token` 最后一个 setter 生效。构建及每次发送前检查过期；不会自动续期。需要新的 provider 凭据时由应用取得，再显式 exchange、构建新 Client 并替换应用持有的句柄，旧 clone 不更新。
+OAuth Client 普通对象 API 共用 token 认证；`credentials`、`storage_token` 与 `credentials_provider` 最后一个 setter 生效。`storage_token` 设置的 token 在构建及每次发送前检查过期，不会自动续期；需要自动续期时改用下面的 `StorageTokenProvider`。
+
+### 刷新与轮换凭据
+
+`fds::credentials` 定义 `CredentialsProvider` trait（对象安全，返回 `CredentialsFuture`）和公开的 `Credentials`（`Credentials::access_key(id, secret)` 或 `Credentials::storage_token(token)`，Debug 不输出密钥和 token）。Client 在每次请求尝试前（包括重试）向 provider 取凭据，并用该次的凭据生成 Date 和签名，或把 token 放进该次的 URL；错误诊断是否脱敏也按该次请求实际使用的凭据决定。
+
+```rust,no_run
+use fds::Client;
+use fds::credentials::StorageTokenProvider;
+use fds::oauth::{FdsServiceClient, OAuthProvider};
+use std::time::Duration;
+
+fn refreshing_client(exchange_origin: &str, object_origin: &str, app_id: &str,
+    oauth_app_id: &str, provider_token: &str) -> fds::Result<Client>
+{
+    let service = FdsServiceClient::new(exchange_origin)?;
+    let provider = StorageTokenProvider::new(
+        service.exchange_storage_token(app_id, oauth_app_id, provider_token, OAuthProvider::QQ),
+    )
+    .refresh_margin(Duration::from_secs(600));
+    Client::builder().endpoint(object_origin).credentials_provider(provider).build()
+}
+```
+
+- `StaticCredentials`：固定凭据，`credentials` / `storage_token` 即其快捷方式；构建时校验。
+- `StorageTokenProvider`：首次请求时交换 token（也可用 `.with_token(token)` 预置已交换的 token）；token 剩余有效期不超过提前量时重新交换。提前量默认 5 分钟（`DEFAULT_REFRESH_MARGIN`），可用 `.refresh_margin(..)` 修改；对 provider 自己交换的 token，提前量最多取其有效期的一半，避免短期 token 每次请求都交换。并发请求共享同一次交换（single-flight），provider 的 clone 共享缓存。交换失败时，等待该次交换的请求都在发送前失败：缓存的 token 已过期返回 `CredentialsExpired`，否则返回 `Unauthenticated`，交换错误作为 `source()`；失败不缓存，下一次请求会重新交换；过期 token 永远不会被发出。交换本身仍只尝试一次。provider 的 OAuth access token 本身需要刷新时，由应用实现 `CredentialsProvider`。
+- 自定义 provider 返回的凭据在每次尝试前校验，无效时该请求在发送前失败，错误种类与构建时相同。
+- 预签名是同步的本地操作，只能使用静态 access key；storage token 或其他 provider 返回 `ConfigInvalid`。`list_app_buckets` 要求 provider 当次返回的是 storage token，否则返回 `ConfigInvalid`，请求不发出。
+- SDK 不从环境变量或配置文件自动发现凭据。
 
 token 传输要求 HTTPS，仅 HTTP loopback IP 允许本地测试。OAuth 错误会丢弃服务端诊断字符串；不要记录 provider token、MAC key、完整认证 URL。应用开通、region 和 Bucket 权限前提见 [OAuth 说明](docs/protocol.md#服务发现与-oauth)。
 
@@ -1096,7 +1126,7 @@ cargo run --locked -p fds --example copy_prefix -- SRC_BUCKET SRC_PREFIX DST_BUC
 cargo run --locked -p fds --example oauth_inventory -- BUCKET PREFIX
 ```
 
-环境变量：`FDS_OAUTH_ORIGIN`（交换入口）、`FDS_ENDPOINT`（对象入口）、`FDS_APP_ID`、`FDS_OAUTH_APP_ID`、`FDS_PROVIDER_TOKEN`。两处 origin 都由应用明确配置。程序不修改 Bucket 或对象，但 token 交换仍可能创建/续期凭据。没有自动刷新；长时间统计若 token 到期会返回错误，需要应用按策略重新交换并决定是否重新扫描。
+环境变量：`FDS_OAUTH_ORIGIN`（交换入口）、`FDS_ENDPOINT`（对象入口）、`FDS_APP_ID`、`FDS_OAUTH_APP_ID`、`FDS_PROVIDER_TOKEN`。两处 origin 都由应用明确配置。程序不修改 Bucket 或对象，但 token 交换仍可能创建/续期凭据。示例使用 `storage_token`，没有自动刷新；长时间统计若 token 到期会返回错误。需要自动续期时可改用 `StorageTokenProvider`（见[刷新与轮换凭据](#刷新与轮换凭据)）。
 
 更多单功能程序：[流上传](crates/fds/examples/upload_stream.rs)、[分页](crates/fds/examples/pagination.rs)、[对象请求](crates/fds/examples/object_requests.rs)、[下载管理器](crates/fds/examples/download.rs)、[托管分片](crates/fds/examples/upload_multipart.rs)。既有示例的环境变量名称可能不同，以各文件入口说明为准。
 

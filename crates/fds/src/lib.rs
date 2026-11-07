@@ -41,6 +41,11 @@
 //!     [`object::StorageClass`]);
 //!   - [`bucket`]: bucket operations, lifecycle and access-log models;
 //!   - [`acl`]: ACL models shared by buckets and objects;
+//!   - [`credentials`]: [`credentials::Credentials`], the
+//!     [`credentials::CredentialsProvider`] trait a client asks before every
+//!     request attempt, and its built-in providers
+//!     [`credentials::StaticCredentials`] and the refreshing
+//!     [`credentials::StorageTokenProvider`];
 //!   - [`multipart`]: the low-level multipart builders, the
 //!     [`multipart::MultipartUploadSession`] and the managed file upload
 //!     [`multipart::MultipartUpload`];
@@ -123,6 +128,7 @@ mod upload;
 
 pub mod acl;
 pub mod bucket;
+pub mod credentials;
 #[cfg(feature = "manager")]
 pub mod manager;
 pub mod multipart;

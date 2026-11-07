@@ -190,7 +190,7 @@
       "title": "可刷新的凭证 provider",
       "type": "feat",
       "document": "tasks/credentials-provider.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 7,
       "depends_on": [
         "object-metadata"

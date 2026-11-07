@@ -1,40 +1,12 @@
 //! Explicit endpoint discovery, OAuth exchange and the app-scoped bucket
 //! listing. See docs/protocol.md for protocol evidence, provisioning
 //! prerequisites and refresh semantics.
-use crate::{
-    client::ClientRequest, Client, ClientBuilder, ClientConfiguration, Error, ErrorKind, Result,
-};
+use crate::{client::ClientRequest, Client, ClientBuilder, Error, ErrorKind, Result};
 use chrono::{DateTime, Utc};
 use http::Method;
 use reqwest::header::HeaderValue;
 use std::fmt;
 use std::time::Duration;
-
-pub(crate) enum Credentials {
-    AccessKey(String, String),
-    OAuth(StorageAccessToken),
-    Anonymous,
-}
-impl Credentials {
-    pub(crate) fn validate(&self, conf: &ClientConfiguration) -> Result<()> {
-        match self {
-            Self::AccessKey(id, secret)
-                if id.is_empty()
-                    || secret.is_empty()
-                    || !id.bytes().all(|b| b.is_ascii_graphic() && b != b':') =>
-            {
-                Err(Error::config_invalid(
-                    "credentials require a nonempty header-safe access ID and nonempty secret",
-                ))
-            }
-            Self::OAuth(token) => {
-                secure_origin(conf.endpoint())?;
-                token.validate()
-            }
-            _ => Ok(()),
-        }
-    }
-}
 
 fn nonempty(value: &str) -> Result<()> {
     if value.trim().is_empty() {
@@ -45,7 +17,7 @@ fn nonempty(value: &str) -> Result<()> {
         Ok(())
     }
 }
-fn secure_origin(url: &url::Url) -> Result<()> {
+pub(crate) fn secure_origin(url: &url::Url) -> Result<()> {
     let loopback = url.host_str().is_some_and(|host| {
         host.trim_matches(['[', ']'])
             .parse::<std::net::IpAddr>()
@@ -145,6 +117,11 @@ impl StorageAccessToken {
 /// let _app_buckets = client.list_app_buckets().send().await?;
 /// # Ok(()) }
 /// ```
+///
+/// A token set with [`ClientBuilder::storage_token`] is never refreshed. To
+/// exchange again automatically before it expires, give the exchange request
+/// to a [`StorageTokenProvider`](crate::credentials::StorageTokenProvider)
+/// instead.
 #[derive(Clone, Debug)]
 pub struct FdsServiceClient {
     client: Client,
@@ -246,7 +223,10 @@ impl GetEndpoint {
 /// Builder for [`FdsServiceClient::exchange_storage_token`].
 ///
 /// Secrets are private and redacted from `Debug`; there is no serialization
-/// implementation.
+/// implementation. Cloning keeps the inputs, so the same exchange can be
+/// repeated; [`StorageTokenProvider`](crate::credentials::StorageTokenProvider)
+/// does that to refresh a token.
+#[derive(Clone)]
 #[must_use = "an operation builder does nothing until `send` is awaited"]
 pub struct ExchangeStorageToken {
     client: Client,
@@ -390,12 +370,13 @@ impl ListAppBuckets {
     timeout_option!();
 
     /// GET `/` authenticated by the client's storage token and its app ID.
-    /// A client without an exchanged storage token fails with
-    /// [`ErrorKind::ConfigInvalid`] before sending.
+    /// The credentials are checked for every attempt: when the client's
+    /// provider returns access-key credentials instead of a storage token,
+    /// this fails with [`ErrorKind::ConfigInvalid`] before sending.
     pub async fn send(self) -> Result<AppBucketList> {
-        self.client.require_oauth()?;
         let cr = ClientRequest::new("", "", Method::GET)
             .read_only()
+            .requires_storage_token()
             .with_timeout(self.timeout)?;
         self.client.do_json(cr).await
     }

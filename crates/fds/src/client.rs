@@ -10,14 +10,16 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::auth;
 use crate::config::{ClientBuilder, ClientConfiguration};
 use crate::constant::{HTTP_HEADER_AUTHORIZATION, HTTP_HEADER_DATE};
+use crate::credentials::{Credentials, CredentialsProvider};
 use crate::encoding::{go_query_escape, QueryValues};
 use crate::error::{Dispatch, Error, ErrorKind, JsonResponseSource, ResponseDetails, Result};
 use crate::object::UserMetadata;
 use http::Method;
-use std::{fmt, sync::Arc, time::Duration};
+use std::{borrow::Cow, fmt, sync::Arc, time::Duration};
 
-/// A validated FDS client. Clones share immutable configuration, private
-/// credentials and a connection pool; no caller-owned Arc is required.
+/// A validated FDS client. Clones share immutable configuration, the private
+/// credentials provider and a connection pool; no caller-owned Arc is
+/// required.
 ///
 /// ```
 /// # fn main() -> fds::Result<()> {
@@ -38,7 +40,17 @@ pub struct Client {
 struct ClientInner {
     http: reqwest::Client,
     configuration: ClientConfiguration,
-    credentials: crate::oauth::Credentials,
+    auth: Auth,
+}
+
+/// Where a client's credentials come from.
+pub(crate) enum Auth {
+    /// Validated at build time; the same for every request.
+    Static(Credentials),
+    /// Asked before every attempt and validated each time.
+    Provider(Arc<dyn CredentialsProvider>),
+    /// The internal discovery and token-exchange channel: no authentication.
+    Anonymous,
 }
 
 impl fmt::Debug for Client {
@@ -64,9 +76,17 @@ pub(crate) struct ClientRequest<'a> {
     /// Per-attempt total deadline overriding the client-wide `request_timeout`;
     /// covers consumption of the response body. Callers validate it first.
     pub timeout: Option<Duration>,
+    /// Fail before sending unless the attempt's credentials are a storage
+    /// token (the app-scoped listing).
+    pub requires_storage_token: bool,
 }
 
 impl<'a> ClientRequest<'a> {
+    pub(crate) fn requires_storage_token(mut self) -> Self {
+        self.requires_storage_token = true;
+        self
+    }
+
     pub(crate) fn read_only(mut self) -> Self {
         self.replay_safety = crate::retry::ReplaySafety::ReadOnly;
         self
@@ -94,6 +114,7 @@ impl<'a> ClientRequest<'a> {
             accepted_statuses: &[200],
             replay_safety: crate::retry::ReplaySafety::Never,
             timeout: None,
+            requires_storage_token: false,
         }
     }
 }
@@ -107,30 +128,22 @@ impl Client {
         &self.inner.configuration
     }
 
-    pub(crate) fn require_oauth(&self) -> Result<()> {
-        if matches!(self.inner.credentials, crate::oauth::Credentials::OAuth(_)) {
-            Ok(())
-        } else {
-            Err(Error::config_invalid(
-                "app bucket listing requires an exchanged storage token",
-            ))
-        }
-    }
-
+    /// The access key used for presigning: presigning is synchronous, so only
+    /// static access-key credentials can sign.
     pub(crate) fn access_keys(&self) -> Result<(&str, &str)> {
-        match &self.inner.credentials {
-            crate::oauth::Credentials::AccessKey(id, secret) => Ok((id, secret)),
-            _ => Err(Error::config_invalid(
-                "Galaxy-V2 presigning requires access key credentials",
-            )),
+        match &self.inner.auth {
+            Auth::Static(credentials) => credentials.access_key_pair(),
+            _ => None,
         }
+        .ok_or_else(|| {
+            Error::config_invalid("Galaxy-V2 presigning requires access key credentials")
+        })
     }
 
-    pub(crate) fn with_credentials(
-        credentials: crate::oauth::Credentials,
-        conf: ClientConfiguration,
-    ) -> Result<Self> {
-        credentials.validate(&conf)?;
+    pub(crate) fn with_credentials(auth: Auth, conf: ClientConfiguration) -> Result<Self> {
+        if let Auth::Static(credentials) = &auth {
+            credentials.validate(&conf)?;
+        }
         // `read_timeout` is deliberately not given to reqwest: its version is
         // a fixed deadline until the response headers, which upload progress
         // does not reset. `send` enforces it as an idle timeout instead.
@@ -160,7 +173,7 @@ impl Client {
                         .with_source(error.without_url())
                 })?,
                 configuration: conf,
-                credentials,
+                auth,
             }),
         })
     }
@@ -168,14 +181,24 @@ impl Client {
     /// Run a request and return the raw response. `cdn` is always false in the
     /// request pipeline (only presigned URLs may use the CDN host).
     pub(crate) async fn do_request(&self, req: ClientRequest<'_>) -> Result<reqwest::Response> {
-        let mut query = req.query;
-        if let crate::oauth::Credentials::OAuth(token) = &self.inner.credentials {
-            token.validate()?;
-            query.add("appId", token.app_id());
-            query.add("storageAccessToken", token.token());
-        }
-        let query = query.encode();
-        let url = self.build_request_url(req.bucket, req.object, &query, false)?;
+        self.do_request_redacted(req).await.map(|(resp, _)| resp)
+    }
+
+    /// [`do_request`](Self::do_request), also returning the redaction policy
+    /// of the credentials the successful attempt used, for body errors.
+    async fn do_request_redacted(
+        &self,
+        req: ClientRequest<'_>,
+    ) -> Result<(reqwest::Response, Redaction)> {
+        // Only `Sync` parts of the request may be held across the provider's
+        // await: the body is not.
+        let target = Target {
+            bucket: req.bucket,
+            object: req.object,
+            query: &req.query,
+            requires_storage_token: req.requires_storage_token,
+        };
+        let mut attempt = self.prepare_attempt(&target).await?;
 
         let mut headers = req.headers;
         if let Some(metadata) = req.user_metadata {
@@ -193,13 +216,15 @@ impl Client {
             } else {
                 None
             };
+            let redaction = Redaction::for_credentials(attempt.credentials.as_deref());
             let result = self
                 .send(
                     req.method.clone(),
-                    url.clone(),
+                    attempt.url,
                     headers.clone(),
                     body.take(),
                     req.timeout,
+                    attempt.credentials.as_deref(),
                 )
                 .await;
             let delay = if eligible {
@@ -227,13 +252,50 @@ impl Client {
                 tokio::time::sleep(delay).await;
                 body = replay;
                 retries += 1;
+                // Every attempt asks for the then-current credentials: a
+                // refreshed token changes the URL, a rotated key the signature.
+                attempt = self.prepare_attempt(&target).await?;
             } else {
                 let resp = result.map_err(SendFailure::into_error)?;
-                return check_response_status(resp, req.accepted_statuses)
-                    .await
-                    .map_err(|error| self.redact_error(error));
+                return match check_response_status(resp, req.accepted_statuses).await {
+                    Ok(resp) => Ok((resp, redaction)),
+                    Err(error) => Err(redaction.error(error)),
+                };
             }
         }
+    }
+
+    /// The credentials for one attempt (`None`: anonymous), validated, and
+    /// the URL carrying a storage token's query parameters. Fails before
+    /// sending.
+    async fn prepare_attempt(&self, req: &Target<'_>) -> Result<Attempt<'_>> {
+        let credentials = match &self.inner.auth {
+            Auth::Static(credentials) => Some(Cow::Borrowed(credentials)),
+            Auth::Provider(provider) => {
+                let credentials = provider.provide_credentials().await?;
+                credentials.validate(&self.inner.configuration)?;
+                Some(Cow::Owned(credentials))
+            }
+            Auth::Anonymous => None,
+        };
+        let token = credentials
+            .as_deref()
+            .and_then(Credentials::storage_access_token);
+        if req.requires_storage_token && token.is_none() {
+            return Err(Error::config_invalid(
+                "app bucket listing requires an exchanged storage token",
+            ));
+        }
+        let mut query = Cow::Borrowed(req.query);
+        if let Some(token) = token {
+            // Static tokens were validated at build time; check expiry again.
+            token.validate()?;
+            let query = query.to_mut();
+            query.add("appId", token.app_id());
+            query.add("storageAccessToken", token.token());
+        }
+        let url = self.build_request_url(req.bucket, req.object, &query.encode(), false)?;
+        Ok(Attempt { credentials, url })
     }
 
     /// Decode a required JSON response; an empty body is a protocol error.
@@ -249,17 +311,17 @@ impl Client {
         req: ClientRequest<'_>,
         limit: usize,
     ) -> Result<T> {
-        let mut resp = self.do_request(req).await?;
+        let (mut resp, redaction) = self.do_request_redacted(req).await?;
         let details = response_details(&resp);
         let mut bytes = Vec::new();
         while let Some(chunk) = match resp.chunk().await {
             Ok(chunk) => chunk,
             Err(source) => {
-                return Err(self.redact_error(Error::body_failure(source).with_response(details)));
+                return Err(redaction.error(Error::body_failure(source).with_response(details)));
             }
         } {
             if chunk.len() > limit.saturating_sub(bytes.len()) {
-                return Err(self.redact_error(
+                return Err(redaction.error(
                     Error::protocol("response body exceeds the operation's limit")
                         .with_response(details),
                 ));
@@ -267,14 +329,14 @@ impl Client {
             bytes.extend_from_slice(&chunk);
         }
         if bytes.is_empty() {
-            return Err(self.redact_error(
+            return Err(redaction.error(
                 Error::protocol("required JSON response body is empty").with_response(details),
             ));
         }
         serde_json::from_slice(&bytes).map_err(|source| {
             let mut details = details;
             set_diagnostic_body(&mut details, &bytes, bytes.len() > DIAGNOSTIC_LIMIT);
-            self.redact_error(
+            redaction.error(
                 Error::protocol("invalid JSON response body")
                     .with_response(details)
                     .with_source(JsonResponseSource {
@@ -301,6 +363,7 @@ impl Client {
         mut headers: HeaderMap,
         body: Option<UploadBody>,
         timeout: Option<Duration>,
+        credentials: Option<&Credentials>,
     ) -> std::result::Result<reqwest::Response, SendFailure> {
         // (3) body: optional Content-MD5 (must be set BEFORE signing). The
         // clock starts now: upload progress and the header wait are measured
@@ -326,22 +389,20 @@ impl Client {
             header_value(&date)?,
         );
 
-        match &self.inner.credentials {
-            crate::oauth::Credentials::AccessKey(id, secret) => {
-                let sig = auth::sign(secret, method.as_str(), url.as_str(), &headers)?;
-                let mut value = HeaderValue::from_str(&format!("Galaxy-V2 {id}:{sig}"))
-                    .map_err(|_| Error::config_invalid("invalid authorization header"))?;
-                value.set_sensitive(true);
-                headers.insert(HeaderName::from_static(HTTP_HEADER_AUTHORIZATION), value);
-            }
-            crate::oauth::Credentials::OAuth(token) => {
-                token.validate()?;
-                headers.insert(
-                    HeaderName::from_static(HTTP_HEADER_AUTHORIZATION),
-                    HeaderValue::from_static("OAuth"),
-                );
-            }
-            crate::oauth::Credentials::Anonymous => {}
+        // (7) Authorization from this attempt's credentials, signed over the
+        // Date set above.
+        if let Some(credentials) = credentials {
+            let value = match credentials.access_key_pair() {
+                Some((id, secret)) => {
+                    let sig = auth::sign(secret, method.as_str(), url.as_str(), &headers)?;
+                    let mut value = HeaderValue::from_str(&format!("Galaxy-V2 {id}:{sig}"))
+                        .map_err(|_| Error::config_invalid("invalid authorization header"))?;
+                    value.set_sensitive(true);
+                    value
+                }
+                None => HeaderValue::from_static("OAuth"),
+            };
+            headers.insert(HeaderName::from_static(HTTP_HEADER_AUTHORIZATION), value);
         }
 
         tracing::debug!(method = method.as_str(), ">>> FDS request");
@@ -376,14 +437,6 @@ impl Client {
 
         // Status/retry decisions belong to the operation-aware caller.
         Ok(resp)
-    }
-
-    fn redaction(&self) -> Redaction {
-        Redaction::for_credentials(&self.inner.credentials)
-    }
-
-    fn redact_error(&self, error: Error) -> Error {
-        self.redaction().error(error)
     }
 
     /// Build the request URL. The object name is `go_query_escape`d then
@@ -433,12 +486,14 @@ pub(crate) fn header_value(value: &str) -> Result<HeaderValue> {
     HeaderValue::from_str(value).map_err(|e| Error::invalid_input(e.to_string()))
 }
 
-/// The single redaction policy, decided by the credential mode.
+/// The single redaction policy, decided per request by the credentials that
+/// request actually used.
 ///
-/// Access-key clients sign in headers, so response URLs carry no secrets and
-/// server diagnostics are kept. Every other mode redacts: OAuth puts the
-/// storage token in the query string, and the anonymous discovery/exchange
-/// channel carries OAuth inputs in the query and must not echo server text.
+/// Access-key requests are signed in headers, so response URLs carry no
+/// secrets and server diagnostics are kept. Every other request redacts: a
+/// storage token travels in the query string, and the anonymous
+/// discovery/exchange channel carries OAuth inputs in the query and must not
+/// echo server text.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Redaction {
     Keep,
@@ -446,12 +501,10 @@ enum Redaction {
 }
 
 impl Redaction {
-    fn for_credentials(credentials: &crate::oauth::Credentials) -> Self {
-        match credentials {
-            crate::oauth::Credentials::AccessKey(..) => Self::Keep,
-            crate::oauth::Credentials::OAuth(_) | crate::oauth::Credentials::Anonymous => {
-                Self::Redact
-            }
+    fn for_credentials(credentials: Option<&Credentials>) -> Self {
+        match credentials.and_then(Credentials::access_key_pair) {
+            Some(_) => Self::Keep,
+            None => Self::Redact,
         }
     }
 
@@ -467,6 +520,20 @@ impl Redaction {
         }
         error
     }
+}
+
+/// What [`Client::prepare_attempt`] needs from a request.
+struct Target<'r> {
+    bucket: &'r str,
+    object: &'r str,
+    query: &'r QueryValues,
+    requires_storage_token: bool,
+}
+
+/// One attempt's credentials and the URL built for them.
+struct Attempt<'c> {
+    credentials: Option<Cow<'c, Credentials>>,
+    url: url::Url,
 }
 
 /// A failed attempt: local preparation errors are final, transport errors and
@@ -743,7 +810,7 @@ mod response_security_tests {
         let mut server = mockito::Server::new_async().await;
         let m = server
             .mock("GET", "/b/private-object")
-            .expect(2)
+            .expect(3)
             .match_query(mockito::Matcher::Any)
             .with_status(200)
             .create_async()
@@ -760,9 +827,10 @@ mod response_security_tests {
         assert!(captured.0.lock().unwrap().contains("FDS request"));
         let exchange = server.mock("GET", "/")
             .match_query(mockito::Matcher::Any)
+            .expect(2)
             .with_body(serde_json::json!({"token":"private-storage-token", "expireTime":(chrono::Utc::now()+chrono::Duration::days(1)).timestamp_millis()}).to_string())
             .create_async().await;
-        let token = crate::oauth::FdsServiceClient::new(server.url())
+        let request = crate::oauth::FdsServiceClient::new(server.url())
             .unwrap()
             .exchange_storage_token(
                 "private-app",
@@ -770,10 +838,8 @@ mod response_security_tests {
                 "private-oauth-token",
                 crate::oauth::OAuthProvider::XiaoMi,
             )
-            .xiaomi_mac("private-openid", "private-mac-key", "HmacSHA1")
-            .send()
-            .await
-            .unwrap();
+            .xiaomi_mac("private-openid", "private-mac-key", "HmacSHA1");
+        let token = request.clone().send().await.unwrap();
         let oauth = Client::builder()
             .endpoint(server.url())
             .storage_token(token)
@@ -783,10 +849,23 @@ mod response_security_tests {
             .do_request(ClientRequest::new("b", "private-object", Method::GET))
             .await
             .unwrap();
+        // A refreshing provider: its exchange runs inside the request.
+        let provider = crate::credentials::StorageTokenProvider::new(request);
+        assert!(!format!("{provider:?}").contains("private-"));
+        let refreshing = Client::builder()
+            .endpoint(server.url())
+            .credentials_provider(provider)
+            .build()
+            .unwrap();
+        refreshing
+            .do_request(ClientRequest::new("b", "private-object", Method::GET))
+            .await
+            .unwrap();
         exchange.assert_async().await;
         let output = captured.0.lock().unwrap().clone();
-        // Access-key GET, OAuth token exchange, and storage-token GET.
-        assert_eq!(output.matches("FDS request").count(), 3);
+        // Access-key GET, OAuth token exchange, storage-token GET, and the
+        // provider's exchange plus its storage-token GET.
+        assert_eq!(output.matches("FDS request").count(), 5);
         for sensitive in [
             "private-",
             "http://",

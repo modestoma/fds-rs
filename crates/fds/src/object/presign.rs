@@ -18,6 +18,13 @@ use url::Url;
 /// Builder for [`Client::presign_object`]. Presigning is local: `build`
 /// signs with the client's access key and makes no request, so this builder
 /// has no `timeout` or `send`.
+///
+/// Because `build` is synchronous, it signs only with **static** access-key
+/// credentials ([`ClientBuilder::credentials`](crate::ClientBuilder::credentials),
+/// or a [`StaticCredentials`](crate::credentials::StaticCredentials) access
+/// key). A client with a storage token, or with any other
+/// [`CredentialsProvider`](crate::credentials::CredentialsProvider), fails
+/// with [`ErrorKind::ConfigInvalid`](crate::ErrorKind::ConfigInvalid).
 #[derive(Debug)]
 #[must_use = "a presign builder does nothing until `build` is called"]
 pub struct PresignObject {
@@ -88,7 +95,9 @@ impl PresignObject {
         self
     }
 
-    /// Sign and return the URL.
+    /// Sign and return the URL. Fails with
+    /// [`ErrorKind::ConfigInvalid`](crate::ErrorKind::ConfigInvalid) unless the
+    /// client has static access-key credentials (see [`PresignObject`]).
     ///
     /// `Expires` is a millisecond timestamp and drives the signature's Date
     /// row; `Signature` is appended after the sorted query and is NOT
@@ -164,8 +173,9 @@ impl Client {
         self.build_request_url(bucket, object, "", false)
     }
 
-    /// Presign a URL for an object with the client's access key. No network
-    /// request occurs.
+    /// Presign a URL for an object with the client's static access key; a
+    /// storage token or a dynamic credentials provider cannot presign (see
+    /// [`PresignObject`]). No network request occurs.
     ///
     /// ```no_run
     /// # fn example(client: &fds::Client) -> fds::Result<()> {

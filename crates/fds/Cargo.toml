@@ -13,8 +13,9 @@ path = "src/lib.rs"
 
 [dependencies]
 # Only what the library uses; the runtime flavor is the application's choice.
-# rt: spawn_blocking/JoinSet/yield_now; macros: select!; cslb adds sync + net.
-tokio = { version = "1", features = ["rt", "macros", "fs", "io-util", "time"] }
+# rt: spawn_blocking/JoinSet/yield_now; macros: select!; sync: the token
+# refresh single flight; cslb adds net.
+tokio = { version = "1", features = ["rt", "macros", "sync", "fs", "io-util", "time"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,7 +41,7 @@ governor = { version = "0.6", optional = true }        # manager rate limiting
 default = ["manager"]
 manager = ["dep:governor", "tokio-util/rt"]
 # Installs the internal CSLB DNS resolver in Client; no public API of its own.
-cslb = ["tokio/sync", "tokio/net"]
+cslb = ["tokio/net"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

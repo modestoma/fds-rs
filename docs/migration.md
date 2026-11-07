@@ -19,7 +19,7 @@
 | set ACL 即替换 | ACL 请求的 `.action(...)` 明确 Add/Delete；默认 Add，不承诺 replace |
 | 重试任何失败 | `RetryPolicy` 默认关闭，仅明确安全的读取重试；mutation/流 body 不自动重放 |
 | 托管 multipart 自动完成恢复 | `MultipartUpload` 保存 session；失败检查 progress/state，完成结果未知时不盲重试、不自动 abort |
-| OAuth token 当 access secret | `FdsServiceClient` 显式 exchange，再用 `storage_token` 构建绑定 appId 的客户端 |
+| OAuth token 当 access secret | `FdsServiceClient` 显式 exchange，再用 `storage_token` 构建绑定 appId 的客户端；需要自动续期时用 `credentials_provider(StorageTokenProvider::new(..))` |
 | 任何 2xx 都成功、错误字符串稳定 | 按操作收紧状态，使用类型化错误访问器；服务诊断不作为稳定解析协议 |
 
 批量删除的返回类型为 `Result<DeleteObjectsOutput, DeleteObjectsError>`，不再是 `fds::Result<()>`。调用者需接收专用错误并保留部分结果，不能只将 HTTP 200 当作成功。HTTP/协议错误改用 `FdsError::Response`；移除旧 Server、code/message 访问器，使用 `status()`、`service_code()`、`request_id()` 和 `response()`。

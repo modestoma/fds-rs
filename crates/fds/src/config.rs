@@ -1,9 +1,10 @@
 //! Validated client configuration and construction.
+use crate::credentials::{Credentials, CredentialsProvider, StaticCredentials};
 use crate::{
     error::{Error, ErrorKind, Result},
     Client,
 };
-use std::{fmt, time::Duration};
+use std::{any::Any, fmt, sync::Arc, time::Duration};
 use url::Url;
 
 /// Immutable effective settings. Obtain through [`Client::configuration`].
@@ -99,7 +100,7 @@ pub struct ClientBuilder {
     endpoint: Option<String>,
     retry_policy: crate::RetryPolicy,
     cdn_endpoint: Option<String>,
-    credentials: Option<crate::oauth::Credentials>,
+    credentials: Option<crate::client::Auth>,
     md5: bool,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
@@ -134,22 +135,49 @@ impl ClientBuilder {
         self.cdn_endpoint = Some(value.into());
         self
     }
-    pub fn credentials(mut self, id: impl Into<String>, secret: impl Into<String>) -> Self {
-        self.credentials = Some(crate::oauth::Credentials::AccessKey(
-            id.into(),
-            secret.into(),
-        ));
+    /// Sign every request with this access key: a shortcut for a
+    /// [`StaticCredentials`] provider. Validated by [`build`](Self::build).
+    /// The last credential setter wins.
+    pub fn credentials(self, id: impl Into<String>, secret: impl Into<String>) -> Self {
+        self.static_credentials(Credentials::access_key(id, secret))
+    }
+    /// Use an exchanged token: a shortcut for a [`StaticCredentials`]
+    /// provider. Validated by [`build`](Self::build), which also requires an
+    /// HTTPS endpoint (HTTP only for loopback IPs). The last credential setter
+    /// wins.
+    ///
+    /// The token is never refreshed: once it expires, requests fail with
+    /// [`ErrorKind::CredentialsExpired`] before sending. To exchange again
+    /// automatically, use a
+    /// [`StorageTokenProvider`](crate::credentials::StorageTokenProvider) with
+    /// [`credentials_provider`](Self::credentials_provider).
+    pub fn storage_token(self, token: crate::oauth::StorageAccessToken) -> Self {
+        self.static_credentials(Credentials::storage_token(token))
+    }
+    /// Ask `provider` for credentials before every request attempt, retries
+    /// included. The last credential setter wins.
+    ///
+    /// A [`StaticCredentials`] provider is validated by [`build`](Self::build),
+    /// like [`credentials`](Self::credentials). Credentials from any other
+    /// provider are validated before each attempt instead; invalid ones fail
+    /// that request before sending, with the same error kinds as at build
+    /// time.
+    pub fn credentials_provider(self, provider: impl CredentialsProvider + 'static) -> Self {
+        let any: &dyn Any = &provider;
+        match any.downcast_ref::<StaticCredentials>() {
+            Some(fixed) => self.static_credentials(fixed.credentials.clone()),
+            None => self.auth(crate::client::Auth::Provider(Arc::new(provider))),
+        }
+    }
+    fn static_credentials(self, credentials: Credentials) -> Self {
+        self.auth(crate::client::Auth::Static(credentials))
+    }
+    fn auth(mut self, auth: crate::client::Auth) -> Self {
+        self.credentials = Some(auth);
         self
     }
-    /// Use an exchanged token. The last credential setter wins. Refresh by
-    /// exchanging again and building a new client; existing clones stay unchanged.
-    pub fn storage_token(mut self, token: crate::oauth::StorageAccessToken) -> Self {
-        self.credentials = Some(crate::oauth::Credentials::OAuth(token));
-        self
-    }
-    pub(crate) fn anonymous(mut self) -> Self {
-        self.credentials = Some(crate::oauth::Credentials::Anonymous);
-        self
+    pub(crate) fn anonymous(self) -> Self {
+        self.auth(crate::client::Auth::Anonymous)
     }
     /// Calculate hexadecimal Content-MD5 for in-memory request bodies.
     pub fn enable_md5_calculate(mut self, value: bool) -> Self {

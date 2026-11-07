@@ -103,7 +103,7 @@ flowchart LR
     t_object_metadata["object-metadata：ObjectMetadata 拆分系统字段与用户元数据 ✅"]
   end
   subgraph G13["批次 13"]
-    t_credentials_provider["credentials-provider：可刷新的凭证 provider"]
+    t_credentials_provider["credentials-provider：可刷新的凭证 provider ✅"]
   end
   subgraph G14["批次 14"]
     t_idempotent_retry["idempotent-retry：幂等写操作的可选重试"]
@@ -136,7 +136,7 @@ flowchart LR
   t_internal_cleanup --> t_cslb_internal
   t_fluent_listing_delete --> t_delete_prefix_options
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_typed_responses,t_object_metadata,t_baseline_green,t_upload_idle_timeout,t_cslb_internal,t_delete_prefix_options done
+  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_typed_responses,t_object_metadata,t_credentials_provider,t_baseline_green,t_upload_idle_timeout,t_cslb_internal,t_delete_prefix_options done
 ```
 
 - 批次 1：baseline-green✅
@@ -151,7 +151,7 @@ flowchart LR
 - 批次 10：delete-prefix-options✅
 - 批次 11：typed-responses✅
 - 批次 12：object-metadata✅
-- 批次 13：credentials-provider
+- 批次 13：credentials-provider✅
 - 批次 14：idempotent-retry
 - 批次 15：docs-release
 

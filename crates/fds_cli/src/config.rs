@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use clap::Args;
+use fds::credentials::{Credentials, StaticCredentials};
 use fds::oauth::FdsServiceClient;
 use fds::{Client, ClientBuilder, RetryPolicy};
 use std::{path::PathBuf, time::Duration};
@@ -101,9 +102,11 @@ impl Connection {
         Ok(b)
     }
 
+    /// Static credentials, as before the provider API: `--oauth` exchanges
+    /// exactly once before the operation and the token is never refreshed.
     pub async fn client(&self) -> Result<Client> {
         let builder = self.builder()?;
-        if let Some(path) = &self.oauth {
+        let credentials = if let Some(path) = &self.oauth {
             if self.access_key_id.is_some() || self.access_key_secret.is_some() {
                 bail!("choose access keys or OAuth, not both");
             }
@@ -116,10 +119,9 @@ impl Connection {
                 .exchange(&FdsServiceClient::from_builder(auth)?)
                 .send()
                 .await?;
-            return Ok(builder.storage_token(token).build()?);
-        }
-        Ok(builder
-            .credentials(
+            Credentials::storage_token(token)
+        } else {
+            Credentials::access_key(
                 self.access_key_id
                     .as_ref()
                     .ok_or_else(|| anyhow!("provide FDS_ACCESS_KEY_ID or --oauth"))?,
@@ -127,6 +129,9 @@ impl Connection {
                     .as_ref()
                     .ok_or_else(|| anyhow!("provide FDS_ACCESS_KEY_SECRET or --oauth"))?,
             )
+        };
+        Ok(builder
+            .credentials_provider(StaticCredentials::new(credentials))
             .build()?)
     }
 }
