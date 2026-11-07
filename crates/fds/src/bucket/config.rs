@@ -2,23 +2,29 @@
 
 use super::{validate_bucket, AccessLog, LifecycleConfig, LifecycleRule};
 use crate::client::ClientRequest;
-use crate::{Client, Error, Result};
+use crate::{Client, Error, Result, RetryMode};
 use bytes::Bytes;
 use http::Method;
 use serde::Serialize;
 use std::time::Duration;
 
-/// PUT `/{bucket}?{key}={value}` with `body` as JSON.
+/// PUT `/{bucket}?{key}={value}` with `body` as JSON; `retry` is `Some` only
+/// for an idempotent write.
 async fn put_json(
     client: &Client,
     bucket: &str,
     (key, value): (&str, &str),
     body: &impl Serialize,
     timeout: Option<Duration>,
+    retry: Option<RetryMode>,
 ) -> Result<()> {
     validate_bucket(bucket)?;
     let body = serde_json::to_vec(body).map_err(Error::json_encode)?;
-    let mut cr = ClientRequest::new(bucket, "", Method::PUT).with_timeout(timeout)?;
+    let mut cr = ClientRequest::new(bucket, "", Method::PUT);
+    if let Some(mode) = retry {
+        cr = cr.idempotent(mode);
+    }
+    let mut cr = cr.with_timeout(timeout)?;
     cr.query.add(key, value);
     cr.body = Some(Bytes::from(body).into());
     client.do_discard(cr).await
@@ -65,12 +71,19 @@ pub struct SetLifecycleConfig {
     bucket: String,
     config: LifecycleConfig,
     timeout: Option<Duration>,
+    retry: RetryMode,
 }
 
 impl SetLifecycleConfig {
     timeout_option!();
 
+    retry_option!();
+
     /// PUT `/{bucket}?lifecycle` with the configuration as JSON body.
+    ///
+    /// An idempotent write (the configuration is replaced as a whole),
+    /// retried when the client's [`RetryPolicy`](crate::RetryPolicy) enables
+    /// idempotent writes or [`retry`](Self::retry) says so.
     pub async fn send(self) -> Result<()> {
         put_json(
             &self.client,
@@ -78,6 +91,7 @@ impl SetLifecycleConfig {
             ("lifecycle", ""),
             &self.config,
             self.timeout,
+            Some(self.retry),
         )
         .await
     }
@@ -96,7 +110,9 @@ pub struct SetLifecycleRule {
 impl SetLifecycleRule {
     timeout_option!();
 
-    /// PUT `/{bucket}?lifecycle=rule` with the rule as JSON body.
+    /// PUT `/{bucket}?lifecycle=rule` with the rule as JSON body. Never
+    /// retried: whether the service replaces a rule with the same ID or adds
+    /// another one is not documented.
     pub async fn send(self) -> Result<()> {
         put_json(
             &self.client,
@@ -104,6 +120,7 @@ impl SetLifecycleRule {
             ("lifecycle", "rule"),
             &self.rule,
             self.timeout,
+            None,
         )
         .await
     }
@@ -134,12 +151,19 @@ pub struct SetAccessLog {
     bucket: String,
     access_log: AccessLog,
     timeout: Option<Duration>,
+    retry: RetryMode,
 }
 
 impl SetAccessLog {
     timeout_option!();
 
+    retry_option!();
+
     /// PUT `/{bucket}?accessLog` with the configuration as JSON body.
+    ///
+    /// An idempotent write (the configuration is replaced as a whole),
+    /// retried when the client's [`RetryPolicy`](crate::RetryPolicy) enables
+    /// idempotent writes or [`retry`](Self::retry) says so.
     pub async fn send(self) -> Result<()> {
         put_json(
             &self.client,
@@ -147,6 +171,7 @@ impl SetAccessLog {
             ("accessLog", ""),
             &self.access_log,
             self.timeout,
+            Some(self.retry),
         )
         .await
     }
@@ -175,6 +200,7 @@ impl Client {
             bucket: bucket.into(),
             config,
             timeout: None,
+            retry: RetryMode::Policy,
         }
     }
 
@@ -214,6 +240,7 @@ impl Client {
             bucket: bucket.into(),
             access_log,
             timeout: None,
+            retry: RetryMode::Policy,
         }
     }
 }

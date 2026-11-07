@@ -112,7 +112,7 @@ Client 内部共享配置、凭据 provider 和连接池，可廉价 `clone()` �
 | `pool_max_idle_per_host(usize)` | 100 | 连接池每主机最多保留的空闲连接数；0 表示不保留空闲连接；不是并发上限 |
 | `user_agent_suffix(text)` | 无 | 追加在 `fds-rs/<版本>` 之后、以空格分隔的应用标识，须为非空的可打印 ASCII；User-Agent 不参与签名 |
 | `enable_md5_calculate(bool)` | false | 为内存 body 计算十六进制 Content-MD5；文件/流另见上传章节 |
-| `retry_policy(RetryPolicy)` | 不重试 | 只对显式分类的读取生效 |
+| `retry_policy(RetryPolicy)` | 不重试 | 默认只对显式分类的读取生效；`.retry_idempotent_writes()` 另行开启幂等写重试 |
 | `cslb_max_nodes(usize)` | 20 | 仅 `cslb` feature；必须大于零，限制每个主机保留的 DNS 节点数 |
 
 超时参数均须非零且可表示。默认不设总期限，大对象上传和下载只要持续有进展就不会被打断，卡住的连接由 connect timeout 和 read timeout 发现：对端停止读取上传 body、上传完成后迟迟不返回响应头、或响应 body 停止到达，超过 read timeout 即以 `ErrorKind::Timeout` 失败。收到响应头之前超时的错误 `dispatch()` 为 `Dispatch::Unknown`（请求可能已到达服务端），读 body 时超时为 `Dispatch::Sent`。开启总期限后，它覆盖从建连、上传 body 到 `chunk()` / `copy_to()` / `bytes()` 读完响应的整个过程。
@@ -279,7 +279,7 @@ async fn upload_stream(client: &Client, bucket: &str, key: &str) -> fds::Result<
 
 开启 `enable_md5_calculate(true)` 后：内存 body 自动计算 MD5；文件/流必须显式 `.content_md5(...)`，否则发送前报错。关闭时也可以显式提供校验和。SDK 不验证调用者声明的 MD5 与文件/流一致。
 
-上传不会自动重试。取消 future 会释放 SDK 持有的 body，但远端可能已接收甚至完成写入；调用者自建的后台流生产任务仍需自行取消。更详细的背压约束见 [上传 body](docs/runtime.md#流式上传与读取)。
+上传默认不自动重试；只有 Bytes body 的 `put_object` / `upload_part` 在显式开启幂等写重试后会重放，文件和流 body 永不重试（见[重试和整体期限](#重试和整体期限)）。取消 future 会释放 SDK 持有的 body，但远端可能已接收甚至完成写入；调用者自建的后台流生产任务仍需自行取消。更详细的背压约束见 [上传 body](docs/runtime.md#流式上传与读取)。
 
 ## 对象读取与范围下载
 
@@ -1048,7 +1048,7 @@ fn report_error(error: &fds::Error) {
 | `PartialFailure` | 前缀删除因某批出现逐项失败而停止，已确认结果见 `partial_delete_output()`（单批 `delete_objects` 的逐项失败在 `Ok` 里） |
 | `Unexpected` | 其他 HTTP 状态（其余 4xx、未列入成功的 2xx/3xx）和 SDK 内部错误 |
 
-`ErrorKind` 为 non_exhaustive，match 必须留兜底分支。`is_retryable()` 对 RateLimited、HTTP 502/503/504、Timeout 和未发出的 Transport 返回 true；`is_not_found()`、`is_outcome_unknown()` 是对应 kind 的简写。`status()`（`http::StatusCode`）、`service_code()`、`request_id()` 是便利访问器；`ResponseDetails` 还含最多 8 KiB 的 `diagnostic_body()` 和 `body_truncated()`。
+`ErrorKind` 为 non_exhaustive，match 必须留兜底分支。`is_retryable()` 对 RateLimited、HTTP 502/503/504、Timeout 和收到响应前的 Transport（无论是否已发出）返回 true，与 SDK 重试循环使用同一条判定规则；HTTP 500 和读响应 body 时的 Transport 失败返回 false；`is_not_found()`、`is_outcome_unknown()` 是对应 kind 的简写。`status()`（`http::StatusCode`）、`service_code()`、`request_id()` 是便利访问器；`ResponseDetails` 还含最多 8 KiB 的 `diagnostic_body()` 和 `body_truncated()`。
 
 HTTP status 与服务 error code 是两套字段。JSON 操作即使 HTTP 200，也可能因空体或非法 JSON 失败；权限错误不能转换成“对象不存在”。SDK 禁止自动跟随重定向，未列入操作成功状态的 2xx 也会失败。更多状态规则见 [响应处理](docs/runtime.md#响应与错误)。
 
@@ -1058,9 +1058,11 @@ HTTP status 与服务 error code 是两套字段。JSON 操作即使 HTTP 200，
 
 `RetryPolicy::new(max_retries, initial_delay, max_delay)` 中 max_retries 不含首次尝试，允许 0–100；初始等待大于零且不超过最大等待，最大等待不超过 60 秒。默认 max_retries=0。
 
-启用后，仅明确安全的读取在响应交付前的连接/发送/超时错误和 429、502、503、504 可重试。采用有随机抖动的指数退避；Retry-After 作为等待下限，超过 max_delay 时放弃重试。JSON 解码错误、成功响应之后的 body 断流、上传流错误均不重放。
+启用后，默认仅明确安全的读取在响应交付前的连接/发送/超时错误和 429、502、503、504 可重试，判定规则与 `Error::is_retryable()` 相同。HTTP 500 不重试：它是服务端的通用失败，对同一请求往往是确定性的，重复相同请求多半只会耗尽重试预算并在故障期间加重负载；需要时由调用者按 `status()` 自行重试。采用有随机抖动的指数退避；Retry-After 作为等待下限，超过 max_delay 时放弃重试。JSON 解码错误、成功响应之后的 body 断流、上传流错误均不重放。
 
-PUT、复制、rename、ACL 修改、删除、分片 init/part/complete/abort、token exchange 和 CDN 操作不自动重试。前缀删除仅列举步骤可以重试。不能仅凭 HTTP 动词判断重复业务操作安全。
+幂等写默认也不重试，需显式开启：`RetryPolicy::new(..)?.retry_idempotent_writes()` 对整个 Client 生效，单个请求可用 `.retry(RetryMode::Enabled)` 开启或 `.retry(RetryMode::Disabled)` 关闭（重试次数和等待仍来自 Client 的 RetryPolicy，未配置重试时不会重试）。幂等写包括 Bytes body 的 `put_object` 和 `upload_part`（托管上传的分片也因此可重试）、`delete_object`、`set_object_metadata`、`set_lifecycle_config`、`set_access_log`；文件和流 body 永不重放。重复执行的最终状态相同，但仍可被观察到：前一次已删除时 `delete_object` 的重试可能返回 NotFound；版本化 bucket 中重复 `put_object` 可能多出一个版本；两次尝试之间其他写入者的修改可能被覆盖。
+
+复制、rename、restore、ACL 修改（Add 重复授权或 Delete 不存在授权的服务端语义未成文）、`set_lifecycle_rule`、批量删除、bucket 创建/删除/迁移、分片 init/complete/abort、token exchange 和 CDN 操作永不自动重试，也没有 `.retry(..)` 方法。前缀删除仅列举步骤可以重试。不能仅凭 HTTP 动词判断重复业务操作安全。
 
 客户端 request_timeout 是每次请求的期限；完整下载 body 消费和所有重试的外层期限可以这样设置：
 

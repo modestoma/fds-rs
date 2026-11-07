@@ -211,7 +211,7 @@
       "title": "幂等写操作的可选重试",
       "type": "feat",
       "document": "tasks/idempotent-retry.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 8,
       "depends_on": [
         "object-metadata"

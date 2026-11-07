@@ -302,6 +302,10 @@ impl MultipartUpload {
     /// Upload once, with bounded concurrent part requests; complete in numeric
     /// part order. After failure/drop, inspect progress and use manual APIs to
     /// reconcile; calling upload again is rejected to prevent hidden replay.
+    /// Each part is read into memory, so part requests are retried like
+    /// [`UploadPart::send`] when the client's
+    /// [`RetryPolicy`](crate::RetryPolicy) enables idempotent writes; the
+    /// initiation, completion and abort requests are never retried.
     ///
     /// Errors before completion are returned as they occurred. When
     /// [`CleanupPolicy::AbortOnFailure`] is set and the abort itself fails,

@@ -68,16 +68,47 @@ impl std::fmt::Debug for DeleteObjectsOutput {
     }
 }
 
-object_builder! {
-    /// Builder for [`Client::delete_object`].
-    DeleteObject
+/// Builder for [`Client::delete_object`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct DeleteObject {
+    client: Client,
+    bucket: String,
+    object: String,
+    timeout: Option<Duration>,
+    retry: crate::RetryMode,
 }
 
 impl DeleteObject {
+    pub(crate) fn new(
+        client: &Client,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+    ) -> Self {
+        Self {
+            client: client.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            timeout: None,
+            retry: crate::RetryMode::Policy,
+        }
+    }
+
+    timeout_option!();
+
+    retry_option!();
+
     /// DELETE `/{bucket}/{object}`.
+    ///
+    /// An idempotent write, retried when the client's
+    /// [`RetryPolicy`](crate::RetryPolicy) enables idempotent writes or
+    /// [`retry`](Self::retry) says so. When an earlier attempt already
+    /// deleted the object, a repeated one may fail with
+    /// [`ErrorKind::NotFound`] even though the object is gone.
     pub async fn send(self) -> Result<()> {
         validate_object(&self.bucket, &self.object)?;
         let cr = ClientRequest::new(&self.bucket, &self.object, Method::DELETE)
+            .idempotent(self.retry)
             .with_timeout(self.timeout)?;
         self.client.do_discard(cr).await
     }

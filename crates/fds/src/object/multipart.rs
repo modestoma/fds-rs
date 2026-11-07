@@ -177,6 +177,7 @@ pub struct UploadPart {
     body: UploadBody,
     content_md5: Option<String>,
     timeout: Option<Duration>,
+    retry: crate::RetryMode,
 }
 
 impl UploadPart {
@@ -189,15 +190,23 @@ impl UploadPart {
 
     timeout_option!();
 
+    retry_option!();
+
     /// PUT `/{bucket}/{object}?uploadId=..&partNumber=..`, consuming the body
-    /// without copying it. Never retried. The part number must not exceed
+    /// without copying it. The part number must not exceed
     /// [`MAX_PART_NUMBER`]; the upload ID must be non-empty.
+    ///
+    /// An idempotent write (the same part number with the same bytes
+    /// replaces the part): a bytes body is retried when the client's
+    /// [`RetryPolicy`](crate::RetryPolicy) enables idempotent writes or
+    /// [`retry`](Self::retry) says so; a stream or file body is sent once.
     pub async fn send(self) -> Result<UploadPartOutput> {
         validate_upload(&self.bucket, &self.object, &self.upload_id)?;
         if self.part_number.get() > MAX_PART_NUMBER {
             return Err(Error::invalid_input("part number must be at most 10000"));
         }
         let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .idempotent(self.retry)
             .with_timeout(self.timeout)?;
         cr.query.add("uploadId", &self.upload_id);
         cr.query.add("partNumber", self.part_number.to_string());
@@ -331,6 +340,7 @@ impl Client {
             body: body.into(),
             content_md5: None,
             timeout: None,
+            retry: crate::RetryMode::Policy,
         }
     }
 

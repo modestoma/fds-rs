@@ -17,7 +17,7 @@
 | 同名 metadata 即 HEAD | `head_object` 返回 `Option<ObjectMetadata>`；GET `?metadata` 仍由 `get_object_metadata` 提供 |
 | HTTP 200 批删即成功 | 检查 `DeleteObjectsOutput.failures`；prefix 删除失败保留已完成进度 |
 | set ACL 即替换 | ACL 请求的 `.action(...)` 明确 Add/Delete；默认 Add，不承诺 replace |
-| 重试任何失败 | `RetryPolicy` 默认关闭，仅明确安全的读取重试；mutation/流 body 不自动重放 |
+| 重试任何失败 | `RetryPolicy` 默认关闭，开启后默认仅明确安全的读取重试；幂等写（Bytes body）需 `retry_idempotent_writes()` 或单请求 `.retry(RetryMode::Enabled)` 显式开启；其他 mutation 与文件/流 body 不自动重放 |
 | 托管 multipart 自动完成恢复 | `MultipartUpload` 保存 session；失败检查 progress/state，完成结果未知时不盲重试、不自动 abort |
 | OAuth token 当 access secret | `FdsServiceClient` 显式 exchange，再用 `storage_token` 构建绑定 appId 的客户端；需要自动续期时用 `credentials_provider(StorageTokenProvider::new(..))` |
 | 任何 2xx 都成功、错误字符串稳定 | 按操作收紧状态，使用类型化错误访问器；服务诊断不作为稳定解析协议 |

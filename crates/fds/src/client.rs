@@ -72,6 +72,8 @@ pub(crate) struct ClientRequest<'a> {
     pub user_metadata: Option<&'a UserMetadata>,
     pub body: Option<UploadBody>,
     pub replay_safety: crate::retry::ReplaySafety,
+    /// The operation builder's override for an idempotent write.
+    pub retry_mode: crate::RetryMode,
     pub accepted_statuses: &'static [u16],
     /// Per-attempt total deadline overriding the client-wide `request_timeout`;
     /// covers consumption of the response body. Callers validate it first.
@@ -89,6 +91,14 @@ impl<'a> ClientRequest<'a> {
 
     pub(crate) fn read_only(mut self) -> Self {
         self.replay_safety = crate::retry::ReplaySafety::ReadOnly;
+        self
+    }
+
+    /// Mark an idempotent write, retried only when the client's policy or
+    /// the builder's `mode` opts in, and only with a bytes body.
+    pub(crate) fn idempotent(mut self, mode: crate::RetryMode) -> Self {
+        self.replay_safety = crate::retry::ReplaySafety::Idempotent;
+        self.retry_mode = mode;
         self
     }
 
@@ -113,6 +123,7 @@ impl<'a> ClientRequest<'a> {
             body: None,
             accepted_statuses: &[200],
             replay_safety: crate::retry::ReplaySafety::Never,
+            retry_mode: crate::RetryMode::Policy,
             timeout: None,
             requires_storage_token: false,
         }
@@ -206,9 +217,9 @@ impl Client {
         }
 
         let mut body = req.body;
-        let eligible = matches!(req.replay_safety, crate::retry::ReplaySafety::ReadOnly)
-            && body.as_ref().is_none_or(|body| body.try_clone().is_some());
         let policy = &self.inner.configuration.retry_policy;
+        let eligible = req.replay_safety.permits(req.retry_mode, policy)
+            && body.as_ref().is_none_or(|body| body.try_clone().is_some());
         let mut retries = 0;
         loop {
             let replay = if eligible {
@@ -226,23 +237,26 @@ impl Client {
                     req.timeout,
                     attempt.credentials.as_deref(),
                 )
-                .await;
+                .await
+                .map_err(SendFailure::into_error);
+            // The same rule as `Error::is_retryable`, applied before the
+            // rejected response is turned into an error.
             let delay = if eligible {
                 match &result {
-                    Ok(resp)
-                        if !req.accepted_statuses.contains(&resp.status().as_u16())
-                            && matches!(resp.status().as_u16(), 429 | 502 | 503 | 504) =>
-                    {
-                        policy.delay(retries, Some(resp.headers()))
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let transient = !req.accepted_statuses.contains(&status.as_u16())
+                            && crate::retry::is_transient(
+                                ErrorKind::from_status(status),
+                                Some(status),
+                                Dispatch::Sent,
+                            );
+                        transient
+                            .then(|| policy.delay(retries, Some(resp.headers())))
+                            .flatten()
                     }
-                    Err(SendFailure::Transport(error))
-                        if !error.is_body()
-                            && (error.is_connect() || error.is_timeout() || error.is_request()) =>
-                    {
-                        policy.delay(retries, None)
-                    }
-                    Err(SendFailure::IdleTimeout) => policy.delay(retries, None),
-                    _ => None,
+                    Err(error) if error.is_retryable() => policy.delay(retries, None),
+                    Err(_) => None,
                 }
             } else {
                 None
@@ -256,7 +270,7 @@ impl Client {
                 // refreshed token changes the URL, a rotated key the signature.
                 attempt = self.prepare_attempt(&target).await?;
             } else {
-                let resp = result.map_err(SendFailure::into_error)?;
+                let resp = result?;
                 return match check_response_status(resp, req.accepted_statuses).await {
                     Ok(resp) => Ok((resp, redaction)),
                     Err(error) => Err(redaction.error(error)),

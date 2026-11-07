@@ -120,7 +120,9 @@ impl fmt::Debug for ClientBuilder {
 }
 
 impl ClientBuilder {
-    /// Opt-in retries for explicitly classified reads. Writes remain single-attempt.
+    /// Opt-in retries for explicitly classified reads, and for idempotent
+    /// writes when the policy also enables them; other writes are always
+    /// sent once. See [`RetryPolicy`](crate::RetryPolicy).
     pub fn retry_policy(mut self, value: crate::RetryPolicy) -> Self {
         self.retry_policy = value;
         self

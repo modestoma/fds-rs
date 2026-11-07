@@ -28,8 +28,9 @@
 //! **Every public type has exactly one import path.**
 //!
 //! - The crate root exports only the client and error core: [`Client`],
-//!   [`ClientBuilder`], [`ClientConfiguration`], [`RetryPolicy`], [`Error`],
-//!   [`ErrorKind`], [`Dispatch`], [`ResponseDetails`] and [`Result`].
+//!   [`ClientBuilder`], [`ClientConfiguration`], [`RetryPolicy`],
+//!   [`RetryMode`], [`Error`], [`ErrorKind`], [`Dispatch`],
+//!   [`ResponseDetails`] and [`Result`].
 //! - Operation inputs, outputs and models live in exactly one public domain
 //!   module, chosen by the resource they act on:
 //!   - [`object`]: single-object operations, listing, bulk delete, presigned
@@ -103,6 +104,10 @@
 //!   `upload_file` ends in `start()`, which initiates the upload and returns
 //!   the [`multipart::MultipartUpload`] session to run, so that progress can
 //!   be inspected and recovered after a failure.
+//! - The builder of an idempotent write (for example
+//!   [`object::PutObject`]) also has `retry(RetryMode)`, overriding the
+//!   client's [`RetryPolicy`] for that request; builders of writes that are
+//!   never retried do not have it. See [`RetryPolicy`] for the list.
 //! - Builders are `#[must_use]`: nothing happens until `send` is awaited.
 //!
 //! POST object creation, archive restoration and multipart copy remain deferred.
@@ -138,4 +143,4 @@ pub mod object;
 pub use client::Client;
 pub use config::{ClientBuilder, ClientConfiguration};
 pub use error::{Dispatch, Error, ErrorKind, ResponseDetails, Result};
-pub use retry::RetryPolicy;
+pub use retry::{RetryMode, RetryPolicy};

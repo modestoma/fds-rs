@@ -17,7 +17,10 @@ enum Source {
 }
 
 /// A known-length, owned upload body. Bytes can be explicitly replayed via
-/// `try_clone`; files and streams are single-use. The SDK never retries uploads.
+/// `try_clone`; files and streams are single-use. The SDK retries an upload
+/// only for an idempotent write with a bytes body, when the client's
+/// [`RetryPolicy`](crate::RetryPolicy) or the request opts in; a file or
+/// stream body is never retried.
 /// Stream producers must bound their chunk size and any upstream queues.
 /// Unknown lengths are intentionally unsupported; no implicit buffering occurs.
 pub struct UploadBody {

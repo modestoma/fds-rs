@@ -95,9 +95,11 @@ marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环�
 
 ## 重试与超时
 
-默认关闭 SDK 重试。启用后，只有显式分类为读取且无 body/可克隆 Bytes body 的请求可重试。包括对象 GET/HEAD（含 `download_file` 的 HEAD）、列举、basicInfo、metadata/ACL 和 Bucket 信息/lifecycle/accessLog 读取；前缀删除仅其列举步骤适用。
+默认关闭 SDK 重试。每个操作按自身语义分为三类（不按 HTTP 动词）：读取、幂等写、永不重试。启用 RetryPolicy 后，读取且无 body/可克隆 Bytes body 的请求可重试，包括对象 GET/HEAD（含 `download_file` 的 HEAD）、列举、basicInfo、metadata/ACL 和 Bucket 信息/lifecycle/accessLog 读取、endpoint 发现和 app bucket 列举；前缀删除仅其列举步骤适用。
 
-连接、发送、超时错误和 429/502/503/504 可在成功响应交付前重试；body producer、成功后的读取/JSON 解码错误不重试。写入、复制、rename、删除、ACL 更新、分片全链路、CDN 和 OAuth exchange 不自动重发；reqwest 自带重试关闭。
+幂等写只在 `RetryPolicy::retry_idempotent_writes()` 或单请求 `.retry(RetryMode::Enabled)` 开启后重试，`.retry(RetryMode::Disabled)` 可对单个请求关闭；次数与等待始终取自 RetryPolicy。幂等写为：Bytes body 的 `put_object` 与 `upload_part`（托管上传的分片同样适用）、`delete_object`、`set_object_metadata`（整体替换）、`set_lifecycle_config`、`set_access_log`（整体替换）。文件/流 body 永不重放。重复执行最终状态相同，但重试可能让已成功的删除返回 NotFound、在版本化 bucket 中多出版本，或覆盖两次尝试之间他人的写入。
+
+连接、发送、超时错误和 429/502/503/504 可在成功响应交付前重试，判定函数与 `Error::is_retryable()` 共用；HTTP 500 不重试（通用失败，对同一请求常为确定性错误）。body producer、成功后的读取/JSON 解码错误不重试。复制、rename、restore、对象/bucket ACL 更新、`set_lifecycle_rule`、批量删除、bucket 创建/删除/迁移、分片 init/complete/abort、CDN 和 OAuth exchange 永不自动重发；reqwest 自带重试关闭。
 
 max_retries 不含首次，范围 0–100；initial_delay 必须大于零且不大于 max_delay，max_delay 不超过 60 秒。等待采用指数退避和当前上限 50%–100% 的随机抖动，Retry-After 支持秒数和 HTTP 日期；作为等待下限，超过最大等待时放弃重试，过去日期按零，无效值忽略。
 

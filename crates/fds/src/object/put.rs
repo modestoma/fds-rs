@@ -25,6 +25,7 @@ pub struct PutObject {
     metadata: WriteMetadata,
     expires: Option<DateTime<Utc>>,
     timeout: Option<Duration>,
+    retry: crate::RetryMode,
 }
 
 crate::de::lenient! {
@@ -80,6 +81,8 @@ impl PutObject {
         self
     }
 
+    retry_option!();
+
     /// The `Cache-Control` of the object. Empty values are not sent.
     pub fn cache_control(mut self, value: impl Into<String>) -> Self {
         self.metadata.cache_control = Some(value.into());
@@ -119,8 +122,14 @@ impl PutObject {
         self
     }
 
-    /// PUT `/{bucket}/{object}`, consuming the body without copying or
-    /// retrying it.
+    /// PUT `/{bucket}/{object}`, consuming the body without copying it.
+    ///
+    /// An idempotent write: a bytes body is retried when the client's
+    /// [`RetryPolicy`](crate::RetryPolicy) enables idempotent writes or
+    /// [`retry`](Self::retry) says so; a stream or file body is sent once.
+    /// A repeated attempt overwrites the object with the same content, which
+    /// may add a version in a versioned bucket and overwrites a change
+    /// another writer made between two attempts.
     pub async fn send(self) -> Result<PutObjectOutput> {
         validate_object(&self.bucket, &self.object)?;
         let mut headers = HeaderMap::new();
@@ -137,6 +146,7 @@ impl PutObject {
         }
 
         let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .idempotent(self.retry)
             .with_timeout(self.timeout)?;
         cr.headers = headers;
         cr.user_metadata = Some(&self.metadata.user);
@@ -183,6 +193,7 @@ impl Client {
             metadata: WriteMetadata::default(),
             expires: None,
             timeout: None,
+            retry: crate::RetryMode::Policy,
         }
     }
 }

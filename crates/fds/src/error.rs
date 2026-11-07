@@ -327,18 +327,19 @@ impl Error {
     }
 
     /// Whether repeating the same request may succeed and cannot be harmful
-    /// beyond the operation's own idempotency: rate limiting, HTTP 502/503/504
-    /// (the statuses the SDK's read retry policy uses), timeouts, and transport
-    /// failures before anything was sent. Never true for `OutcomeUnknown`.
+    /// beyond the operation's own idempotency: rate limiting, HTTP 502/503/504,
+    /// timeouts, and transport failures before a response arrived (whether or
+    /// not the request reached the service). Never true for `OutcomeUnknown`,
+    /// for HTTP 500 or for a transport failure while reading a received
+    /// response body.
+    ///
+    /// This is exactly the rule the SDK's [`RetryPolicy`](crate::RetryPolicy)
+    /// applies to each attempt; whether an operation is repeated at all also
+    /// depends on its classification there. A `true` does not make a
+    /// non-idempotent write safe to repeat when [`dispatch`](Self::dispatch)
+    /// is not [`Dispatch::NotSent`].
     pub fn is_retryable(&self) -> bool {
-        match self.kind() {
-            ErrorKind::RateLimited | ErrorKind::Timeout => true,
-            ErrorKind::ServerError => self
-                .status()
-                .is_some_and(|s| matches!(s.as_u16(), 502..=504)),
-            ErrorKind::Transport => self.dispatch() == Dispatch::NotSent,
-            _ => false,
-        }
+        crate::retry::is_transient(self.kind(), self.status(), self.dispatch())
     }
 
     /// `kind() == ErrorKind::OutcomeUnknown`.
@@ -633,8 +634,13 @@ mod tests {
             .with_dispatch(Dispatch::Unknown)
             .is_retryable());
         assert!(Error::new(ErrorKind::Transport, "t").is_retryable());
-        assert!(!Error::new(ErrorKind::Transport, "t")
+        // The request may have been sent: transient, like a timeout.
+        assert!(Error::new(ErrorKind::Transport, "t")
             .with_dispatch(Dispatch::Unknown)
+            .is_retryable());
+        // A broken response body is not repeated by the retry loop either.
+        assert!(!Error::new(ErrorKind::Transport, "t")
+            .with_dispatch(Dispatch::Sent)
             .is_retryable());
         let unknown = with_status(ErrorKind::ServerError, 503).into_outcome_unknown("u");
         assert!(unknown.is_outcome_unknown() && !unknown.is_retryable());

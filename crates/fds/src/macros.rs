@@ -21,3 +21,24 @@ macro_rules! timeout_option {
         }
     };
 }
+
+/// The `retry` option of an idempotent write's builder; the builder needs a
+/// `retry: crate::RetryMode` field and passes it to
+/// `ClientRequest::idempotent`.
+macro_rules! retry_option {
+    () => {
+        /// Override the client's [`RetryPolicy`](crate::RetryPolicy) for this
+        /// idempotent write: [`RetryMode::Enabled`](crate::RetryMode::Enabled)
+        /// retries it even when the policy does not
+        /// [`retry_idempotent_writes`](crate::RetryPolicy::retry_idempotent_writes),
+        /// [`RetryMode::Disabled`](crate::RetryMode::Disabled) sends it once.
+        ///
+        /// The number of retries and their delays still come from the
+        /// policy, so a client without retries never retries. A stream or file
+        /// body is never retried.
+        pub fn retry(mut self, mode: crate::RetryMode) -> Self {
+            self.retry = mode;
+            self
+        }
+    };
+}

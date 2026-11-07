@@ -76,6 +76,7 @@ pub struct SetObjectMetadata {
     object: String,
     metadata: WriteMetadata,
     timeout: Option<Duration>,
+    retry: crate::RetryMode,
 }
 
 /// The typed values and user metadata form the complete metadata the object
@@ -85,13 +86,20 @@ impl SetObjectMetadata {
 
     timeout_option!();
 
+    retry_option!();
+
     /// PUT `/{bucket}/{object}?setMetaData` with the metadata as a JSON map
     /// body `{"rawMeta":{...}}`, keys in order. The values are not checked as
     /// header values.
+    ///
+    /// An idempotent write (the metadata is replaced as a whole), retried
+    /// when the client's [`RetryPolicy`](crate::RetryPolicy) enables
+    /// idempotent writes or [`retry`](Self::retry) says so.
     pub async fn send(self) -> Result<()> {
         validate_object(&self.bucket, &self.object)?;
         let body = self.metadata.to_body()?;
         let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .idempotent(self.retry)
             .with_timeout(self.timeout)?;
         cr.query.add("setMetaData", "");
         cr.body = Some(Bytes::from(body).into());
@@ -149,6 +157,7 @@ impl Client {
             object: object.into(),
             metadata: WriteMetadata::default(),
             timeout: None,
+            retry: crate::RetryMode::Policy,
         }
     }
 }
