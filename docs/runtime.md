@@ -95,7 +95,7 @@ marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环�
 
 ## 超时
 
-默认不设整体期限。每个请求只受两项约束：`connect_timeout`（默认 50 秒，含 TLS）和 `read_timeout`（默认 50 秒）。`read_timeout` 是按进度重置的 I/O 空闲超时，覆盖三个阶段：上传时每传出一块 body（最多 64 KiB）重置；等待响应头从最后一次上传进展开始计时（无 body 的请求从请求开始计时）；读响应 body 时每收到数据重置。因此持续推进的大对象上传和下载不会被打断，对端停止读取上传 body、上传完成后迟迟不返回响应头、或响应 body 停止到达时，超过阈值即以 `ErrorKind::Timeout` 失败。收到响应头之前的超时 `dispatch()` 为 `Unknown`（请求可能已到达服务端），读 body 时的超时为 `Sent`。
+默认不设整体期限。每个请求只受两项约束：`connect_timeout`（默认 50 秒，含 TLS）和 `read_timeout`（默认 50 秒）。`read_timeout` 是按进度重置的 I/O 空闲超时，覆盖三个阶段：上传时每传出一块 body（最多 64 KiB）重置；等待响应头从最后一次上传进展开始计时（无 body 的请求从请求开始计时），进展指 SDK 把数据交给传输层，仍在系统发送缓冲区中的数据发完所用的时间也计入这段等待；读响应 body 时每收到数据重置。因此持续推进的大对象上传和下载不会被打断，对端停止读取上传 body、上传完成后迟迟不返回响应头、或响应 body 停止到达时，超过阈值即以 `ErrorKind::Timeout` 失败。收到响应头之前的超时 `dispatch()` 为 `Unknown`（请求可能已到达服务端），读 body 时的超时为 `Sent`。
 
 `request_timeout` 或各请求 builder 的 `.timeout(Duration)` 显式开启单次请求的总期限，覆盖从建连、上传 body 到 `chunk()` / `copy_to()` / `bytes()` / `into_stream()` / `into_async_read()` 读完响应的整个过程；它不覆盖重试之间的等待和全部重试的总时间。托管传输（`upload_file`、`download_file`）发送多个请求，没有单请求 `.timeout`，每个请求仍受 connect 和空闲超时约束。
 

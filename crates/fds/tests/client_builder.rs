@@ -400,7 +400,8 @@ async fn put_object_request_timeout_applies_while_awaiting_response() {
 /// How the upload server below treats the request body.
 #[derive(Clone, Copy)]
 enum Upload {
-    /// Read `UPLOAD_STEP` bytes every `UPLOAD_TICK`, then answer after
+    /// Read `UPLOAD_STEP` bytes every `UPLOAD_TICK` up to the last
+    /// `UNPACED_TAIL` bytes, read those at once, then answer after
     /// `UPLOAD_ANSWER_DELAY`.
     Steady,
     /// Read `STALL_AFTER` bytes, then stop reading without answering.
@@ -416,6 +417,13 @@ const UPLOAD_STEP: usize = 1 << 20;
 const UPLOAD_TICK: Duration = Duration::from_millis(50);
 const UPLOAD_ANSWER_DELAY: Duration = Duration::from_millis(100);
 const STALL_AFTER: usize = 256 << 10;
+/// Bytes the steady server drains without pacing. The SDK counts a piece as
+/// progress when the transport takes it, and the client's kernel send buffer
+/// (autotuned to several MiB on Linux loopback) absorbs the end of the body
+/// early; pacing that tail would leave the client waiting with nothing to
+/// report. It must exceed that buffer and leave over `2 * THRESHOLD` of
+/// paced reading: 8 ticks of 50ms plus the answer delay.
+const UNPACED_TAIL: usize = 8 << 20;
 
 /// Serve one upload. The listener's small receive buffer is inherited by the
 /// accepted socket, so the client feels the server's reading pace quickly.
@@ -447,13 +455,17 @@ async fn upload_server(mode: Upload) -> (String, tokio::task::JoinHandle<()>) {
         let mut read = 0;
         match mode {
             Upload::Steady => {
+                let paced = length.saturating_sub(UNPACED_TAIL);
                 let mut target = 0;
-                while target < length {
+                while target < paced {
                     tokio::time::sleep(UPLOAD_TICK).await;
-                    target = (target + UPLOAD_STEP).min(length);
+                    target = (target + UPLOAD_STEP).min(paced);
                     if !read_up_to(&mut socket, &mut buf, &mut read, target).await {
                         return;
                     }
+                }
+                if !read_up_to(&mut socket, &mut buf, &mut read, length).await {
+                    return;
                 }
             }
             Upload::Stall => {
