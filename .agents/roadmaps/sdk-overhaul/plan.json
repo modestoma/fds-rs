@@ -9,7 +9,15 @@
   "approved_revision": 2,
   "approval_ref": "2026-11-07 用户回答待答问题 upload-read-timeout：\"(a) 新增任务修复\"，即新增 upload-idle-timeout 任务；授权范围同 revision 1（本地快进合并，不推送）",
   "max_parallel": 3,
-  "pending_questions": [],
+  "pending_questions": [
+    {
+      "id": "cslb-public-tools",
+      "text": "fds::cslb 中除 resolver 外的独立负载均衡工具（LoadBalancer、Service、Strategy、HashedStrategy、StaticService、Group、Metrics 等）是否改为 crate 内部？改则未被 Client 使用的部分作为死代码删除，README 中\"独立工具位于 fds::cslb\"一句去掉；不改则保持公开。",
+      "tasks": [
+        "docs-release"
+      ]
+    }
+  ],
   "tasks": [
     {
       "key": "request-timeout",
