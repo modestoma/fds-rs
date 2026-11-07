@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 
 use super::Node;
 
@@ -14,12 +14,13 @@ use super::Node;
 pub type NodeFailedCallback = Arc<dyn Fn(String) + Send + Sync>;
 
 /// A group of interchangeable nodes (Go `Service`). Thread-safe.
-#[async_trait]
+///
+/// Methods return boxed futures so the trait stays usable as `Arc<dyn Service>`.
 pub trait Service: Send + Sync {
     /// A snapshot of the currently available nodes.
-    async fn nodes(&self) -> Vec<Arc<dyn Node>>;
+    fn nodes(&self) -> BoxFuture<'_, Vec<Arc<dyn Node>>>;
     /// Update the node set.
-    async fn refresh(&self);
+    fn refresh(&self) -> BoxFuture<'_, ()>;
     /// Optional callback fired when a node is exiled.
     fn node_failed_callback(&self) -> Option<NodeFailedCallback> {
         None
@@ -41,14 +42,15 @@ impl StaticService {
     }
 }
 
-#[async_trait]
 impl Service for StaticService {
-    async fn nodes(&self) -> Vec<Arc<dyn Node>> {
-        self.nodes.load().as_ref().clone()
+    fn nodes(&self) -> BoxFuture<'_, Vec<Arc<dyn Node>>> {
+        Box::pin(std::future::ready(self.nodes.load().as_ref().clone()))
     }
 
-    async fn refresh(&self) {
-        self.nodes.store(Arc::new(self.static_nodes.clone()));
+    fn refresh(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.nodes.store(Arc::new(self.static_nodes.clone()));
+        })
     }
 }
 
@@ -72,13 +74,18 @@ impl RrDnsService {
     }
 }
 
-#[async_trait]
 impl Service for RrDnsService {
-    async fn nodes(&self) -> Vec<Arc<dyn Node>> {
-        self.nodes.load().as_ref().clone()
+    fn nodes(&self) -> BoxFuture<'_, Vec<Arc<dyn Node>>> {
+        Box::pin(std::future::ready(self.nodes.load().as_ref().clone()))
     }
 
-    async fn refresh(&self) {
+    fn refresh(&self) -> BoxFuture<'_, ()> {
+        Box::pin(self.resolve())
+    }
+}
+
+impl RrDnsService {
+    async fn resolve(&self) {
         let mut ips: Vec<Arc<dyn Node>> = Vec::new();
         for host in &self.hostnames {
             // port 0 is a placeholder; we only use the resolved IPs.

@@ -34,11 +34,16 @@ AC-8（基线部分）：为后续所有任务提供可信的「全绿」起点�
 
 ## 执行记录
 
-尚未开始。
+- 方案：cslb 的 `Service` trait 被 `cslb/mod.rs` 当作 `Arc<dyn Service>` 使用，原生 `async fn` 不满足 dyn 兼容，所以改为方法直接返回 `futures_util::future::BoxFuture`，并去掉 `async-trait` 依赖（Cargo.toml 的 cslb feature 和 Cargo.lock 同步更新）。`StaticService::refresh` 仍然在 await 时才写入，语义不变。cslb `Service` 的公开签名因此变化（Roadmap 不考虑兼容性）。
+- 环境：本机 stable 1.99.1；按 MSRV 要求安装了 1.86.0 工具链（`rustup toolchain install 1.86.0 --profile minimal --component clippy`。在沙箱中默认下载后端的 TLS 证书校验失败，改用 `RUSTUP_USE_CURL=1` 后安装成功）。确认沙箱已允许本地端口绑定，mockito 测试可以运行。
+- 验证（2026-11-07，均在任务 worktree 中实际运行）：
+  - `cargo clippy --locked --workspace --all-features --all-targets -- -D warnings`：通过。改动前在 stable 下因 `double_must_use` 失败。
+  - 完整运行 `bash scripts/check.sh`：退出码 0。内容包括 fmt、clippy、四种 feature 组合（默认、`--no-default-features`、`--all-features`、`--no-default-features --features cslb`）下 `fds` 的 test 与 check、`fds_cli` 的 test 与 check、`cargo doc -D warnings`、`fds_cli --help`、1.86.0 下三种 feature 组合的 test 与 check 以及 fds_cli check、`check_coverage.py`、`check_docs.py`、`git diff --check`。所有 test result 都是 ok，没有失败；`live_acceptance` 的 2 个用例按设计被忽略（需要真实的 FDS 凭证，由用户本地执行）。
+- 这次结果作为后续任务的基线对照：在当前 main 上，`check.sh` 能全部通过。
 
 ## 交付
 
-合并方式：local，验证后快进合并进 main，不推送。不写 commit hash：本任务的提交信息末行是 `Roadmap: sdk-overhaul/baseline-green`，用 `git log --grep` 查。
+合并方式：local，验证后快进合并进 main，不推送。验证证据见执行记录（完整运行 check.sh，退出码 0）。不写 commit hash：本任务的提交信息末行是 `Roadmap: sdk-overhaul/baseline-green`，用 `git log --grep` 查。
 
 ## 启动 prompt
 

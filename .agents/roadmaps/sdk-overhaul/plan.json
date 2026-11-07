@@ -3,7 +3,7 @@
   "id": "sdk-overhaul",
   "title": "FDS Rust SDK 设计重构（0.1.0）",
   "revision": 1,
-  "status": "approved",
+  "status": "running",
   "base_branch": "main",
   "merge_mode": "local",
   "approved_revision": 1,
@@ -245,7 +245,7 @@
       "title": "恢复基线检查全绿（clippy 新 lint）",
       "type": "chore",
       "document": "tasks/baseline-green.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 1,
       "depends_on": [],
       "resources": [

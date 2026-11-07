@@ -34,13 +34,12 @@ tracing = "0.1"
 # Optional features
 governor = { version = "0.6", optional = true }        # manager rate limiting
 arc-swap = { version = "1", optional = true }          # cslb atomic node list
-async-trait = { version = "0.1", optional = true }     # cslb Service trait
 dashmap = { version = "6", optional = true }           # cslb group / metrics
 
 [features]
 default = ["manager"]
 manager = ["dep:governor"]
-cslb = ["dep:arc-swap", "dep:async-trait", "dep:dashmap"]
+cslb = ["dep:arc-swap", "dep:dashmap"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
