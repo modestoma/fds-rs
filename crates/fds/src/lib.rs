@@ -1,4 +1,4 @@
-//! # fds — async Rust SDK for XiaoMi FDS object storage
+//! # fds — async Rust SDK for FDS (File Data Storage) object storage
 //!
 //! Build a validated [`Client`], start an operation from it, and consume
 //! streaming responses with Tokio. Galaxy-V2 signing is protected by saved
@@ -13,7 +13,7 @@
 //! # async fn example() -> fds::Result<()> {
 //! // The SDK reads no environment variables; the application supplies them.
 //! let client = Client::builder()
-//!     .endpoint("https://cnbj1.fds.api.xiaomi.com")
+//!     .endpoint("https://fds.example.com") // replace with your endpoint
 //!     .credentials("ACCESS_KEY_ID", "ACCESS_KEY_SECRET")
 //!     .build()?;
 //!

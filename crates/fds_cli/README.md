@@ -1,6 +1,6 @@
 # fds_cli
 
-基于 [fds-rs](https://crates.io/crates/fds-rs) 的小米 FDS 对象存储命令行工具，覆盖 Bucket 管理、对象读写、分片上传、并发下载、预签名 URL、OAuth 与端到端 `smoke` 验证。
+基于 [fds-rs](https://crates.io/crates/fds-rs) 的 FDS（File Data Storage）对象存储命令行工具，覆盖 Bucket 管理、对象读写、分片上传、并发下载、预签名 URL、OAuth 与端到端 `smoke` 验证。
 
 ```sh
 cargo install fds_cli --locked

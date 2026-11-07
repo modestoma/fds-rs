@@ -43,3 +43,12 @@
 - `scripts/set_version.py`：0.1.0 → 0.2.0 → 0.1.0 往返后 `check_docs.py` 通过，文件无残留差异。
 - semantic-release 版本规则（在临时 clone 中 dry run，只启用 commit-analyzer）：`v0.1.0` 之后有 feat + fix → 0.1.1；再加 `feat!` → 0.2.0；没有 tag → 1.0.0（所以首次发布后必须打 `v0.1.0`）。
 - **未验证**：GitHub Actions 两个 workflow 没有实际运行过（还没有远端仓库）；Trusted Publishing 和真正的 crates.io 上传要等用户完成首次发布准备。本地 `npm install` 时沙箱拒绝写入 `node_modules/tunnel/.idea/`，不影响 `package-lock.json`，CI 用 `npm ci` 全新安装。
+
+## 后续：去掉 xiaomi 字样（0.1.1）
+
+用户要求从 crates.io 展示内容和 README 中去掉 xiaomi 相关字样。0.1.0 已发布，已发布版本的元数据不可改，所以用 `fix(package)` 提交触发 0.1.1（用户决定）。
+
+- description、keywords（两个 crate）、crate README、根 README 首段、`lib.rs` 标题：去掉“XiaoMi / 小米”，改为 “FDS（File Data Storage）”；keywords 中的 `xiaomi` 换成 `async` / `storage`。
+- 示例 endpoint `https://cnbj1.fds.api.xiaomi.com` 换成占位符 `https://fds.example.com`（根 README、crate README、`lib.rs` 各 1 处，用户决定）。
+- **保留**：`x-xiaomi-meta-*` 头名（线上协议）和 OAuth 的 XiaoMi provider、`.xiaomi_mac()`（公开 API，改名属于破坏性变更）。`docs/` 不在本次范围内。
+- 验证：`bash scripts/check.sh` 退出码 0。

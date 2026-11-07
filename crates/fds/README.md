@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/fds-rs.svg)](https://crates.io/crates/fds-rs) [![docs.rs](https://img.shields.io/docsrs/fds-rs)](https://docs.rs/fds-rs)
 
-小米 FDS 对象存储的异步 Rust SDK，基于 Tokio 和 reqwest，支持 Bucket 管理、对象读写、分页、ACL、分片上传、断点下载、预签名 URL 和 OAuth。
+FDS（File Data Storage）对象存储的异步 Rust SDK，基于 Tokio 和 reqwest，支持 Bucket 管理、对象读写、分页、ACL、分片上传、断点下载、预签名 URL 和 OAuth。
 
 ```sh
 cargo add fds-rs
@@ -15,7 +15,7 @@ use fds::Client;
 
 async fn upload() -> fds::Result<()> {
     let client = Client::builder()
-        .endpoint("https://cnbj1.fds.api.xiaomi.com")
+        .endpoint("https://fds.example.com") // 替换为实际 endpoint
         .credentials("ACCESS_KEY_ID", "ACCESS_KEY_SECRET")
         .build()?;
     client.put_object("bucket", "hello.txt", b"hello".to_vec()).send().await?;

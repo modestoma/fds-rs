@@ -3,12 +3,12 @@ name = "fds_cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Command-line tool for XiaoMi FDS object storage, built on the fds-rs SDK"
+description = "Command-line tool for FDS (File Data Storage) object storage, built on the fds-rs SDK"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-keywords = ["fds", "xiaomi", "object-storage", "cli"]
+keywords = ["fds", "object-storage", "storage", "cli"]
 categories = ["command-line-utilities"]
 include = ["src/**/*", "tests/**/*", "README.md", "LICENSE"]
 

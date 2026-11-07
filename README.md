@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/fds-rs.svg)](https://crates.io/crates/fds-rs) [![docs.rs](https://img.shields.io/docsrs/fds-rs)](https://docs.rs/fds-rs) [![license](https://img.shields.io/crates/l/fds-rs.svg)](LICENSE)
 
-小米 FDS 对象存储的异步 Rust SDK，基于 Tokio 和 reqwest，支持 Bucket 管理、对象读写、分页、ACL、分片上传、断点下载、预签名 URL 和 OAuth。
+FDS（File Data Storage）对象存储的异步 Rust SDK，基于 Tokio 和 reqwest，支持 Bucket 管理、对象读写、分页、ACL、分片上传、断点下载、预签名 URL 和 OAuth。
 
 适用于 Rust 服务端、命令行和原生客户端；当前不提供浏览器/WASM 接口或 Kotlin/Swift 封装。终端应用不要内置长期 Access Key Secret，可使用服务端签发的短期预签名 URL，或已开通的 OAuth 认证。
 
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`build()` 校验配置并创建 HTTP 客户端，不校验远端凭据有效性。endpoint 是完整的 HTTP(S) origin，例如 `https://cnbj1.fds.api.xiaomi.com`，允许端口；不能携带 Bucket 路径、用户信息、query 或 fragment。生产凭据应使用 HTTPS。Bucket 名称需满足服务的命名规则，SDK 不完整校验这些业务规则。Bucket 和 object key 分开传入，key 使用原始字符串，如 `logs/设备 A.txt`；SDK 负责编码，不要先百分号编码。
+`build()` 校验配置并创建 HTTP 客户端，不校验远端凭据有效性。endpoint 是完整的 HTTP(S) origin，例如 `https://fds.example.com`（替换为实际服务地址），允许端口；不能携带 Bucket 路径、用户信息、query 或 fragment。生产凭据应使用 HTTPS。Bucket 名称需满足服务的命名规则，SDK 不完整校验这些业务规则。Bucket 和 object key 分开传入，key 使用原始字符串，如 `logs/设备 A.txt`；SDK 负责编码，不要先百分号编码。
 
 Client 内部共享配置、凭据 provider 和连接池，可廉价 `clone()` 后交给多个异步任务。不要每次请求都重建客户端。配置通过 `client.configuration()` 的同名 getter 读取；修改配置时创建新 Client，旧 clone 保持原配置。需要轮换凭据时使用 `credentials_provider`（见[刷新与轮换凭据](#刷新与轮换凭据)），Client 每次请求尝试前向 provider 取当前凭据，无需重建。
 

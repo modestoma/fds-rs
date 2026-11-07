@@ -3,13 +3,13 @@ name = "fds-rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Async Rust SDK for XiaoMi FDS (File Data Storage) object storage"
+description = "Async Rust SDK for FDS (File Data Storage) object storage"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/fds-rs"
 readme = "README.md"
-keywords = ["fds", "xiaomi", "object-storage", "storage", "sdk"]
+keywords = ["fds", "object-storage", "storage", "sdk", "async"]
 categories = ["api-bindings", "asynchronous", "web-programming::http-client"]
 include = ["src/**/*", "examples/**/*", "tests/**/*", "README.md", "LICENSE"]
 
