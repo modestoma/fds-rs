@@ -50,7 +50,7 @@
 
 0. **基线全绿**（baseline-green）：修复新工具链下的 clippy 失败，完整运行一次 check.sh 作为对照。
 1. **运行时问题修复**（request-timeout、downloader-io，以及排在 error-model 之后的 upload-idle-timeout）：大对象传输不再被 300 秒整体超时打断；上传按进度重置空闲计时；Downloader 的文件 IO 不再占用 async worker 线程。
-2. **基础重构**（error-model、public-surface、internal-cleanup）：确立新的错误模型，收缩公开面，去掉内部冗余，为 API 改造打好地基。
+2. **基础重构**（error-model、public-surface、internal-cleanup、cslb-internal）：确立新的错误模型，收缩公开面，去掉内部冗余，为 API 改造打好地基。
 3. **API 统一**（fluent-object、fluent-bucket、fluent-listing-delete、fluent-multipart-manager）：全部操作改为流式 builder，命名和参数类型符合 Rust API Guidelines。
 4. **返回值清晰化**（typed-responses、object-metadata）：响应模型类型化；元数据拆分为系统字段和用户元数据两部分。
 5. **能力补齐**（credentials-provider、idempotent-retry）：凭证可以刷新；幂等写操作可以选择开启重试。
@@ -83,30 +83,33 @@ flowchart LR
     t_internal_cleanup["internal-cleanup：内部实现去冗余：serde 样板、header、脱敏、HTTP 配置"]
   end
   subgraph G7["批次 7"]
-    t_fluent_object["fluent-object：建立流式 builder 模式并迁移对象基础操作"]
+    t_cslb_internal["cslb-internal：cslb 独立工具改为内部并删除死代码"]
   end
   subgraph G8["批次 8"]
-    t_fluent_bucket["fluent-bucket：Bucket 与 OAuth 操作迁移到流式 builder"]
+    t_fluent_object["fluent-object：建立流式 builder 模式并迁移对象基础操作"]
   end
   subgraph G9["批次 9"]
-    t_fluent_listing_delete["fluent-listing-delete：列举与批量删除迁移到流式 builder"]
+    t_fluent_bucket["fluent-bucket：Bucket 与 OAuth 操作迁移到流式 builder"]
   end
   subgraph G10["批次 10"]
-    t_fluent_multipart_manager["fluent-multipart-manager：分片上传与 Downloader 迁移到流式 builder"]
+    t_fluent_listing_delete["fluent-listing-delete：列举与批量删除迁移到流式 builder"]
   end
   subgraph G11["批次 11"]
-    t_typed_responses["typed-responses：返回值类型化与精简"]
+    t_fluent_multipart_manager["fluent-multipart-manager：分片上传与 Downloader 迁移到流式 builder"]
   end
   subgraph G12["批次 12"]
-    t_object_metadata["object-metadata：ObjectMetadata 拆分系统字段与用户元数据"]
+    t_typed_responses["typed-responses：返回值类型化与精简"]
   end
   subgraph G13["批次 13"]
-    t_credentials_provider["credentials-provider：可刷新的凭证 provider"]
+    t_object_metadata["object-metadata：ObjectMetadata 拆分系统字段与用户元数据"]
   end
   subgraph G14["批次 14"]
-    t_idempotent_retry["idempotent-retry：幂等写操作的可选重试"]
+    t_credentials_provider["credentials-provider：可刷新的凭证 provider"]
   end
   subgraph G15["批次 15"]
+    t_idempotent_retry["idempotent-retry：幂等写操作的可选重试"]
+  end
+  subgraph G16["批次 16"]
     t_docs_release["docs-release：文档、示例与版本号 0.1.0"]
   end
   t_baseline_green --> t_request_timeout
@@ -117,6 +120,7 @@ flowchart LR
   t_upload_idle_timeout --> t_public_surface
   t_public_surface --> t_internal_cleanup
   t_internal_cleanup --> t_fluent_object
+  t_cslb_internal --> t_fluent_object
   t_fluent_object --> t_fluent_bucket
   t_fluent_object --> t_fluent_listing_delete
   t_fluent_object --> t_fluent_multipart_manager
@@ -129,6 +133,7 @@ flowchart LR
   t_credentials_provider --> t_docs_release
   t_idempotent_retry --> t_docs_release
   t_error_model --> t_upload_idle_timeout
+  t_internal_cleanup --> t_cslb_internal
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
   class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_baseline_green,t_upload_idle_timeout done
 ```
@@ -139,15 +144,16 @@ flowchart LR
 - 批次 4：upload-idle-timeout✅
 - 批次 5：public-surface✅
 - 批次 6：internal-cleanup
-- 批次 7：fluent-object
-- 批次 8：fluent-bucket
-- 批次 9：fluent-listing-delete
-- 批次 10：fluent-multipart-manager
-- 批次 11：typed-responses
-- 批次 12：object-metadata
-- 批次 13：credentials-provider
-- 批次 14：idempotent-retry
-- 批次 15：docs-release
+- 批次 7：cslb-internal
+- 批次 8：fluent-object
+- 批次 9：fluent-bucket
+- 批次 10：fluent-listing-delete
+- 批次 11：fluent-multipart-manager
+- 批次 12：typed-responses
+- 批次 13：object-metadata
+- 批次 14：credentials-provider
+- 批次 15：idempotent-retry
+- 批次 16：docs-release
 
 ✅ 已完成　⛔ 阻塞　✖️ 已取消。进行中的任务看 `roadmap.py status`（分支存在即进行中）。
 <!-- roadmap:order:end -->
@@ -182,6 +188,7 @@ flowchart LR
 - 2026-11-07 · revision 1 · 用户原话"现在本地删除 GitLab ci 相关的配置，然后提交第一版，然后本轮 roadmap 在本地以 main 分支为基线进行开发" · 明确决定 · `.gitlab-ci.yml` 已移出仓库，基线为本地 main（不受保护），合并方式为 local，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户在确认默认假设时补充"版本号回退至 0.1.0；fds_cli 同步修改" · 明确决定 · 两个 crate 的版本号都定为 0.1.0（原为 0.2.0）；fds_cli 跟随每个任务同步修改 · 影响 docs-release 及全部 API 任务。
 - 2026-11-07 · revision 1 · 默认假设，用户已确认 · 凭证 provider 和幂等写重试排在最后阶段，用户评审时可以删掉 · 影响 credentials-provider、idempotent-retry。
+- 2026-11-07 · revision 3 · 用户对待答问题 cslb-public-tools 的回答"改为内部并删除" · 明确决定 · 新增任务 cslb-internal（依赖 internal-cleanup，fluent-object 改为依赖它）：`fds::cslb` 改为私有，删除 Client 不使用的独立负载均衡工具及随之无用的依赖，README/docs 同步 · 影响 cslb-internal、fluent-object、docs-release。
 - 2026-11-07 · revision 2 · 用户对待答问题 upload-read-timeout 的回答"(a) 新增任务修复" · 明确决定 · 新增任务 upload-idle-timeout（依赖 error-model，public-surface 改为依赖它），上传请求改由 SDK 实现按进度重置的空闲计时；AC-1 补充上传语义；已完成的 request-timeout 不回退 · 影响 upload-idle-timeout、public-surface、docs-release。
 - 2026-11-07 · revision 1 · 用户原话"批准并开始" · 明确决定 · 批准 revision 1（15 个任务，含前置任务 baseline-green）；授权 Agent 在本地把任务分支快进合并进 main；仓库没有远程，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户原话"保留为 1.86 不变" · 明确决定 · MSRV 保持 `rust-version = "1.86"`，`scripts/check.sh` 中的 1.86 检查保留；只有某个任务确实需要更新的语言特性或依赖时，才在该任务里提出，由用户决定是否提高 · 影响全部任务。

@@ -2,22 +2,14 @@
   "schema_version": 3,
   "id": "sdk-overhaul",
   "title": "FDS Rust SDK 设计重构（0.1.0）",
-  "revision": 2,
+  "revision": 3,
   "status": "running",
   "base_branch": "main",
   "merge_mode": "local",
-  "approved_revision": 2,
-  "approval_ref": "2026-11-07 用户回答待答问题 upload-read-timeout：\"(a) 新增任务修复\"，即新增 upload-idle-timeout 任务；授权范围同 revision 1（本地快进合并，不推送）",
+  "approved_revision": 3,
+  "approval_ref": "2026-11-07 用户回答待答问题 cslb-public-tools：\"改为内部并删除\"，即新增 cslb-internal 任务；授权范围同前（本地快进合并，不推送）",
   "max_parallel": 3,
-  "pending_questions": [
-    {
-      "id": "cslb-public-tools",
-      "text": "fds::cslb 中除 resolver 外的独立负载均衡工具（LoadBalancer、Service、Strategy、HashedStrategy、StaticService、Group、Metrics 等）是否改为 crate 内部？改则未被 Client 使用的部分作为死代码删除，README 中\"独立工具位于 fds::cslb\"一句去掉；不改则保持公开。",
-      "tasks": [
-        "docs-release"
-      ]
-    }
-  ],
+  "pending_questions": [],
   "tasks": [
     {
       "key": "request-timeout",
@@ -88,7 +80,7 @@
       "type": "refactor",
       "document": "tasks/internal-cleanup.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "public-surface"
       ],
@@ -102,9 +94,10 @@
       "type": "feat",
       "document": "tasks/fluent-object.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
-        "internal-cleanup"
+        "internal-cleanup",
+        "cslb-internal"
       ],
       "resources": [
         "*"
@@ -116,7 +109,7 @@
       "type": "feat",
       "document": "tasks/fluent-bucket.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "fluent-object"
       ],
@@ -136,7 +129,7 @@
       "type": "feat",
       "document": "tasks/fluent-listing-delete.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "fluent-object"
       ],
@@ -155,7 +148,7 @@
       "type": "feat",
       "document": "tasks/fluent-multipart-manager.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "fluent-object"
       ],
@@ -175,7 +168,7 @@
       "type": "feat",
       "document": "tasks/typed-responses.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "fluent-bucket",
         "fluent-listing-delete",
@@ -191,7 +184,7 @@
       "type": "feat",
       "document": "tasks/object-metadata.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "typed-responses"
       ],
@@ -205,7 +198,7 @@
       "type": "feat",
       "document": "tasks/credentials-provider.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "object-metadata"
       ],
@@ -226,7 +219,7 @@
       "type": "feat",
       "document": "tasks/idempotent-retry.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "object-metadata"
       ],
@@ -240,7 +233,7 @@
       "type": "docs",
       "document": "tasks/docs-release.md",
       "status": "planned",
-      "reviewed_revision": 2,
+      "reviewed_revision": 3,
       "depends_on": [
         "credentials-provider",
         "idempotent-retry"
@@ -279,6 +272,27 @@
         "crates/fds/tests",
         "crates/fds_cli/src/config.rs"
       ]
+    },
+    {
+      "key": "cslb-internal",
+      "title": "cslb 独立工具改为内部并删除死代码",
+      "type": "refactor",
+      "document": "tasks/cslb-internal.md",
+      "status": "planned",
+      "reviewed_revision": 3,
+      "depends_on": [
+        "internal-cleanup"
+      ],
+      "resources": [
+        "crates/fds/src/cslb",
+        "crates/fds/src/lib.rs",
+        "crates/fds/Cargo.toml",
+        "Cargo.lock",
+        "README.md",
+        "docs",
+        "crates/fds/tests",
+        "crates/fds/examples"
+      ]
     }
   ],
   "acceptance": null,
@@ -290,6 +304,14 @@
         "docs-release"
       ],
       "at": "2026-11-07T11:28:27Z"
+    },
+    {
+      "revision": 3,
+      "reason": "用户决定 cslb 独立负载均衡工具改为 crate 内部并删除未使用部分，新增任务 cslb-internal",
+      "affects": [
+        "docs-release"
+      ],
+      "at": "2026-11-07T12:43:39Z"
     }
   ]
 }
