@@ -1,5 +1,5 @@
 use chrono::{TimeZone, Utc};
-use fds::object::{ByteRange, ObjectMetadata, UploadBody};
+use fds::object::{ByteRange, UploadBody, UserMetadata};
 use fds::Client;
 use http::Method;
 use std::time::Duration;
@@ -42,19 +42,17 @@ fn ranges_validate_and_format_without_network() {
 
 #[test]
 fn metadata_preserves_empty_normalizes_and_borrows() {
-    let m: ObjectMetadata = serde_json::from_str(r#"{"rawMeta":{"entry":[{"key":"Content-Type","value":"old"},{"key":"CONTENT-TYPE","value":""},{"key":"X-Xiaomi-Meta-ID","value":"42"}]}}"#).unwrap();
-    assert_eq!(m.get("Content-Type"), Some(""));
-    assert_eq!(m.get("absent"), None);
-    assert_eq!(m.get("x-XIAOMI-meta-id"), Some("42"));
-    assert_eq!(m.iter().count(), 2);
-    let json: serde_json::Value = serde_json::from_slice(&m.serialize().unwrap()).unwrap();
-    assert_eq!(json["rawMeta"]["content-type"], "");
-    assert!(json["rawMeta"].get("Content-Type").is_none());
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("content-type", "".parse().unwrap());
-    let from_headers = ObjectMetadata::from_headers(&headers);
-    assert_eq!(from_headers.get("CONTENT-TYPE"), Some(""));
-    assert_eq!(from_headers.get("x-xiaomi-meta-id"), None);
+    let info: fds::object::ObjectBasicInfo = serde_json::from_str(r#"{"metadataBean":{"rawMeta":{"entry":[{"key":"Content-Type","value":"old"},{"key":"CONTENT-TYPE","value":""},{"key":"X-Xiaomi-Meta-ID","value":"42"}]}}}"#).unwrap();
+    let m = info.metadata;
+    assert_eq!(m.attributes.content_type.as_deref(), Some(""));
+    assert_eq!(m.attributes.cache_control, None);
+    assert_eq!(m.user_metadata.get("ID"), Some("42"));
+    assert_eq!(m.user_metadata.get("absent"), None);
+    assert_eq!(m.entries().count(), 2);
+    let mut user = UserMetadata::new();
+    user.insert("Key", "");
+    assert_eq!(user.get("KEY"), Some(""));
+    assert_eq!(user.iter().collect::<Vec<_>>(), [("key", "")]);
 }
 
 #[tokio::test]
@@ -98,12 +96,12 @@ async fn builders_preserve_encoded_keys_body_and_metadata() {
         .create_async()
         .await;
     let client = client(server.url());
-    let mut md = ObjectMetadata::new();
-    md.set("X-Xiaomi-Meta-ID", "42").unwrap();
+    let mut md = UserMetadata::new();
+    md.insert("ID", "42");
     assert_eq!(
         client
             .put_object("b", "a/b +", b"hello".to_vec())
-            .metadata(md)
+            .user_metadata(md)
             .content_type("text/plain")
             .send()
             .await
@@ -119,8 +117,11 @@ async fn builders_preserve_encoded_keys_body_and_metadata() {
         .unwrap();
     assert_eq!(output.status(), http::StatusCode::PARTIAL_CONTENT);
     assert!(output.is_partial());
-    assert_eq!(output.headers()["content-range"], "bytes 0-4/10");
-    assert_eq!(output.metadata().get("Content-Type"), Some("text/plain"));
+    assert_eq!(output.headers().get("Content-Range"), Some("bytes 0-4/10"));
+    assert_eq!(
+        output.metadata().attributes.content_type.as_deref(),
+        Some("text/plain")
+    );
     assert_eq!(output.bytes().await.unwrap(), "hello");
     put.assert_async().await;
     get.assert_async().await;
@@ -531,7 +532,7 @@ async fn every_object_builder_validates_names_and_timeout_before_sending() {
                 .await
                 .map(drop),
             client
-                .set_object_metadata(bucket, object, ObjectMetadata::new())
+                .set_object_metadata(bucket, object)
                 .timeout(t)
                 .send()
                 .await,
@@ -567,4 +568,184 @@ async fn every_object_builder_validates_names_and_timeout_before_sending() {
             );
         }
     }
+}
+
+/// A user metadata key named like a system header is prefixed and never
+/// replaces the typed header; a reserved system key (`storage-class`) is sent
+/// as given and read back as an attribute.
+#[tokio::test]
+async fn user_metadata_and_system_headers_never_conflict() {
+    let mut server = mockito::Server::new_async().await;
+    let user: UserMetadata = [
+        ("Content-Type", "user/type"),
+        ("storage-class", "STANDARD_IA"),
+        ("owner", "me"),
+    ]
+    .into_iter()
+    .collect();
+    let put = server
+        .mock("PUT", "/b/o")
+        .match_header("content-type", "text/plain")
+        .match_header("x-xiaomi-meta-content-type", "user/type")
+        .match_header("x-xiaomi-meta-storage-class", "STANDARD_IA")
+        .match_header("x-xiaomi-meta-owner", "me")
+        .with_body("{}")
+        .create_async()
+        .await;
+    let set = server
+        .mock("PUT", "/b/o")
+        .match_query("setMetaData=")
+        .match_body(mockito::Matcher::Exact(
+            r#"{"rawMeta":{"content-type":"text/plain","x-xiaomi-meta-content-type":"user/type","x-xiaomi-meta-owner":"me","x-xiaomi-meta-storage-class":"STANDARD_IA"}}"#.into(),
+        ))
+        .create_async()
+        .await;
+    let head = server
+        .mock("HEAD", "/b/o")
+        .with_header("content-type", "text/plain")
+        .with_header("x-xiaomi-meta-content-type", "user/type")
+        .with_header("x-xiaomi-meta-storage-class", "STANDARD_IA")
+        .with_header("x-xiaomi-meta-owner", "me")
+        .create_async()
+        .await;
+    let client = client(server.url());
+    client
+        .put_object("b", "o", b"x".to_vec())
+        .content_type("text/plain")
+        .user_metadata(user.clone())
+        .send()
+        .await
+        .unwrap();
+    client
+        .set_object_metadata("b", "o")
+        .content_type("text/plain")
+        .user_metadata(user)
+        .send()
+        .await
+        .unwrap();
+    let md = client.head_object("b", "o").send().await.unwrap().unwrap();
+    assert_eq!(md.attributes.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(
+        md.attributes.storage_class.as_ref().map(|c| c.as_str()),
+        Some("STANDARD_IA")
+    );
+    let expected: UserMetadata = [("content-type", "user/type"), ("owner", "me")]
+        .into_iter()
+        .collect();
+    assert_eq!(md.user_metadata, expected);
+    put.assert_async().await;
+    set.assert_async().await;
+    head.assert_async().await;
+}
+
+/// Header-borne user metadata is checked at send, before anything is sent;
+/// the set-metadata JSON body accepts any string.
+#[tokio::test]
+async fn user_metadata_is_validated_per_transport_at_send() {
+    let mut server = mockito::Server::new_async().await;
+    let set = server
+        .mock("PUT", "/b/o")
+        .match_query("setMetaData=")
+        .match_body(mockito::Matcher::Exact(
+            r#"{"rawMeta":{"x-xiaomi-meta-name":"line\nbreak"}}"#.into(),
+        ))
+        .create_async()
+        .await;
+    let client = client(server.url());
+    for user in [[("bad key", "v")], [("name", "line\nbreak")]] {
+        let user: UserMetadata = user.into_iter().collect();
+        let error = client
+            .put_object("b", "o", b"x".to_vec())
+            .user_metadata(user.clone())
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
+        assert_eq!(error.dispatch(), fds::Dispatch::NotSent);
+        let error = client
+            .presign_object("b", "o")
+            .expires_in(std::time::Duration::from_secs(60))
+            .user_metadata(user)
+            .build()
+            .unwrap_err();
+        assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
+    }
+    client
+        .set_object_metadata("b", "o")
+        .user_metadata([("name", "line\nbreak")].into_iter().collect())
+        .send()
+        .await
+        .unwrap();
+    set.assert_async().await;
+}
+
+/// An empty key or one that already carries the prefix (any case) fails
+/// every builder that takes user metadata, before anything is sent.
+#[tokio::test]
+async fn empty_and_prefixed_user_metadata_keys_are_never_sent() {
+    let mut server = mockito::Server::new_async().await;
+    let any = server
+        .mock("PUT", mockito::Matcher::Any)
+        .match_query(mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let client = client(server.url());
+    let path = std::env::temp_dir().join(format!("fds-user-metadata-{}.bin", std::process::id()));
+    std::fs::write(&path, b"abcdefgh").unwrap();
+    let check = |result: fds::Result<()>, builder: &str, key: &str| {
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.kind(),
+            fds::ErrorKind::InvalidInput,
+            "{builder} {key:?}"
+        );
+        assert_eq!(
+            error.dispatch(),
+            fds::Dispatch::NotSent,
+            "{builder} {key:?}"
+        );
+    };
+    for key in ["", "x-xiaomi-meta-a", "X-XIAOMI-META-a", "x-xiaomi-meta-"] {
+        let user: UserMetadata = [(key, "v")].into_iter().collect();
+        let put = client
+            .put_object("b", "o", b"x".to_vec())
+            .user_metadata(user.clone())
+            .send()
+            .await;
+        check(put.map(drop), "put", key);
+        let create = client
+            .create_multipart_upload("b", "o")
+            .user_metadata(user.clone())
+            .send()
+            .await;
+        check(create.map(drop), "create", key);
+        let complete = client
+            .complete_multipart_upload("b", "o", "u", [])
+            .user_metadata(user.clone())
+            .send()
+            .await;
+        check(complete.map(drop), "complete", key);
+        let upload = client
+            .upload_file("b", "o", &path)
+            .part_size(4)
+            .user_metadata(user.clone())
+            .start()
+            .await;
+        check(upload.map(drop), "upload_file", key);
+        let set = client
+            .set_object_metadata("b", "o")
+            .user_metadata(user.clone())
+            .send()
+            .await;
+        check(set, "set_object_metadata", key);
+        let presign = client
+            .presign_object("b", "o")
+            .expires_in(std::time::Duration::from_secs(60))
+            .user_metadata(user)
+            .build();
+        check(presign.map(drop), "presign", key);
+    }
+    let _ = std::fs::remove_file(&path);
+    any.assert_async().await;
 }

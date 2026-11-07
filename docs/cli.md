@@ -150,7 +150,7 @@ fds_cli object get-metadata demo-bucket demo/hello.txt # 回读并核对类型�
 fds_cli object get demo-bucket demo/hello.txt # 验证正文仍为 hello fds
 ```
 
-设置时提供需要保留的可写元数据，不假设服务执行 merge。共享参数包括 `--meta`、`--content-type`、`--cache-control`、`--content-encoding`、`--content-md5`；同一键不能同时通过专用参数和 `--meta` 提供。
+设置时提供需要保留的可写元数据，不假设服务执行 merge。共享参数包括 `--meta`、`--content-type`、`--cache-control`、`--content-encoding`、`--content-md5`；同一键不能同时通过专用参数和 `--meta` 提供。`--meta` 的 key 忽略大小写，只接受这四个系统头和 `x-xiaomi-meta-*`，其他 key 报 `Invalid metadata`；去掉前缀后为空（`x-xiaomi-meta-=v`）或仍带前缀（`x-xiaomi-meta-x-xiaomi-meta-a=v`）的 key 由 SDK 报错，请求不发出。`object head`、`object get-metadata` 输出响应头中的协议元数据头与全部 `x-xiaomi-meta-*`，`object basic-info` 的 `metadata` 输出全部原始条目，均按 key 排序。
 
 ## 对象列表与分页
 

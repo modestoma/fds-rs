@@ -13,9 +13,103 @@ pub fn parse_method(s: &str) -> Result<Method> {
     })
 }
 
-/// Parse repeated `key=value` into an `ObjectMetadata`.
-pub fn parse_meta(pairs: &[String]) -> Result<ObjectMetadata> {
-    let mut md = ObjectMetadata::new();
+/// The metadata of a write command: the typed system headers and the
+/// `x-xiaomi-meta-*` user entries.
+#[derive(Default)]
+pub struct Metadata {
+    pub(crate) content_type: Option<String>,
+    pub(crate) cache_control: Option<String>,
+    pub(crate) content_encoding: Option<String>,
+    pub(crate) content_md5: Option<String>,
+    pub(crate) user: UserMetadata,
+}
+
+const META_PREFIX: &str = "x-xiaomi-meta-";
+
+impl Metadata {
+    /// The typed slot for a lowercase header name.
+    fn slot(&mut self, key: &str) -> Option<&mut Option<String>> {
+        match key {
+            "content-type" => Some(&mut self.content_type),
+            "cache-control" => Some(&mut self.cache_control),
+            "content-encoding" => Some(&mut self.content_encoding),
+            "content-md5" => Some(&mut self.content_md5),
+            _ => None,
+        }
+    }
+
+    /// Set one `--meta` entry. Keys ignore case; a later entry replaces an
+    /// earlier one. Only the typed headers and `x-xiaomi-meta-*` are accepted.
+    fn set(&mut self, k: &str, v: &str) -> Result<()> {
+        let key = k.to_ascii_lowercase();
+        if let Some(slot) = self.slot(&key) {
+            *slot = Some(v.to_string());
+        } else if let Some(user) = key.strip_prefix(META_PREFIX) {
+            self.user.insert(user, v);
+        } else {
+            return Err(fds::Error::new(
+                fds::ErrorKind::InvalidInput,
+                format!("Invalid metadata: {k}"),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn contains(&mut self, key: &str) -> bool {
+        self.slot(key).is_some_and(|slot| slot.is_some())
+    }
+
+    /// The user entries, for builders that take only those.
+    pub fn into_user(self) -> UserMetadata {
+        self.user
+    }
+}
+
+/// Apply a [`Metadata`] to a builder with the SDK's typed metadata setters.
+macro_rules! apply_metadata {
+    ($request:expr, $metadata:expr) => {{
+        let $crate::util::Metadata {
+            content_type,
+            cache_control,
+            content_encoding,
+            content_md5,
+            user,
+        } = $metadata;
+        let mut request = $request;
+        if let Some(value) = content_type {
+            request = request.content_type(value);
+        }
+        if let Some(value) = cache_control {
+            request = request.cache_control(value);
+        }
+        if let Some(value) = content_encoding {
+            request = request.content_encoding(value);
+        }
+        if let Some(value) = content_md5 {
+            request = request.content_md5(value);
+        }
+        request.user_metadata(user)
+    }};
+}
+pub(crate) use apply_metadata;
+
+/// Apply a [`Metadata`] to a presigned URL: only `Content-Type`,
+/// `Content-MD5` and the user entries are signed, so the other headers do
+/// not change the URL.
+pub fn presign_metadata(mut request: PresignObject, metadata: Metadata) -> PresignObject {
+    if let Some(value) = metadata.content_type {
+        request = request.content_type(value);
+    }
+    if let Some(value) = metadata.content_md5 {
+        request = request.content_md5(value);
+    }
+    request.user_metadata(metadata.user)
+}
+
+/// Parse repeated `key=value` into a [`Metadata`].
+pub fn parse_meta(pairs: &[String]) -> Result<Metadata> {
+    let mut md = Metadata::default();
     for p in pairs {
         let (k, v) = p
             .split_once('=')
@@ -136,7 +230,7 @@ pub struct MetadataArgs {
     content_md5: Option<String>,
 }
 impl MetadataArgs {
-    pub fn build(&self) -> Result<ObjectMetadata> {
+    pub fn build(&self) -> Result<Metadata> {
         let mut md = parse_meta(&self.meta)?;
         for (key, value) in [
             ("content-type", &self.content_type),
@@ -145,7 +239,7 @@ impl MetadataArgs {
             ("content-md5", &self.content_md5),
         ] {
             if let Some(value) = value {
-                if md.get(key).is_some() {
+                if md.contains(key) {
                     bail!("{key} supplied both as a flag and --meta");
                 }
                 md.set(key, value)?;

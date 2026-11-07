@@ -1,4 +1,4 @@
-use super::util::parse_meta;
+use super::util::{apply_metadata, parse_meta};
 use anyhow::{anyhow, bail, Result};
 use fds::{object::*, *};
 use http::Method;
@@ -74,7 +74,7 @@ pub async fn smoke(
     let put = client
         .put_object(bucket, hello.clone(), content.to_vec())
         .content_type("text/plain")
-        .metadata(parse_meta(&["x-xiaomi-meta-smoke=1".into()])?)
+        .user_metadata(parse_meta(&["x-xiaomi-meta-smoke=1".into()])?.into_user())
         .send()
         .await;
     rep.check("put_object", put);
@@ -122,28 +122,26 @@ pub async fn smoke(
     match client.get_object_metadata(bucket, &hello).send().await {
         Ok(md) => rep.assert(
             "get_object_metadata (smoke=1)",
-            md.get("x-xiaomi-meta-smoke") == Some("1"),
+            md.user_metadata.get("smoke") == Some("1"),
         ),
         Err(e) => rep.fail("get_object_metadata", e),
     }
 
     // metadata write + read back
-    let set_md = client
-        .set_object_metadata(
-            bucket,
-            hello.clone(),
-            parse_meta(&[
-                "x-xiaomi-meta-smoke=2".into(),
-                "content-type=text/plain".into(),
-            ])?,
-        )
-        .send()
-        .await;
+    let set_md = apply_metadata!(
+        client.set_object_metadata(bucket, hello.clone()),
+        parse_meta(&[
+            "x-xiaomi-meta-smoke=2".into(),
+            "content-type=text/plain".into(),
+        ])?
+    )
+    .send()
+    .await;
     rep.check("set_object_metadata", set_md);
     match client.get_object_metadata(bucket, &hello).send().await {
         Ok(md) => rep.assert(
             "metadata updated (smoke=2)",
-            md.get("x-xiaomi-meta-smoke") == Some("2"),
+            md.user_metadata.get("smoke") == Some("2"),
         ),
         Err(e) => rep.fail("metadata updated", e),
     }

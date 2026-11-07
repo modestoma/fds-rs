@@ -18,7 +18,7 @@ use fds::oauth::{AppBucket, AppBucketList};
 use fds::object::StorageClass;
 use fds::object::{
     CopyObjectOutput, DeleteObjectFailure, ObjectBasicInfo, ObjectListing, ObjectMetadata,
-    ObjectSummary, PutObjectOutput,
+    ObjectSummary, PutObjectOutput, UserMetadata,
 };
 use fds::{Client, ErrorKind};
 use serde::de::DeserializeOwned;
@@ -176,20 +176,58 @@ fn delete_failure_is_strict_snake_case() {
     .is_err());
 }
 
+/// The entry-list metadata form, read through `ObjectBasicInfo.metadataBean`.
+fn bean(metadata: Value) -> serde_json::Result<ObjectMetadata> {
+    parse::<ObjectBasicInfo>(&json!({ "metadataBean": metadata })).map(|info| info.metadata)
+}
+
 #[test]
 fn object_metadata_model() {
-    let empty = format!("{:?}", ObjectMetadata::new());
-    assert_eq!(debug::<ObjectMetadata>(&json!({})), empty);
-    assert_eq!(debug::<ObjectMetadata>(&json!({"rawMeta": null})), empty);
-    assert_eq!(debug::<ObjectMetadata>(&json!({"rawMeta": {}})), empty);
+    let empty = ObjectMetadata::default();
+    assert_eq!(bean(json!({})).unwrap(), empty);
+    assert_eq!(bean(json!(null)).unwrap(), empty);
+    assert_eq!(bean(json!({"rawMeta": null})).unwrap(), empty);
+    assert_eq!(bean(json!({"rawMeta": {}})).unwrap(), empty);
     let full = json!({"rawMeta": {"entry": [{"key": "Content-Type", "value": "a/b"}]}});
-    let parsed: ObjectMetadata = parse(&full).unwrap();
-    assert_eq!(parsed.get("content-type"), Some("a/b"));
+    let parsed = bean(full).unwrap();
+    assert_eq!(parsed.attributes.content_type.as_deref(), Some("a/b"));
+    assert!(parsed.user_metadata.is_empty());
     let unknown = json!({"rawMeta": {"entry": [{"key": "content-type", "value": "a/b", "x": 1}], "y": 2}, "z": 3});
-    assert_eq!(parse::<ObjectMetadata>(&unknown).unwrap(), parsed);
+    assert_eq!(bean(unknown).unwrap(), parsed);
     // Only `rawMeta` itself is null-tolerant.
-    assert!(parse::<ObjectMetadata>(&json!({"rawMeta": {"entry": null}})).is_err());
-    assert!(parse::<ObjectMetadata>(&json!({"rawMeta": {"entry": [{"key": "k"}]}})).is_err());
+    assert!(bean(json!({"rawMeta": {"entry": null}})).is_err());
+    assert!(bean(json!({"rawMeta": {"entry": [{"key": "k"}]}})).is_err());
+}
+
+#[test]
+fn object_metadata_entry_list_splits_attributes_and_user_metadata() {
+    let parsed = bean(json!({"rawMeta": {"entry": [
+        {"key": "content-type", "value": "text/plain"},
+        {"key": "content-length", "value": "12"},
+        {"key": "last-modified", "value": "Sun, 06 Nov 1994 08:49:37 GMT"},
+        {"key": "x-xiaomi-meta-content-length", "value": "not a number"},
+        {"key": "x-xiaomi-meta-storage-class", "value": "Standard"},
+        {"key": "x-xiaomi-meta-hash-crc64ecma", "value": "99"},
+        {"key": "X-Xiaomi-Meta-Owner", "value": "me"},
+        {"key": "x-xiaomi-meta-content-type", "value": "user"},
+    ]}}))
+    .unwrap();
+    let a = &parsed.attributes;
+    assert_eq!(a.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(a.content_length, Some(12));
+    assert_eq!(a.last_modified, DateTime::from_timestamp(784_111_777, 0));
+    // An invalid number reads as `None`; the entry keeps it.
+    assert_eq!(a.meta_content_length, None);
+    assert!(a.storage_class.as_ref().unwrap().is_standard());
+    assert_eq!(a.crc64ecma.as_deref(), Some("99"));
+    let user: UserMetadata = [("owner", "me"), ("content-type", "user")]
+        .into_iter()
+        .collect();
+    assert_eq!(parsed.user_metadata, user);
+    assert_eq!(parsed.entries().count(), 8);
+    assert!(parsed
+        .entries()
+        .any(|entry| entry == ("x-xiaomi-meta-content-length", "not a number")));
 }
 
 #[test]

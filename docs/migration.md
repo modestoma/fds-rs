@@ -9,7 +9,7 @@
 | 直接写配置和凭据字段 | `Client::builder().endpoint(url).credentials(id, secret).build()?`，构建后不可变、可 Clone |
 | 下载配置 | `DownloadOptions::builder()` 的具名选项，构造时校验；`Downloader::new(client, options)` |
 | 下载请求 | `DownloadRequest::new(bucket, key, path)`，`PathBuf` 路径和 `ByteRange`；成功才原子替换目标 |
-| Metadata | `get` 返回 `Option<&str>`；`iter`/`as_map` 借用，克隆由调用者显式执行 |
+| Metadata | 读取结果 `ObjectMetadata` 分为类型化的 `attributes` 与 `user_metadata`；写入使用专用 setter 与 `UserMetadata` |
 | multipart 完成 | `session.complete(vec![part1, part2])` 或传入拥有 receipts 的迭代器；progress.parts 直接是 Vec |
 | 上传 | 唯一 `PutObjectRequest` / `UploadPartRequest` 拥有 UploadBody，`send` 与 Client 上传方法均消耗请求 |
 | 对象读取 | `GetObjectRequest::new(bucket, key).send(&client)` 返回 `GetObjectOutput`，用 `chunk()` 流式读取；`ByteRange` 表达单段范围 |

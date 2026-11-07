@@ -32,7 +32,8 @@
 //! upload and returns the session, and [`MultipartUpload::upload`] runs it
 //! once. See [`MultipartUpload`] for inspecting progress and recovering
 //! manually after a failure.
-use crate::object::{ObjectMetadata, PutObjectOutput};
+use crate::metadata::{write_metadata_methods, WriteMetadata};
+use crate::object::PutObjectOutput;
 use crate::{Client, Dispatch, Error, ErrorKind, Result};
 use futures_util::future::{Fuse, FutureExt};
 use futures_util::{StreamExt, TryStreamExt};
@@ -77,7 +78,7 @@ pub struct UploadFile {
     part_size: u64,
     concurrency: usize,
     cleanup: CleanupPolicy,
-    metadata: Option<ObjectMetadata>,
+    metadata: WriteMetadata,
 }
 
 impl UploadFile {
@@ -102,11 +103,9 @@ impl UploadFile {
         self
     }
 
-    /// Metadata sent with the initiation and again with the completion.
-    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
-        self.metadata = Some(metadata);
-        self
-    }
+    // The typed headers and user metadata are sent with the initiation and
+    // again with the completion.
+    write_metadata_methods!("Empty values are not sent.");
 
     /// Validate, open the file and initiate the upload exactly once.
     ///
@@ -137,13 +136,12 @@ impl UploadFile {
         if count > u64::from(MAX_PART_NUMBER) {
             return Err(Error::invalid_input("managed upload exceeds 10000 parts"));
         }
-        let mut create = self
+        let session = self
             .client
-            .create_multipart_upload(&self.bucket, &self.object);
-        if let Some(metadata) = &self.metadata {
-            create = create.metadata(metadata.clone());
-        }
-        let session = create.send().await?;
+            .create_multipart_upload(&self.bucket, &self.object)
+            .write_metadata(self.metadata.clone())
+            .send()
+            .await?;
         Ok(MultipartUpload {
             file,
             modified: metadata.modified().ok(),
@@ -194,7 +192,7 @@ impl Client {
             part_size: DEFAULT_PART_SIZE,
             concurrency: DEFAULT_CONCURRENCY,
             cleanup: CleanupPolicy::Preserve,
-            metadata: None,
+            metadata: WriteMetadata::default(),
         }
     }
 }
@@ -283,7 +281,7 @@ impl std::fmt::Debug for MultipartProgress {
 pub struct MultipartUpload {
     file: tokio::fs::File,
     modified: Option<SystemTime>,
-    metadata: Option<ObjectMetadata>,
+    metadata: WriteMetadata,
     part_size: usize,
     concurrency: usize,
     cleanup: CleanupPolicy,
@@ -356,10 +354,11 @@ impl MultipartUpload {
         }
         // Set BEFORE polling the network future, so external drop is recoverable.
         self.progress.state = MultipartState::CompletionUnknown;
-        let mut complete = self.progress.session.complete(self.progress.parts.clone());
-        if let Some(metadata) = &self.metadata {
-            complete = complete.metadata(metadata.clone());
-        }
+        let complete = self
+            .progress
+            .session
+            .complete(self.progress.parts.clone())
+            .write_metadata(self.metadata.clone());
         const UNKNOWN: &str = "multipart completion outcome unknown; reconcile before retrying";
         let output = tokio::select! {
             biased;

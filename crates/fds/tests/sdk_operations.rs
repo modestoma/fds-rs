@@ -111,7 +111,7 @@ async fn sdk_only_metadata_forms_remain_distinct() {
         .await
         .unwrap();
     assert_eq!(output.size, 5);
-    assert_eq!(output.metadata.get("x-xiaomi-meta-tag"), Some("v"));
+    assert_eq!(output.metadata.user_metadata.get("tag"), Some("v"));
     basic.assert_async().await;
     let get = server
         .mock("GET", "/b/a%2Fb")
@@ -120,12 +120,12 @@ async fn sdk_only_metadata_forms_remain_distinct() {
         .with_body("not JSON")
         .create_async()
         .await;
-    let mut metadata = client.get_object_metadata("b", "a/b").send().await.unwrap();
-    assert_eq!(metadata.get("X-XIAOMI-META-TAG"), Some("header-value"));
+    let metadata = client.get_object_metadata("b", "a/b").send().await.unwrap();
+    assert_eq!(metadata.user_metadata.get("TAG"), Some("header-value"));
     get.assert_async().await;
-    // Use a fresh metadata map so transport response headers are not sent back.
-    metadata = fds::object::ObjectMetadata::new();
-    metadata.set("x-xiaomi-meta-tag", "new-value").unwrap();
+    // Send only the user metadata, never the transport response headers.
+    let mut user = metadata.user_metadata;
+    user.insert("tag", "new-value");
     let set = server
         .mock("PUT", "/b/a%2Fb")
         .match_query("setMetaData=")
@@ -135,7 +135,8 @@ async fn sdk_only_metadata_forms_remain_distinct() {
         .create_async()
         .await;
     client
-        .set_object_metadata("b", "a/b", metadata)
+        .set_object_metadata("b", "a/b")
+        .user_metadata(user)
         .send()
         .await
         .unwrap();

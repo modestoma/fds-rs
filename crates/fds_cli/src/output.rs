@@ -29,7 +29,8 @@ pub fn put(v: &PutObjectOutput) -> Value {
 }
 pub fn basic(v: &ObjectBasicInfo) -> Value {
     json!({"allowOutsideAccess":v.allow_outside_access,"size":v.size,"uploadTime":millis(v.upload_time),
-        "storageClass":v.storage_class,"metadata":v.metadata.as_map()})
+        "storageClass":v.storage_class,
+        "metadata":v.metadata.entries().collect::<std::collections::BTreeMap<_, _>>()})
 }
 pub fn listing(v: &ObjectListing) -> Value {
     json!({"name":v.bucket_name,"prefix":v.prefix,"maxKeys":v.max_keys,"marker":v.marker,

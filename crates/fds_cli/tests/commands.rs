@@ -648,13 +648,11 @@ async fn read_retries_and_presign_metadata_reach_the_sdk() {
         .credentials("id", "secret")
         .build()
         .unwrap();
-    let mut metadata = fds::object::ObjectMetadata::new();
-    metadata.set("content-type", "text/plain").unwrap();
     let expected = client
         .presign_object("b", "k")
         .method(http::Method::PUT)
         .expires_at(chrono::DateTime::from_timestamp_millis(expiration).unwrap())
-        .metadata(metadata)
+        .content_type("text/plain")
         .build()
         .unwrap();
     assert_eq!(url.trim(), expected.as_str());
@@ -918,4 +916,42 @@ async fn delete_prefix_keeps_the_client_error_for_a_broken_listing() {
         "{stderr}"
     );
     list.assert_async().await;
+}
+
+#[tokio::test]
+async fn empty_and_prefixed_user_metadata_keys_fail_before_sending() {
+    let mut server = Server::new_async().await;
+    let any = server
+        .mock("PUT", Matcher::Any)
+        .match_query(Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    for (meta, message) in [
+        (
+            "x-xiaomi-meta-=v",
+            "error: InvalidInput: user metadata key must not be empty",
+        ),
+        (
+            "x-xiaomi-meta-X-Xiaomi-Meta-a=v",
+            "error: InvalidInput: user metadata key \"x-xiaomi-meta-a\" must not include the x-xiaomi-meta- prefix",
+        ),
+    ] {
+        for args in [
+            &["object", "put", "b", "k", "--text", "hi", "--meta", meta][..],
+            &["object", "set-metadata", "b", "k", "--meta", meta][..],
+            &["object", "presign", "b", "k", "--meta", meta][..],
+            &["multipart", "init", "b", "k", "--meta", meta][..],
+        ] {
+            let result = run(&server.url(), args).await;
+            assert_eq!(result.status.code(), Some(1), "{args:?}");
+            assert!(result.stdout.is_empty(), "{args:?}");
+            assert_eq!(
+                String::from_utf8(result.stderr).unwrap().trim_end(),
+                message,
+                "{args:?}"
+            );
+        }
+    }
+    any.assert_async().await;
 }

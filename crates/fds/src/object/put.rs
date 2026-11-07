@@ -1,8 +1,9 @@
 //! Single-request object uploads.
 
 use super::{insert_header_opt, validate_object};
-use super::{ObjectMetadata, UploadBody};
+use super::{UploadBody, UserMetadata};
 use crate::client::ClientRequest;
+use crate::metadata::WriteMetadata;
 use crate::{Client, Result};
 use chrono::{DateTime, Utc};
 use http::Method;
@@ -19,13 +20,9 @@ pub struct PutObject {
     bucket: String,
     object: String,
     body: UploadBody,
-    cache_control: Option<String>,
     content_disposition: Option<String>,
-    content_encoding: Option<String>,
-    content_type: Option<String>,
-    content_md5: Option<String>,
     expect: Option<String>,
-    metadata: Option<ObjectMetadata>,
+    metadata: WriteMetadata,
     expires: Option<DateTime<Utc>>,
     timeout: Option<Duration>,
 }
@@ -55,8 +52,10 @@ crate::de::lenient! {
 }
 
 impl PutObject {
-    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
-        self.metadata = Some(metadata);
+    /// User metadata, sent as `x-xiaomi-meta-*` request headers; replaces any
+    /// earlier call. See [`UserMetadata`] for the key rules.
+    pub fn user_metadata(mut self, metadata: UserMetadata) -> Self {
+        self.metadata.user = metadata;
         self
     }
     /// Response-signature expiry in UTC, not object TTL.
@@ -81,9 +80,9 @@ impl PutObject {
         self
     }
 
-    /// Empty values are not sent.
+    /// The `Cache-Control` of the object. Empty values are not sent.
     pub fn cache_control(mut self, value: impl Into<String>) -> Self {
-        self.cache_control = Some(value.into());
+        self.metadata.cache_control = Some(value.into());
         self
     }
 
@@ -93,15 +92,16 @@ impl PutObject {
         self
     }
 
-    /// Empty values are not sent.
+    /// The `Content-Encoding` of the object. Empty values are not sent.
     pub fn content_encoding(mut self, value: impl Into<String>) -> Self {
-        self.content_encoding = Some(value.into());
+        self.metadata.content_encoding = Some(value.into());
         self
     }
 
-    /// Empty values are not sent. Not inferred from the object name or body.
+    /// The `Content-Type` of the object. Empty values are not sent. Not
+    /// inferred from the object name or body.
     pub fn content_type(mut self, value: impl Into<String>) -> Self {
-        self.content_type = Some(value.into());
+        self.metadata.content_type = Some(value.into());
         self
     }
 
@@ -109,7 +109,7 @@ impl PutObject {
     /// calculation; byte bodies are hashed automatically. Empty values are not
     /// sent.
     pub fn content_md5(mut self, value: impl Into<String>) -> Self {
-        self.content_md5 = Some(value.into());
+        self.metadata.content_md5 = Some(value.into());
         self
     }
 
@@ -124,21 +124,22 @@ impl PutObject {
     pub async fn send(self) -> Result<PutObjectOutput> {
         validate_object(&self.bucket, &self.object)?;
         let mut headers = HeaderMap::new();
+        let metadata = &self.metadata;
         for (name, value) in [
-            ("cache-control", &self.cache_control),
-            ("content-disposition", &self.content_disposition),
-            ("content-encoding", &self.content_encoding),
-            ("content-type", &self.content_type),
-            ("content-md5", &self.content_md5),
-            ("expect", &self.expect),
+            ("cache-control", metadata.cache_control.as_deref()),
+            ("content-disposition", self.content_disposition.as_deref()),
+            ("content-encoding", metadata.content_encoding.as_deref()),
+            ("content-type", metadata.content_type.as_deref()),
+            ("content-md5", metadata.content_md5.as_deref()),
+            ("expect", self.expect.as_deref()),
         ] {
-            insert_header_opt(&mut headers, name, value.as_deref())?;
+            insert_header_opt(&mut headers, name, value)?;
         }
 
         let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
             .with_timeout(self.timeout)?;
         cr.headers = headers;
-        cr.metadata = self.metadata.as_ref();
+        cr.user_metadata = Some(&self.metadata.user);
         cr.body = Some(self.body);
         if let Some(expires) = self.expires {
             cr.query
@@ -177,13 +178,9 @@ impl Client {
             bucket: bucket.into(),
             object: object.into(),
             body: body.into(),
-            cache_control: None,
             content_disposition: None,
-            content_encoding: None,
-            content_type: None,
-            content_md5: None,
             expect: None,
-            metadata: None,
+            metadata: WriteMetadata::default(),
             expires: None,
             timeout: None,
         }

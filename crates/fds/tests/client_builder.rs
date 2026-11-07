@@ -166,7 +166,7 @@ async fn cslb_client_resolves_hostname_endpoints() {
         .unwrap();
     for _ in 0..3 {
         let md = c.head_object("b", "o").send().await.unwrap().unwrap();
-        assert_eq!(md.get("content-length"), Some("5"));
+        assert_eq!(md.attributes.content_length, Some(5));
     }
     m.assert_async().await;
 }

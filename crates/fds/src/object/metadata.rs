@@ -3,6 +3,7 @@
 use super::validate_object;
 use super::{ObjectMetadata, StorageClass};
 use crate::client::ClientRequest;
+use crate::metadata::{write_metadata_methods, WriteMetadata};
 use crate::{Client, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -11,9 +12,8 @@ use serde::Deserialize;
 use std::time::Duration;
 
 crate::de::lenient! {
-    /// Result of `get_object_basic_info`. `metadata` uses the entry-list form
-    /// (see [`ObjectMetadata`](super::ObjectMetadata)). Missing or `null` keys
-    /// read as zero, `None` or empty metadata.
+    /// Result of `get_object_basic_info`. Missing or `null` keys read as zero,
+    /// `None` or empty metadata.
     #[derive(Debug, Clone, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
     pub struct ObjectBasicInfo {
@@ -24,8 +24,10 @@ crate::de::lenient! {
         /// unrepresentable timestamp is a protocol violation.
         pub upload_time: Option<DateTime<Utc>> => "crate::de::opt_millis",
         pub storage_class: Option<StorageClass>,
+        /// The metadata the service lists for the object; its
+        /// [`entries`](ObjectMetadata::entries) are every listed entry.
         #[serde(rename = "metadataBean")]
-        pub metadata: ObjectMetadata,
+        pub metadata: ObjectMetadata => "crate::metadata::entry_list",
     }
 }
 
@@ -72,17 +74,23 @@ pub struct SetObjectMetadata {
     client: Client,
     bucket: String,
     object: String,
-    metadata: ObjectMetadata,
+    metadata: WriteMetadata,
     timeout: Option<Duration>,
 }
 
+/// The typed values and user metadata form the complete metadata the object
+/// gets; anything not set here is not kept.
 impl SetObjectMetadata {
+    write_metadata_methods!("Sent as given, an empty value included.");
+
     timeout_option!();
 
-    /// PUT `/{bucket}/{object}?setMetaData` with the metadata map as body.
+    /// PUT `/{bucket}/{object}?setMetaData` with the metadata as a JSON map
+    /// body `{"rawMeta":{...}}`, keys in order. The values are not checked as
+    /// header values.
     pub async fn send(self) -> Result<()> {
         validate_object(&self.bucket, &self.object)?;
-        let body = self.metadata.serialize()?;
+        let body = self.metadata.to_body()?;
         let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
             .with_timeout(self.timeout)?;
         cr.query.add("setMetaData", "");
@@ -114,18 +122,32 @@ impl Client {
         GetObjectMetadata::new(self, bucket, object)
     }
 
-    /// Set an object's metadata.
+    /// Replace an object's metadata with the typed values and user metadata
+    /// set on the builder. It is not a patch: read the current metadata and
+    /// carry over what should stay.
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// use fds::object::UserMetadata;
+    ///
+    /// client
+    ///     .set_object_metadata("bucket", "key")
+    ///     .content_type("application/octet-stream")
+    ///     .user_metadata([("owner", "upload-service")].into_iter().collect::<UserMetadata>())
+    ///     .send()
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
     pub fn set_object_metadata(
         &self,
         bucket: impl Into<String>,
         object: impl Into<String>,
-        metadata: ObjectMetadata,
     ) -> SetObjectMetadata {
         SetObjectMetadata {
             client: self.clone(),
             bucket: bucket.into(),
             object: object.into(),
-            metadata,
+            metadata: WriteMetadata::default(),
             timeout: None,
         }
     }

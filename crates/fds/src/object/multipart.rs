@@ -2,8 +2,9 @@
 //! Re-exported from [`crate::multipart`]; see there for the managed file upload.
 
 use super::{insert_header_opt, validate_object};
-use super::{ObjectMetadata, PutObjectOutput, UploadBody};
+use super::{PutObjectOutput, UploadBody};
 use crate::client::ClientRequest;
+use crate::metadata::{write_metadata_methods, WriteMetadata};
 use crate::{Client, Error, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -55,14 +56,18 @@ pub struct CreateMultipartUpload {
     client: Client,
     bucket: String,
     object: String,
-    metadata: Option<ObjectMetadata>,
+    metadata: WriteMetadata,
     timeout: Option<Duration>,
 }
 
+/// The typed headers and user metadata are sent as request headers with the
+/// initiation.
 impl CreateMultipartUpload {
-    /// Metadata sent as request headers with the initiation.
-    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
-        self.metadata = Some(metadata);
+    write_metadata_methods!("Empty values are not sent.");
+
+    /// Replace every typed header and the user metadata at once.
+    pub(crate) fn write_metadata(mut self, metadata: WriteMetadata) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -81,7 +86,8 @@ impl CreateMultipartUpload {
         let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
             .with_timeout(self.timeout)?;
         cr.query.add("uploads", "");
-        cr.metadata = self.metadata.as_ref();
+        self.metadata.insert_system_headers(&mut cr.headers)?;
+        cr.user_metadata = Some(&self.metadata.user);
         let response: InitMultipartUploadResponse = self.client.do_json(cr).await?;
         if response.upload_id.is_empty() {
             return Err(
@@ -210,15 +216,19 @@ pub struct CompleteMultipartUpload {
     object: String,
     upload_id: String,
     parts: Vec<UploadPartOutput>,
-    metadata: Option<ObjectMetadata>,
+    metadata: WriteMetadata,
     expires: Option<DateTime<Utc>>,
     timeout: Option<Duration>,
 }
 
+/// The typed headers and user metadata are sent as request headers with the
+/// completion.
 impl CompleteMultipartUpload {
-    /// Metadata sent as request headers with the completion.
-    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
-        self.metadata = Some(metadata);
+    write_metadata_methods!("Empty values are not sent.");
+
+    /// Replace every typed header and the user metadata at once.
+    pub(crate) fn write_metadata(mut self, metadata: WriteMetadata) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -249,7 +259,8 @@ impl CompleteMultipartUpload {
             cr.query
                 .add("expires", expires.timestamp_millis().to_string());
         }
-        cr.metadata = self.metadata.as_ref();
+        self.metadata.insert_system_headers(&mut cr.headers)?;
+        cr.user_metadata = Some(&self.metadata.user);
         cr.body = Some(Bytes::from(body).into());
         self.client.do_json(cr).await
     }
@@ -292,7 +303,7 @@ impl Client {
             client: self.clone(),
             bucket: bucket.into(),
             object: object.into(),
-            metadata: None,
+            metadata: WriteMetadata::default(),
             timeout: None,
         }
     }
@@ -339,7 +350,7 @@ impl Client {
             object: object.into(),
             upload_id: upload_id.into(),
             parts: parts.into_iter().collect(),
-            metadata: None,
+            metadata: WriteMetadata::default(),
             expires: None,
             timeout: None,
         }

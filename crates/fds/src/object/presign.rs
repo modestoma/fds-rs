@@ -1,12 +1,13 @@
 //! Absolute and presigned object URLs.
 
 use super::validate_object;
-use super::ObjectMetadata;
+use super::UserMetadata;
 use crate::auth;
 use crate::constant::HTTP_HEADER_EXPIRES;
 use crate::constant::HTTP_HEADER_GALAXY_ACCESS_KEY_ID;
 use crate::constant::HTTP_HEADER_SIGNATURE;
 use crate::encoding::QueryValues;
+use crate::metadata::WriteMetadata;
 use crate::{Client, Error, Result};
 use chrono::{DateTime, Utc};
 use http::Method;
@@ -26,7 +27,7 @@ pub struct PresignObject {
     method: Method,
     expiration: Option<Expiration>,
     cdn: bool,
-    metadata: Option<ObjectMetadata>,
+    metadata: WriteMetadata,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,9 +66,25 @@ impl PresignObject {
         self
     }
 
-    /// Metadata headers the request will send; they are part of the signature.
-    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
-        self.metadata = Some(metadata);
+    /// The `Content-Type` the request will send; it is part of the
+    /// signature. An empty value signs the same as none.
+    pub fn content_type(mut self, value: impl Into<String>) -> Self {
+        self.metadata.content_type = Some(value.into());
+        self
+    }
+
+    /// The `Content-MD5` the request will send; it is part of the
+    /// signature. An empty value signs the same as none.
+    pub fn content_md5(mut self, value: impl Into<String>) -> Self {
+        self.metadata.content_md5 = Some(value.into());
+        self
+    }
+
+    /// The user metadata the request will send as `x-xiaomi-meta-*`
+    /// headers; it is part of the signature. Replaces any earlier call; see
+    /// [`UserMetadata`] for the key rules.
+    pub fn user_metadata(mut self, metadata: UserMetadata) -> Self {
+        self.metadata.user = metadata;
         self
     }
 
@@ -108,9 +125,8 @@ impl PresignObject {
         let with_query = format!("{}?{}", base.as_str(), query);
 
         let mut headers = HeaderMap::new();
-        if let Some(metadata) = &self.metadata {
-            metadata.append_to_headers(&mut headers)?;
-        }
+        self.metadata.insert_system_headers(&mut headers)?;
+        self.metadata.user.append_to_headers(&mut headers)?;
         let sig = auth::sign(access_secret, self.method.as_str(), &with_query, &headers)?;
 
         // Append &Signature=<sig> raw (unsorted, un-encoded).
@@ -176,7 +192,7 @@ impl Client {
             method: Method::GET,
             expiration: None,
             cdn: false,
-            metadata: None,
+            metadata: WriteMetadata::default(),
         }
     }
 }

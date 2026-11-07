@@ -155,7 +155,7 @@ async fn typed_accessors_return_none_for_missing_or_malformed_headers() {
     for (name, values) in malformed {
         for value in values {
             let output = output(&mut server, 200, &[(name, value)], "ok").await;
-            assert_eq!(output.headers()[name], *value);
+            assert_eq!(output.headers().get(name), Some(*value));
             assert_eq!(output.last_modified(), None, "{name}: {value}");
             assert_eq!(output.content_range(), None, "{name}: {value}");
             assert_eq!(output.bytes().await.unwrap(), "ok");
@@ -163,7 +163,7 @@ async fn typed_accessors_return_none_for_missing_or_malformed_headers() {
     }
     // An unknown complete length is `*`.
     let output = output(&mut server, 200, &[("content-range", "bytes 0-1/*")], "ok").await;
-    assert_eq!(output.headers()["content-range"], "bytes 0-1/*");
+    assert_eq!(output.headers().get("content-range"), Some("bytes 0-1/*"));
     let range: ContentRange = output.content_range().unwrap();
     assert_eq!(
         (range.start(), range.end(), range.complete_length()),

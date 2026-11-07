@@ -34,7 +34,9 @@
 //!   module, chosen by the resource they act on:
 //!   - [`object`]: single-object operations, listing, bulk delete, presigned
 //!     URLs and the object models ([`object::ObjectMetadata`],
+//!     [`object::ObjectAttributes`], [`object::UserMetadata`],
 //!     [`object::UploadBody`], [`object::GetObjectOutput`],
+//!     [`object::ResponseHeaders`],
 //!     [`object::ByteRange`], [`object::ContentRange`],
 //!     [`object::StorageClass`]);
 //!   - [`bucket`]: bucket operations, lifecycle and access-log models;

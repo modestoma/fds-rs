@@ -1,5 +1,5 @@
 use super::output;
-use super::util::{print_json, read_json, BodyArgs, MetadataArgs};
+use super::util::{apply_metadata, print_json, read_json, BodyArgs, MetadataArgs};
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use fds::{manager::*, multipart::*, object::*, *};
@@ -137,11 +137,12 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             metadata,
         } => {
             // The session is bound to the requested identity, not names echoed by the server.
-            let upload = client
-                .create_multipart_upload(&bucket, &object)
-                .metadata(metadata.build()?)
-                .send()
-                .await?;
+            let upload = apply_metadata!(
+                client.create_multipart_upload(&bucket, &object),
+                metadata.build()?
+            )
+            .send()
+            .await?;
             print_json(&identity(&upload))?;
         }
         MultipartCmd::Part {
@@ -169,14 +170,15 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             expires,
         } => {
             let parts: Vec<UploadPartOutput> = read_json(parts)?;
-            let mut request = client
-                .complete_multipart_upload(
+            let mut request = apply_metadata!(
+                client.complete_multipart_upload(
                     &session.bucket,
                     &session.object,
                     &session.upload_id,
                     parts,
-                )
-                .metadata(metadata.build()?);
+                ),
+                metadata.build()?
+            );
             if let Some(value) = expires {
                 request = request.expires(value);
             }
@@ -202,16 +204,18 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             // Validate before the recovery file is claimed: invalid options
             // must not leave a receipt behind (the SDK checks again in `start`).
             validate_upload_options(part_size, concurrency)?;
-            let upload = client
-                .upload_file(&bucket, &object, file)
-                .part_size(part_size as u64)
-                .concurrency(concurrency)
-                .cleanup(if abort_on_failure {
-                    CleanupPolicy::AbortOnFailure
-                } else {
-                    CleanupPolicy::Preserve
-                })
-                .metadata(metadata.build()?);
+            let upload = apply_metadata!(
+                client
+                    .upload_file(&bucket, &object, file)
+                    .part_size(part_size as u64)
+                    .concurrency(concurrency)
+                    .cleanup(if abort_on_failure {
+                        CleanupPolicy::AbortOnFailure
+                    } else {
+                        CleanupPolicy::Preserve
+                    }),
+                metadata.build()?
+            );
             // Claim the receipt path before any remote mutation. Never overwrite an older session.
             let mut receipt = std::fs::OpenOptions::new()
                 .write(true)

@@ -65,9 +65,9 @@ ByteRange 支持单个闭区间、开放结束、尾部长度，拒绝多范围�
 
 ## 元数据与请求选项
 
-ObjectMetadata 的 get 忽略大小写，None 与 Some(空字符串) 不同；iter/as_map 借用数据。set 仅接受预定义 key 或 x-xiaomi-meta 前缀。entry-list 反序列化保留未知 key，大小写重复项按输入最后一个生效。
+读取结果 ObjectMetadata 由 attributes（类型化系统属性，缺失或无法解析为 None）和 user_metadata（去掉前缀的 x-xiaomi-meta-*，不含 6 个系统 meta key）组成；entries() 保留收到的原始条目。UserMetadata 的 key 转小写、忽略大小写查找，None 与 Some(空字符串) 不同；空 key 和已带 x-xiaomi-meta- 前缀的 key 在 send()/build() 时报 InvalidInput，请求不发出。entry-list 解析保留未知 key，大小写重复项按输入最后一个生效。写入只用 builder 的专用 setter 和 user_metadata。
 
-SET 序列化是 rawMeta map，basicInfo 接收是 rawMeta.entry 数组，HTTP 读取是响应头白名单，三者不对称。`get_content_length` 对应 x-xiaomi-meta-content-length，不是 HTTP Content-Length。GET 的完整 ETag 从 headers 读取；HEAD 返回的 ObjectMetadata 不保留 ETag。
+SET 序列化是 rawMeta map（按 key 排序），basicInfo 接收是 rawMeta.entry 数组，HTTP 读取是响应头白名单，三者不对称，均为 SDK 内部实现。`attributes.meta_content_length` 对应 x-xiaomi-meta-content-length，不是 HTTP Content-Length（`attributes.content_length`）。ETag 读入 `attributes.etag`，但不在 entries() 中。
 
 ACL Add 省略 action，Delete 发送 action=delete，并携带要增删的 grant 集合；没有 replace。创建桶 canned ACL 多值以逗号连接，空列表不发送。对象 ACL 的 version_id 不代表其他数据接口支持版本寻址。
 

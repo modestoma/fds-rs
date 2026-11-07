@@ -41,9 +41,9 @@ async fn head_metadata_status_and_encoded_key() {
         match status {
             200 => {
                 let md = result.unwrap().unwrap();
-                assert_eq!(md.get("content-length"), Some("42"));
-                assert_eq!(md.get_content_type(), Some("text/plain"));
-                assert_eq!(md.get("x-xiaomi-meta-tag"), Some("value"));
+                assert_eq!(md.attributes.content_length, Some(42));
+                assert_eq!(md.attributes.content_type.as_deref(), Some("text/plain"));
+                assert_eq!(md.user_metadata.get("tag"), Some("value"));
             }
             404 => assert!(result.unwrap().is_none()),
             _ => assert_eq!(

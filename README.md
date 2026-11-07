@@ -195,17 +195,17 @@ async fn remove_empty_bucket(client: &Client, bucket: &str) -> fds::Result<()> {
 ```rust,no_run
 use bytes::Bytes;
 use fds::Client;
-use fds::object::ObjectMetadata;
+use fds::object::UserMetadata;
 
 async fn upload_text(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
-    let mut metadata = ObjectMetadata::new();
-    metadata.set("x-xiaomi-meta-source", "report-job")?;
+    let mut metadata = UserMetadata::new();
+    metadata.insert("source", "report-job"); // 发送为 x-xiaomi-meta-source
     let output = client
         .put_object(bucket, key, Bytes::from_static(b"hello FDS\n"))
         .content_type("text/plain; charset=utf-8")
         .cache_control("private, max-age=60")
         .content_disposition("attachment; filename=report.txt")
-        .metadata(metadata)
+        .user_metadata(metadata)
         .expires(chrono::Utc::now() + chrono::Duration::minutes(10))
         .send()
         .await?;
@@ -224,10 +224,10 @@ PUT 是创建或覆盖同名对象，不提供“不存在才写”的条件写�
 | `content_encoding` | 声明已有编码，如 gzip；SDK 不压缩 body |
 | `content_md5` | 显式 Content-MD5，沿用此 SDK 的十六进制协议约定 |
 | `expect` | 显式 Expect 头；不提供上传业务重试保证 |
-| `metadata` | ObjectMetadata 中的请求元数据 |
+| `user_metadata` | `UserMetadata` 用户元数据，作为 `x-xiaomi-meta-*` 头发送 |
 | `expires` | 上传响应签名的 UTC 毫秒到期时间；不设置对象 TTL |
 
-同一 HTTP 头不要同时通过 metadata 和专用 setter 设置；内部可能追加成重复头，并非可靠的覆盖关系。
+系统头只能通过专用 setter 设置，用户元数据只能通过 `user_metadata` 设置，同一个头不存在两条设置路径。专用 setter 的空值不发送。`UserMetadata` 的 key 不带 `x-xiaomi-meta-` 前缀，由 SDK 统一转小写并加前缀。校验在 `send()`（presign 为 `build()`）时进行，失败返回 `InvalidInput` 且不发送请求：所有操作都拒绝空 key 和已带 `x-xiaomi-meta-` 前缀（不区分大小写）的 key；以请求头发送的操作还要求头名和头值合法，`set_object_metadata` 的 JSON body 不做头校验。用户 key 即使叫 `content-type`，也只会发送为 `x-xiaomi-meta-content-type`，不会影响 Content-Type。
 
 ### 文件上传
 
@@ -334,7 +334,7 @@ async fn decode_lines(client: &Client, bucket: &str, key: &str) -> fds::Result<u
 
 `copy_to` 不 flush、不 shutdown，也不回滚 writer；示例的 `File::create` 会截断已有文件，错误时可能留下部分内容。需要失败保留旧目标、原子替换、续传时使用后文的 `download_file`。
 
-`GetObjectOutput` 的 `status()` 返回 `http::StatusCode`，`is_partial()` 判断是否为 206。类型化的头部访问方法有 `content_length()`、`content_type()`、`etag()`（原样，含引号）、`last_modified()`（`DateTime<Utc>`）和 `content_range()`（`ContentRange`，提供 `start()`、`end()`（含）与 `complete_length()`）；头部缺失或无法解析时返回 `None`，不会让下载失败，原始值仍可通过 `headers()` 读取。`metadata()` 返回解析后的对象元数据。
+`GetObjectOutput` 的 `status()` 返回 `http::StatusCode`，`is_partial()` 判断是否为 206。类型化的头部访问方法有 `content_length()`、`content_type()`、`etag()`（原样，含引号）、`last_modified()`（`DateTime<Utc>`）和 `content_range()`（`ContentRange`，提供 `start()`、`end()`（含）与 `complete_length()`）；头部缺失或无法解析时返回 `None`，不会让下载失败，原始值仍可通过 `headers()` 读取。`metadata()` 返回从同一组响应头解析的 `ObjectMetadata`。`headers()` 返回 `ResponseHeaders` 只读视图（`get`、`get_all`、`iter`），用于诊断和 SDK 未建模的头。
 
 除 `chunk()`、`bytes()`、`copy_to()` 外，`into_stream()` 把剩余响应体转成 `Stream<Item = fds::Result<Bytes>>`，`into_async_read()` 转成 `AsyncRead`（失败时返回 `std::io::Error`：超时为 `TimedOut`，其余为 `Other`，`into_inner()` 后可 downcast 回 `fds::Error`）。两者都是 `Send + Unpin + 'static`，读取同样受 read timeout 和总期限约束。公开 API 不暴露 reqwest 类型。
 
@@ -387,34 +387,47 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
 
 ```rust,no_run
 use fds::{Client, Error, ErrorKind};
-use fds::object::ObjectMetadata;
-
 async fn inspect_and_set_metadata(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
     let Some(head) = client.head_object(bucket, key).send().await? else {
         return Err(Error::new(ErrorKind::NotFound, "对象不存在"));
     };
-    let wire_length = head.get("content-length")
-        .ok_or_else(|| Error::new(ErrorKind::ProtocolViolation, "HEAD 缺少 Content-Length"))?;
+    let wire_length = head.attributes.content_length
+        .ok_or_else(|| Error::new(ErrorKind::ProtocolViolation, "HEAD 缺少合法的 Content-Length"))?;
     println!("Content-Length：{wire_length}");
     let info = client.get_object_basic_info(bucket, key).send().await?;
     println!("basicInfo 大小：{}", info.size);
     let current = client.get_object_metadata(bucket, key).send().await?;
-    let _content_type = current.get_content_type();
+    let _content_type: Option<&str> = current.attributes.content_type.as_deref();
 
     // 显式提交完整的目标元数据，不把 set 当作自动合并补丁。
-    let mut desired = ObjectMetadata::new();
-    desired.set_content_type("application/octet-stream");
-    desired.set("x-xiaomi-meta-owner", "upload-service")?;
-    client.set_object_metadata(bucket, key, desired).send().await?;
+    let mut user = current.user_metadata;
+    user.insert("owner", "upload-service");
+    client
+        .set_object_metadata(bucket, key)
+        .content_type("application/octet-stream")
+        .user_metadata(user)
+        .send()
+        .await?;
     Ok(())
 }
 ```
 
-`ObjectMetadata::set` 将 key 转成小写，只接受预定义字段或 `x-xiaomi-meta-*`。`get` 忽略大小写，返回 `Option<&str>`，可区分缺失与空字符串；`iter`/`as_map` 借用数据。需要保留已有自定义字段时由应用显式构造目标集合；读取再写入没有并发更新保护，也不要把所有只读响应头原样写回。
+读取结果 `ObjectMetadata` 分为两部分：`attributes`（`ObjectAttributes`，类型化的只读系统属性）和 `user_metadata`（`UserMetadata`，去掉前缀的 `x-xiaomi-meta-*`）。它只用于读取，写入一律使用各 builder 的专用 setter 与 `user_metadata`。`set_object_metadata` 提交的是完整的目标元数据：需要保留已有自定义字段时由应用显式带上；读取再写入没有并发更新保护，也不要把只读系统属性原样写回。
 
-`set_content_length`/`get_content_length` 对应 `x-xiaomi-meta-content-length`，不是实际 HTTP `content-length`。HEAD 的真实长度应使用 `get("content-length")`。ETag 不在 ObjectMetadata 白名单中；读取 GET 的 ETag 使用 `output.headers().get("etag")`，不能假定 `head_object` 的 metadata 保留 ETag。
+| `ObjectAttributes` 字段 | 来源（响应头或 basicInfo 条目） |
+| --- | --- |
+| `content_type`、`content_encoding`、`cache_control`、`content_md5`、`etag` | 同名头，原样字符串 |
+| `content_length: Option<u64>` | `content-length`：HEAD 为对象大小，GET 为本次响应体长度 |
+| `last_modified: Option<DateTime<Utc>>` | `last-modified`（IMF-fixdate） |
+| `storage_class: Option<StorageClass>` | `x-xiaomi-meta-storage-class` |
+| `server_side_encryption` | `x-xiaomi-meta-server-side-encryption` |
+| `crc64ecma` | `x-xiaomi-meta-hash-crc64ecma` |
+| `meta_content_length: Option<u64>` | `x-xiaomi-meta-content-length`，不是本次响应的 HTTP Content-Length |
+| `ongoing_restore`、`restore_expiry` | `x-xiaomi-meta-ongoing-restore`、`x-xiaomi-meta-restore-expiry` |
 
-`serialize()` 输出 SET 所需的 `{"rawMeta":{...}}`；Deserialize 读取 basicInfo 的 `rawMeta.entry` 数组；`from_headers()` 从 HTTP 头筛选字段。这三种形式用途不同，不是对称 JSON 编解码接口。
+上表中带 `x-xiaomi-meta-` 前缀的 6 个 key 是系统属性，读取时不会出现在 `user_metadata` 中；写入时它们只能作为 `UserMetadata` 的 key（如 `storage-class`）原样发送。字段缺失为 `None`；数值或日期无法解析时也为 `None`，不会让请求失败。`ObjectMetadata::entries()` 按 key 顺序返回收到的全部原始条目（响应头取协议元数据头与全部 `x-xiaomi-meta-*`，不含 ETag；basicInfo 取全部条目），仅用于展示和诊断。
+
+三种线上格式都是 SDK 内部实现：SET 发送 `{"rawMeta":{...}}` map，basicInfo 接收 `rawMeta.entry` 数组，HEAD/GET/`?metadata` 从响应头解析。
 
 ## 对象列举与分页
 
@@ -684,7 +697,7 @@ async fn abandon(session: &MultipartUploadSession) -> fds::Result<()> {
 
 调用顺序示例：保存 `begin()` 返回的会话（至少持久化 `bucket()`、`object()`、`upload_id()`）；按从 1 开始的编号调用 `send_part()`，每收到一份回执就保存；确认分片编号、长度、ETag 和总数满足预期后把回执交给 `finish()`。回执为 `UploadPartOutput { part_number: NonZeroU16, etag: String, part_size: u64 }`，序列化格式与服务端返回、complete 请求体中的 `{"partNumber","etag","partSize"}` 一致。手动 complete 按调用者提供的集合序列化，不替调用者检查完整性或自动排序。
 
-create 与 complete 支持 `.metadata(...)`，complete 另支持 `.expires(...)`；四个 builder 都支持 `.timeout(...)`。part 支持和 PUT 一样的 UploadBody，可显式 `.content_md5(...)`。跨进程恢复时不需要会话对象：`client.upload_part(bucket, key, upload_id, number, body)`、`client.complete_multipart_upload(bucket, key, upload_id, parts)` 和 `client.abort_multipart_upload(bucket, key, upload_id)` 直接接收持久化的 upload ID，会话上的同名方法返回同样的 builder。
+create 与 complete 支持 `.content_type(...)`、`.cache_control(...)`、`.content_encoding(...)`、`.content_md5(...)` 和 `.user_metadata(...)`（`upload_file` 同样支持，并在 create 与 complete 时各发送一次），complete 另支持 `.expires(...)`；四个 builder 都支持 `.timeout(...)`。part 支持和 PUT 一样的 UploadBody，可显式 `.content_md5(...)`。跨进程恢复时不需要会话对象：`client.upload_part(bucket, key, upload_id, number, body)`、`client.complete_multipart_upload(bucket, key, upload_id, parts)` 和 `client.abort_multipart_upload(bucket, key, upload_id)` 直接接收持久化的 upload ID，会话上的同名方法返回同样的 builder。
 
 分片编号是 `NonZeroU16`（不能为 0），`send` 时再检查不超过 `fds::multipart::MAX_PART_NUMBER`（10,000），否则返回 `InvalidInput` 且不发送。服务端分片尺寸、数量和地区限制需单独满足；库内 `MIN_PART_SIZE`/`MAX_PART_SIZE` 常量不代表所有接口都自动检查，更不能当成各地区统一约束。
 
@@ -795,7 +808,6 @@ async fn limited_download(client: &fds::Client, path: &std::path::Path) -> fds::
 ## 预签名与普通 URL
 
 ```rust,no_run
-use fds::object::ObjectMetadata;
 use fds::Client;
 use http::Method;
 use std::time::Duration;
@@ -809,13 +821,11 @@ fn download_link(client: &Client, bucket: &str, key: &str) -> fds::Result<Url> {
 }
 
 fn upload_link(client: &Client, bucket: &str, key: &str) -> fds::Result<Url> {
-    let mut metadata = ObjectMetadata::new();
-    metadata.set_content_type("application/octet-stream");
     client
         .presign_object(bucket, key)
         .method(Method::PUT)
         .expires_in(Duration::from_secs(600))
-        .metadata(metadata)
+        .content_type("application/octet-stream")
         .build()
 }
 
@@ -826,7 +836,7 @@ fn public_link(client: &Client, bucket: &str, key: &str) -> fds::Result<Url> {
 
 预签名仅支持 access key Client，OAuth Client 返回错误。生成操作不联网、不验证对象存在或凭据是否有效。`expires_in` 的有效期从调用 `build()` 时计算，不是实际交付 URL 时，至少 1 ms；绝对时间用 `.expires_at(DateTime<Utc>)`。两者必须设置其一，method 默认 GET。
 
-接收方必须使用签名时的 HTTP method 与参与签名的头；例如上传示例使用相同 Content-Type。SDK 返回 `url::Url`，其 `as_str()` / `Display` 就是签名时的完整字符串；原样使用，不要再用 `Url` 的 setter 修改 query 或重复编码 Signature。`absolute_object_url` 同样返回 `Url`。该协议 Expires 是毫秒时间戳，HEAD 预签名还附带 metadata 子资源。URL 包含临时访问凭证，应经受控渠道交付，不放公开日志。
+接收方必须使用签名时的 HTTP method 与参与签名的头；例如上传示例使用相同 Content-Type。参与签名的头由 `.content_type(...)`、`.content_md5(...)` 和 `.user_metadata(...)` 设置。SDK 返回 `url::Url`，其 `as_str()` / `Display` 就是签名时的完整字符串；原样使用，不要再用 `Url` 的 setter 修改 query 或重复编码 Signature。`absolute_object_url` 同样返回 `Url`。该协议 Expires 是毫秒时间戳，HEAD 预签名还附带 metadata 子资源。URL 包含临时访问凭证，应经受控渠道交付，不放公开日志。
 
 `.cdn()` 请求 CDN 地址，必须在构建 Client 时显式设置 `cdn_endpoint(origin)`；未配置会返回错误，不会从 FDS 主机自动推导。普通 SDK 数据请求始终使用 FDS endpoint。CDN 地址是否已开通由服务环境决定。
 

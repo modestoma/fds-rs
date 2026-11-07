@@ -86,12 +86,12 @@ pub use metadata::{GetObjectBasicInfo, GetObjectMetadata, ObjectBasicInfo, SetOb
 pub use presign::PresignObject;
 pub use put::{PutObject, PutObjectOutput};
 
-pub use crate::download::{ByteRange, ContentRange, GetObjectOutput};
-pub use crate::metadata::ObjectMetadata;
+pub use crate::download::{ByteRange, ContentRange, GetObjectOutput, ResponseHeaders};
+pub use crate::metadata::{ObjectAttributes, ObjectMetadata, UserMetadata};
 pub use crate::upload::UploadBody;
 
 /// Insert an optional header; `None` and empty values are not sent.
-fn insert_header_opt(
+pub(crate) fn insert_header_opt(
     headers: &mut HeaderMap,
     name: &'static str,
     value: Option<&str>,

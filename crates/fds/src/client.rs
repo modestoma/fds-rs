@@ -12,7 +12,7 @@ use crate::config::{ClientBuilder, ClientConfiguration};
 use crate::constant::{HTTP_HEADER_AUTHORIZATION, HTTP_HEADER_DATE};
 use crate::encoding::{go_query_escape, QueryValues};
 use crate::error::{Dispatch, Error, ErrorKind, JsonResponseSource, ResponseDetails, Result};
-use crate::metadata::ObjectMetadata;
+use crate::object::UserMetadata;
 use http::Method;
 use std::{fmt, sync::Arc, time::Duration};
 
@@ -56,7 +56,8 @@ pub(crate) struct ClientRequest<'a> {
     pub method: Method,
     pub query: QueryValues,
     pub headers: HeaderMap,
-    pub metadata: Option<&'a ObjectMetadata>,
+    /// Appended as `x-xiaomi-meta-*` headers after `headers`.
+    pub user_metadata: Option<&'a UserMetadata>,
     pub body: Option<UploadBody>,
     pub replay_safety: crate::retry::ReplaySafety,
     pub accepted_statuses: &'static [u16],
@@ -88,7 +89,7 @@ impl<'a> ClientRequest<'a> {
             method,
             query: QueryValues::new(),
             headers: HeaderMap::new(),
-            metadata: None,
+            user_metadata: None,
             body: None,
             accepted_statuses: &[200],
             replay_safety: crate::retry::ReplaySafety::Never,
@@ -177,7 +178,7 @@ impl Client {
         let url = self.build_request_url(req.bucket, req.object, &query, false)?;
 
         let mut headers = req.headers;
-        if let Some(metadata) = req.metadata {
+        if let Some(metadata) = req.user_metadata {
             metadata.append_to_headers(&mut headers)?;
         }
 

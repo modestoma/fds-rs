@@ -2,7 +2,7 @@
 //! 环境变量：FDS_ENDPOINT / FDS_ACCESS_KEY_ID / FDS_ACCESS_KEY_SECRET。
 //! 运行：cargo run --example upload_verify -- BUCKET UNIQUE_KEY LOCAL_FILE
 //! stdout 包含临时访问 URL；请交给受控接收方，不写入公开日志。
-use fds::object::{ObjectMetadata, UploadBody};
+use fds::object::{UploadBody, UserMetadata};
 use fds::Client;
 use http::Method;
 use md5::{Digest, Md5};
@@ -42,12 +42,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 调用者必须保证文件在摘要计算及上传期间不变，并选择不会并发改写的 key。
     let (expected_size, expected_md5) = file_digest(path).await?;
-    let mut metadata = ObjectMetadata::new();
-    metadata.set("x-xiaomi-meta-content-md5", &expected_md5)?;
+    let mut metadata = UserMetadata::new();
+    metadata.insert("content-md5", &expected_md5);
     client
         .put_object(bucket, key, UploadBody::from_file(path).await?)
         .content_type("application/octet-stream")
-        .metadata(metadata)
+        .user_metadata(metadata)
         .send()
         .await?;
 
@@ -57,10 +57,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .send()
         .await?
         .ok_or("uploaded object was not found by HEAD")?;
-    let size: u64 = head
-        .get("content-length")
-        .ok_or("HEAD response has no Content-Length")?
-        .parse()?;
+    let size = head
+        .attributes
+        .content_length
+        .ok_or("HEAD response has no valid Content-Length")?;
     if size != expected_size {
         return Err("uploaded object size differs from local file".into());
     }

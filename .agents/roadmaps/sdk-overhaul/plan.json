@@ -176,7 +176,7 @@
       "title": "ObjectMetadata 拆分系统字段与用户元数据",
       "type": "feat",
       "document": "tasks/object-metadata.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 7,
       "depends_on": [
         "typed-responses"

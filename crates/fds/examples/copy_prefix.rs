@@ -58,10 +58,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .send()
             .await?
             .ok_or("copied object was not found by HEAD")?;
-        let actual: u64 = head
-            .get("content-length")
-            .ok_or("target HEAD response has no Content-Length")?
-            .parse()?;
+        let actual = head
+            .attributes
+            .content_length
+            .ok_or("target HEAD response has no valid Content-Length")?;
         if actual != expected {
             return Err("target size differs from source listing; reconcile copied objects".into());
         }

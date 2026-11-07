@@ -138,6 +138,55 @@ impl ContentRange {
     }
 }
 
+/// The headers of a response, as received; a borrowed view returned by
+/// [`GetObjectOutput::headers`]. Names are lowercase.
+///
+/// Prefer the typed accessors of [`GetObjectOutput`] and its
+/// [`metadata`](GetObjectOutput::metadata); this view is for diagnostics and
+/// for headers the SDK does not model. `Debug` prints the names only.
+#[derive(Clone, Copy)]
+pub struct ResponseHeaders<'a>(&'a HeaderMap);
+
+impl<'a> ResponseHeaders<'a> {
+    /// The first value of a header, looked up ignoring case; `None` when it
+    /// is missing or not visible ASCII.
+    pub fn get(&self, name: &str) -> Option<&'a str> {
+        self.0.get(name)?.to_str().ok()
+    }
+
+    /// Every value of a header, looked up ignoring case, as raw bytes in the
+    /// order received.
+    pub fn get_all(&self, name: &str) -> impl Iterator<Item = &'a [u8]> + 'a {
+        self.0
+            .get_all(name)
+            .into_iter()
+            .map(|value| value.as_bytes())
+    }
+
+    /// Every header value with its name, as raw bytes: names in the order
+    /// first received, the values of a repeated name together.
+    pub fn iter(&self) -> impl Iterator<Item = (&'a str, &'a [u8])> + 'a {
+        self.0
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_bytes()))
+    }
+
+    /// The number of header values, counting each value of a repeated name.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for ResponseHeaders<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
+    }
+}
+
 /// Successful GET response. Body consumption is incremental unless `bytes` is used.
 /// A server may ignore Range and return 200; check [`is_partial`](Self::is_partial)
 /// and [`content_range`](Self::content_range) before relying on a range.
@@ -145,6 +194,8 @@ impl ContentRange {
 /// The typed accessors read the response headers. They return `None` for a
 /// missing header and for a value that does not parse, so an unusual header
 /// never fails the download; [`headers`](Self::headers) keeps the raw values.
+/// [`metadata`](Self::metadata) parses the same headers into the object's
+/// attributes and user metadata.
 ///
 /// Reading the body is bounded by the client's read idle timeout, reset after
 /// each read that makes progress. No total deadline applies by default; if one
@@ -173,20 +224,20 @@ impl GetObjectOutput {
     pub fn is_partial(&self) -> bool {
         self.status() == StatusCode::PARTIAL_CONTENT
     }
-    pub fn headers(&self) -> &HeaderMap {
-        self.response.headers()
+    /// Every response header as received.
+    pub fn headers(&self) -> ResponseHeaders<'_> {
+        ResponseHeaders(self.response.headers())
     }
+    /// The object's attributes and user metadata, parsed from the response
+    /// headers. Its [`content_length`](crate::object::ObjectAttributes::content_length)
+    /// is this response's, like [`content_length`](Self::content_length).
     pub fn metadata(&self) -> &ObjectMetadata {
         &self.metadata
     }
     /// `Content-Length`: the number of body bytes this response carries (the
     /// range length for a partial response).
     pub fn content_length(&self) -> Option<u64> {
-        let value = self.header(CONTENT_LENGTH)?;
-        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        value.parse().ok()
+        crate::metadata::parse_decimal(self.header(CONTENT_LENGTH)?)
     }
     /// `Content-Type`, verbatim.
     pub fn content_type(&self) -> Option<&str> {
@@ -200,16 +251,14 @@ impl GetObjectOutput {
     /// (`Sun, 06 Nov 1994 08:49:37 GMT`); the obsolete RFC 850 and asctime
     /// forms read as `None`.
     pub fn last_modified(&self) -> Option<DateTime<Utc>> {
-        DateTime::parse_from_rfc2822(self.header(LAST_MODIFIED)?)
-            .ok()
-            .map(|date| date.with_timezone(&Utc))
+        crate::metadata::parse_http_date(self.header(LAST_MODIFIED)?)
     }
     /// `Content-Range` of a partial response, parsed.
     pub fn content_range(&self) -> Option<ContentRange> {
         ContentRange::parse(self.header(CONTENT_RANGE)?)
     }
     fn header(&self, name: HeaderName) -> Option<&str> {
-        self.headers().get(name)?.to_str().ok()
+        self.response.headers().get(name)?.to_str().ok()
     }
     /// Read the next chunk; repeated calls after EOF return `None`.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>> {

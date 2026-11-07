@@ -19,7 +19,7 @@ use fds::acl::{
 };
 use fds::bucket::{AccessLog, LifecycleAction, LifecycleBaseItem, LifecycleConfig, LifecycleRule};
 use fds::oauth::{FdsServiceClient, OAuthProvider};
-use fds::object::{ObjectMetadata, StorageClass, UploadBody};
+use fds::object::{StorageClass, UploadBody, UserMetadata};
 use fds::Client;
 use http::Method;
 use std::future::Future;
@@ -156,10 +156,9 @@ fn md5(builder: fds::ClientBuilder) -> fds::ClientBuilder {
     builder.enable_md5_calculate(true)
 }
 
-fn meta(key: &str, value: &str) -> ObjectMetadata {
-    let mut metadata = ObjectMetadata::new();
-    metadata.set(key, value).unwrap();
-    metadata
+/// One user metadata entry `x-xiaomi-meta-{key}`.
+fn user(key: &str, value: &str) -> UserMetadata {
+    [(key, value)].into_iter().collect()
 }
 
 fn grant(id: &str, permission: GrantPermission, grant_type: GrantType) -> AccessControlList {
@@ -244,7 +243,7 @@ async fn requests() -> Vec<(&'static str, String)> {
                 .content_type("text/plain")
                 .content_md5("XrY7u+Ae7tCTyyK7j1rNww==")
                 .expect("100-continue")
-                .metadata(meta("x-xiaomi-meta-k", "v"))
+                .user_metadata(user("k", "v"))
                 .expires(at(1_752_400_000_123))
                 .timeout(Duration::from_secs(30))
                 .send()
@@ -360,7 +359,8 @@ async fn requests() -> Vec<(&'static str, String)> {
     cases.push((
         "set_object_metadata",
         capture(plain, 200, "", |c| async move {
-            c.set_object_metadata("b", ODD, meta("x-xiaomi-meta-k", "v"))
+            c.set_object_metadata("b", ODD)
+                .user_metadata(user("k", "v"))
                 .send()
                 .await
                 .unwrap();
@@ -723,7 +723,11 @@ fn urls() -> Vec<(&'static str, String)> {
         .build()
         .unwrap();
     let expiration = at(1_752_400_000_123);
-    let presign = |name, method: Method, cdn, metadata: Option<ObjectMetadata>| {
+    enum Signed {
+        ContentType(&'static str),
+        User(UserMetadata),
+    }
+    let presign = |name, method: Method, cdn, signed: Option<Signed>| {
         let mut request = client
             .presign_object("b", ODD)
             .method(method)
@@ -731,9 +735,11 @@ fn urls() -> Vec<(&'static str, String)> {
         if cdn {
             request = request.cdn();
         }
-        if let Some(metadata) = metadata {
-            request = request.metadata(metadata);
-        }
+        request = match signed {
+            Some(Signed::ContentType(value)) => request.content_type(value),
+            Some(Signed::User(metadata)) => request.user_metadata(metadata),
+            None => request,
+        };
         // The snapshot records the Url's exact string form.
         (name, request.build().unwrap().to_string())
     };
@@ -745,13 +751,13 @@ fn urls() -> Vec<(&'static str, String)> {
             "presign PUT metadata",
             Method::PUT,
             false,
-            Some(meta("content-type", "text/plain")),
+            Some(Signed::ContentType("text/plain")),
         ),
         presign(
             "presign DELETE cdn metadata",
             Method::DELETE,
             true,
-            Some(meta("x-xiaomi-meta-k", "v")),
+            Some(Signed::User(user("k", "v"))),
         ),
         (
             "absolute object",
@@ -1214,7 +1220,7 @@ async fn multipart_requests() -> Vec<(&'static str, String)> {
         "init_multipart_upload metadata",
         capture(plain, 200, INIT_BODY, |c| async move {
             c.create_multipart_upload("b", ODD)
-                .metadata(meta("x-xiaomi-meta-k", "v"))
+                .user_metadata(user("k", "v"))
                 .send()
                 .await
                 .unwrap();
@@ -1298,7 +1304,7 @@ async fn multipart_requests() -> Vec<(&'static str, String)> {
         "complete_multipart_upload metadata expires",
         capture(plain, 200, COMPLETE_BODY, |c| async move {
             c.complete_multipart_upload("b", "o", "u", [receipt(1, "e1", 4)])
-                .metadata(meta("content-type", "text/plain"))
+                .content_type("text/plain")
                 .expires(at(1_752_400_000_123))
                 .send()
                 .await
@@ -1345,7 +1351,7 @@ async fn multipart_requests() -> Vec<(&'static str, String)> {
                     .part_size(4)
                     .concurrency(1)
                     .cleanup(CleanupPolicy::Preserve)
-                    .metadata(meta("x-xiaomi-meta-k", "v"))
+                    .user_metadata(user("k", "v"))
                     .start()
                     .await
                     .unwrap();

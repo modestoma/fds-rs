@@ -1,8 +1,12 @@
 use super::output;
-use super::util::{parse_method, print_json, read_json, AclMode, BodyArgs, MetadataArgs};
+use super::util::{
+    apply_metadata, parse_method, presign_metadata, print_json, read_json, AclMode, BodyArgs,
+    MetadataArgs,
+};
 use anyhow::Result;
 use clap::Subcommand;
 use fds::*;
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 #[derive(Subcommand)]
 pub enum ObjectCmd {
@@ -165,9 +169,10 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             expect,
             content_disposition,
         } => {
-            let mut request = client
-                .put_object(bucket, object, body.load().await?)
-                .metadata(metadata.build()?);
+            let mut request = apply_metadata!(
+                client.put_object(bucket, object, body.load().await?),
+                metadata.build()?
+            );
             if let Some(value) = expires {
                 request = request.expires(*value);
             }
@@ -181,7 +186,7 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
         }
         ObjectCmd::Head { bucket, object } => {
             match client.head_object(bucket, object).send().await? {
-                Some(md) => print_json(md.as_map())?,
+                Some(md) => print_json(&md.entries().collect::<BTreeMap<_, _>>())?,
                 None => println!("null"),
             }
         }
@@ -205,11 +210,11 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             metadata,
         } => {
             let duration = std::time::Duration::from_secs(*expires);
-            let mut request = client
+            let request = client
                 .presign_object(bucket, object)
                 .method(parse_method(method)?)
-                .expires_in(duration)
-                .metadata(metadata.build()?);
+                .expires_in(duration);
+            let mut request = presign_metadata(request, metadata.build()?);
             if *cdn {
                 request = request.cdn();
             }
@@ -247,12 +252,7 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
                 let headers: Vec<_> = output
                     .headers()
                     .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.as_str(),
-                            String::from_utf8_lossy(value.as_bytes()).into_owned(),
-                        )
-                    })
+                    .map(|(name, value)| (name, String::from_utf8_lossy(value).into_owned()))
                     .collect();
                 eprintln!(
                     "{}",
@@ -366,17 +366,19 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
         ))?,
         ObjectCmd::GetMetadata { bucket, object } => {
             let md = client.get_object_metadata(bucket, object).send().await?;
-            print_json(md.as_map())?;
+            print_json(&md.entries().collect::<BTreeMap<_, _>>())?;
         }
         ObjectCmd::SetMetadata {
             bucket,
             object,
             metadata,
         } => {
-            client
-                .set_object_metadata(bucket, object, metadata.build()?)
-                .send()
-                .await?;
+            apply_metadata!(
+                client.set_object_metadata(bucket, object),
+                metadata.build()?
+            )
+            .send()
+            .await?;
             output::ok()?;
         }
         ObjectCmd::GetAcl {

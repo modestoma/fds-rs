@@ -23,7 +23,10 @@ fn basic_info_entry_list_metadata() {
     let class = info.storage_class.as_ref().unwrap();
     assert_eq!(class.as_str(), "Standard");
     assert!(class.is_standard());
-    assert_eq!(info.metadata.get("content-type"), Some("image/png"));
+    assert_eq!(
+        info.metadata.attributes.content_type.as_deref(),
+        Some("image/png")
+    );
 }
 
 #[test]

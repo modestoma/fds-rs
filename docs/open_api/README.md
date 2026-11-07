@@ -69,10 +69,10 @@
 
 | 文件 | 功能 | 原始方法、路径与参数 | SDK 状态 | SDK 入口与差异 |
 | --- | --- | --- | --- | --- |
-| [init-multipart-upload.yaml](init-multipart-upload.yaml) | 初始化分片上传 | `PUT /{bucketname}/{objectname}`；`?uploads` | implemented | `create_multipart_upload` 返回 `MultipartUploadSession`；metadata 可发送模式头，typed MULTI_BLOB 未启用 |
+| [init-multipart-upload.yaml](init-multipart-upload.yaml) | 初始化分片上传 | `PUT /{bucketname}/{objectname}`；`?uploads` | implemented | `create_multipart_upload` 返回 `MultipartUploadSession`；不能发送 `x-xiaomi-multipart-upload-mode` 模式头（object-metadata 后无此写入路径，revision 7 决定不增加），typed MULTI_BLOB 未启用 |
 | [upload-part.yaml](upload-part.yaml) | 上传一个分片 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?partNumber`、`B:body` | implemented | `upload_part`（或会话的 `upload_part`）支持消耗式内存/file/stream，`NonZeroU16` 片号，发送前检查不超过 10,000 |
 | [upload-part-copy.yaml](upload-part-copy.yaml) | 复制一个分片 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?partNumber`、`H:x-xiaomi-copy-source`、`H:x-xiaomi-copy-source-range` | missing | 无复制分片 |
-| [complete-multipart-upload.yaml](complete-multipart-upload.yaml) | 完成分片上传 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?expires`、`H:content-type`、`B:body` | implemented | `complete_multipart_upload`（或会话的 `complete`）支持 `.expires` 和 `.metadata` |
+| [complete-multipart-upload.yaml](complete-multipart-upload.yaml) | 完成分片上传 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?expires`、`H:content-type`、`B:body` | implemented | `complete_multipart_upload`（或会话的 `complete`）支持 `.expires`、类型化的 `.content_type` 等和 `.user_metadata` |
 | [abort-multipart-upload.yaml](abort-multipart-upload.yaml) | 取消分片上传 | `DELETE /{bucketname}/{objectname}`；`?uploadId` | implemented | `abort_multipart_upload`（或会话的 `abort`） |
 
 ### 恢复与缓存操作
@@ -102,7 +102,7 @@
 | Access log | `get_access_log` / `set_access_log` GET/PUT `?accessLog` |
 | basicInfo | `get_object_basic_info` GET `?basicInfo` |
 | Metadata GET/SET | `get_object_metadata` GET `?metadata`；`set_object_metadata` PUT `?setMetaData` |
-| Metadata codec | `ObjectMetadata::serialize` 输出 rawMeta map；Deserialize 输入 rawMeta.entry 数组；`from_headers` 解析头 |
+| Metadata codec | 均为内部实现：`set_object_metadata` 发送 rawMeta map；basicInfo 解析 rawMeta.entry 数组；HEAD/GET/`?metadata` 解析响应头；读取结果为 `ObjectMetadata { attributes, user_metadata }` |
 | Presign / URL | `presign_object`、`absolute_object_url`，HEAD 签名附 metadata，expires 毫秒，Signature 原样追加 |
 | Prefix delete | `delete_prefix` 列举后逐页批删 |
 | Download manager | `download_file`（`DownloadFile`、`RequestLimiter`），默认 manager feature |

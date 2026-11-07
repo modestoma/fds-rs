@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use fds::object::ObjectMetadata;
+use fds::object::{PresignObject, UserMetadata};
 use fds::Client;
 use http::Method;
 use serde::Deserialize;
@@ -66,12 +66,23 @@ fn parse_method(s: &str) -> Method {
     }
 }
 
-fn build_metadata(m: &HashMap<String, String>) -> ObjectMetadata {
-    let mut md = ObjectMetadata::new();
+/// Apply the Go fixture's raw metadata map: the typed signed headers and
+/// the `x-xiaomi-meta-*` user entries.
+fn apply_metadata(mut request: PresignObject, m: &HashMap<String, String>) -> PresignObject {
+    let mut user = UserMetadata::new();
     for (k, v) in m {
-        md.set(k, v).unwrap();
+        match k.to_ascii_lowercase().as_str() {
+            "content-type" => request = request.content_type(v),
+            "content-md5" => request = request.content_md5(v),
+            key => {
+                let key = key
+                    .strip_prefix("x-xiaomi-meta-")
+                    .unwrap_or_else(|| panic!("unexpected fixture metadata {k}"));
+                user.insert(key, v);
+            }
+        }
     }
-    md
+    request.user_metadata(user)
 }
 
 fn client(fx: &Fixtures) -> Client {
@@ -107,7 +118,6 @@ fn golden_presigned_urls() {
     assert!(!fx.presigned_urls.is_empty());
     for case in &fx.presigned_urls {
         let expiration = chrono::DateTime::from_timestamp_millis(case.expiration_millis).unwrap();
-        let metadata = case.metadata.as_ref().map(build_metadata);
         let mut request = c
             .presign_object(&case.bucket, &case.object)
             .method(parse_method(&case.method))
@@ -115,8 +125,8 @@ fn golden_presigned_urls() {
         if case.cdn {
             request = request.cdn();
         }
-        if let Some(metadata) = metadata {
-            request = request.metadata(metadata);
+        if let Some(metadata) = &case.metadata {
+            request = apply_metadata(request, metadata);
         }
         let got = request.build().unwrap();
         // The Url's string form (and Display) is the exact golden string.
