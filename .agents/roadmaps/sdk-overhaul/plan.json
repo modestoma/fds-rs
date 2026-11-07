@@ -2,12 +2,12 @@
   "schema_version": 3,
   "id": "sdk-overhaul",
   "title": "FDS Rust SDK 设计重构（0.1.0）",
-  "revision": 6,
+  "revision": 7,
   "status": "running",
   "base_branch": "main",
   "merge_mode": "local",
-  "approved_revision": 6,
-  "approval_ref": "2026-11-07 用户在提问中选择：PutObjectOutput \"保留字段（推荐）\"；类型收紧 \"接受为例外（推荐）\"；授权范围同前",
+  "approved_revision": 7,
+  "approval_ref": "2026-11-07 用户在提问中选择：旧 meta key \"接受为例外（推荐）\"；空系统头 \"接受（推荐）\"；退化 key \"拒绝并记例外（推荐）\"；授权范围同前",
   "max_parallel": 3,
   "pending_questions": [],
   "tasks": [
@@ -177,7 +177,7 @@
       "type": "feat",
       "document": "tasks/object-metadata.md",
       "status": "planned",
-      "reviewed_revision": 6,
+      "reviewed_revision": 7,
       "depends_on": [
         "typed-responses"
       ],
@@ -191,7 +191,7 @@
       "type": "feat",
       "document": "tasks/credentials-provider.md",
       "status": "planned",
-      "reviewed_revision": 6,
+      "reviewed_revision": 7,
       "depends_on": [
         "object-metadata"
       ],
@@ -212,7 +212,7 @@
       "type": "feat",
       "document": "tasks/idempotent-retry.md",
       "status": "planned",
-      "reviewed_revision": 6,
+      "reviewed_revision": 7,
       "depends_on": [
         "object-metadata"
       ],
@@ -226,7 +226,7 @@
       "type": "docs",
       "document": "tasks/docs-release.md",
       "status": "planned",
-      "reviewed_revision": 6,
+      "reviewed_revision": 7,
       "depends_on": [
         "credentials-provider",
         "idempotent-retry"
@@ -365,6 +365,17 @@
         "typed-responses"
       ],
       "at": "2026-11-07T15:21:35Z"
+    },
+    {
+      "revision": 7,
+      "reason": "用户对 object-metadata 的三项决定：旧白名单 meta key 拒绝、空系统头不发送、UserMetadata 拒绝空 key 和自带前缀的 key",
+      "affects": [
+        "credentials-provider",
+        "docs-release",
+        "idempotent-retry",
+        "object-metadata"
+      ],
+      "at": "2026-11-07T15:55:35Z"
     }
   ]
 }

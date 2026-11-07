@@ -30,6 +30,8 @@
 
 **不做：** 不改线上格式。
 
+- revision 7 调整（用户决定）：旧白名单 meta key 拒绝（AC-7 例外）；系统头空值不发送；`UserMetadata` 在发送前拒绝空 key 和自带 `x-xiaomi-meta-` 前缀的 key（AC-7 例外）。
+
 ## 对应验收标准
 
 AC-6（元数据部分），AC-7、AC-8（本任务范围内）。
