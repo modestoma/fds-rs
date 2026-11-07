@@ -1,10 +1,12 @@
-//! Failure-safe downloads. Only the owning future can publish the destination.
+//! Failure-safe file downloads ([`Client::download_file`]). Only the owning
+//! future can publish the destination.
 //!
 //! No filesystem call runs on an async runtime thread: locking, staging-file
 //! validation, resume hashing, part writes, checkpoints, the final fsync, the
 //! rename and cleanup all run in `spawn_blocking`.
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -20,102 +22,183 @@ use crate::client::{Client, ClientRequest};
 use crate::error::{Error, ErrorKind, Result};
 use http::Method;
 
-/// Validated, immutable download configuration. Build with named options.
+const DEFAULT_PART_SIZE: u64 = 1024 * 1024;
+const DEFAULT_CONCURRENCY: usize = 4;
+
+/// Admission control for the part requests of [`DownloadFile`]: each started
+/// part request takes one permit. This limits request frequency, not bytes
+/// per second.
+///
+/// Clones share one budget, so several downloads can be limited together.
 #[derive(Clone)]
-pub struct DownloadOptions {
+pub struct RequestLimiter(Arc<governor::DefaultDirectRateLimiter>);
+
+impl RequestLimiter {
+    /// Admit at most `requests` part requests per second on average. Up to
+    /// `requests` permits may be taken at once after an idle period (the
+    /// burst equals the rate).
+    pub fn per_second(requests: NonZeroU32) -> Self {
+        Self(Arc::new(governor::RateLimiter::direct(
+            governor::Quota::per_second(requests),
+        )))
+    }
+
+    async fn acquire(&self) {
+        self.0.until_ready().await;
+    }
+}
+
+impl std::fmt::Debug for RequestLimiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestLimiter").finish_non_exhaustive()
+    }
+}
+
+/// Builder for [`Client::download_file`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct DownloadFile {
+    client: Client,
+    bucket: String,
+    object: String,
+    path: PathBuf,
+    range: Option<crate::object::ByteRange>,
+    options: DownloadOptions,
+}
+
+/// Validated options shared by the workers of one download.
+#[derive(Clone, Debug)]
+struct DownloadOptions {
     part_size: u64,
     concurrency: usize,
     resume: bool,
-    request_limiter: Option<Arc<governor::DefaultDirectRateLimiter>>,
+    request_limiter: Option<RequestLimiter>,
 }
+
 impl Default for DownloadOptions {
     fn default() -> Self {
         Self {
-            part_size: 1024 * 1024,
-            concurrency: 4,
+            part_size: DEFAULT_PART_SIZE,
+            concurrency: DEFAULT_CONCURRENCY,
             resume: false,
             request_limiter: None,
         }
     }
 }
+
 impl DownloadOptions {
-    pub fn builder() -> DownloadOptionsBuilder {
-        DownloadOptionsBuilder(Self::default())
-    }
-}
-/// Named configuration builder; `build` validates all numeric limits.
-pub struct DownloadOptionsBuilder(DownloadOptions);
-impl DownloadOptionsBuilder {
-    pub fn part_size(mut self, bytes: u64) -> Self {
-        self.0.part_size = bytes;
-        self
-    }
-    pub fn concurrency(mut self, workers: usize) -> Self {
-        self.0.concurrency = workers;
-        self
-    }
-    pub fn resume(mut self, enabled: bool) -> Self {
-        self.0.resume = enabled;
-        self
-    }
-    /// One permit per started part request; this is not byte bandwidth limiting.
-    pub fn request_limiter(mut self, limiter: Arc<governor::DefaultDirectRateLimiter>) -> Self {
-        self.0.request_limiter = Some(limiter);
-        self
-    }
-    pub fn build(self) -> Result<DownloadOptions> {
-        if self.0.part_size == 0 {
-            return Err(Error::invalid_input("part size must be at least 1"));
-        }
-        if self.0.part_size > i64::MAX as u64 {
+    fn validate(&self) -> Result<()> {
+        if self.part_size == 0 || self.part_size > i64::MAX as u64 {
             return Err(Error::invalid_input(
-                "part size exceeds supported file size",
+                "part size must be at least 1 and at most i64::MAX",
             ));
         }
-        if self.0.concurrency == 0 {
+        if self.concurrency == 0 {
             return Err(Error::invalid_input("concurrency must be at least 1"));
         }
-        Ok(self.0)
+        Ok(())
     }
 }
 
-/// Concurrent streaming downloader with fixed, validated options.
-pub struct Downloader {
+impl DownloadFile {
+    /// Download only this byte range of the object; the destination then
+    /// holds exactly those bytes.
+    pub fn range(mut self, range: crate::object::ByteRange) -> Self {
+        self.range = Some(range);
+        self
+    }
+
+    /// Bytes per part request (default 1 MiB), at least 1 and at most
+    /// `i64::MAX`. Ignored without a strong ETag (one request then).
+    pub fn part_size(mut self, bytes: u64) -> Self {
+        self.options.part_size = bytes;
+        self
+    }
+
+    /// Part requests in flight at once (default 4), at least 1.
+    pub fn concurrency(mut self, requests: usize) -> Self {
+        self.options.concurrency = requests;
+        self
+    }
+
+    /// Keep a checkpoint next to the destination and, on the next download to
+    /// the same path, reuse the parts whose local bytes still match it. Only
+    /// used when the object has a strong ETag.
+    pub fn resume(mut self) -> Self {
+        self.options.resume = true;
+        self
+    }
+
+    /// Take one permit from `limiter` before each part request.
+    pub fn request_limiter(mut self, limiter: RequestLimiter) -> Self {
+        self.options.request_limiter = Some(limiter);
+        self
+    }
+
+    /// HEAD the object (the same read-only, retryable request as
+    /// [`Client::head_object`]), download its parts concurrently into a
+    /// staging file and atomically replace the destination only after every
+    /// part is verified.
+    ///
+    /// Names and options are validated first: failures are
+    /// [`ErrorKind::InvalidInput`] with nothing sent and no file touched. A
+    /// missing object fails with [`Error::is_not_found`]. Concurrent downloads
+    /// to the same canonical parent and file name fail while one holds the
+    /// lock. Without a strong ETag the object is fetched in one streaming
+    /// request and never resumed.
+    pub async fn send(self) -> Result<()> {
+        crate::object::validate_object(&self.bucket, &self.object)?;
+        self.options.validate()?;
+        Downloader::new(self.client, self.options)
+            .download(&self.bucket, &self.object, self.range, self.path)
+            .await
+    }
+}
+
+impl Client {
+    /// Download an object into a local file with concurrent range requests,
+    /// optional resume and an atomic replace of `path` on success.
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// client
+    ///     .download_file("bucket", "big.bin", "/data/big.bin")
+    ///     .part_size(8 * 1024 * 1024)
+    ///     .concurrency(8)
+    ///     .resume()
+    ///     .send()
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// The parent directory of `path` must exist. Next to `path` the download
+    /// keeps `<name>.tmp` (staging), `<name>.download.lock` and, with
+    /// [`resume`](DownloadFile::resume), `<name>.download.bp`.
+    pub fn download_file(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        path: impl Into<PathBuf>,
+    ) -> DownloadFile {
+        DownloadFile {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            path: path.into(),
+            range: None,
+            options: DownloadOptions::default(),
+        }
+    }
+}
+
+/// Runs one download with validated options.
+struct Downloader {
     client: Client,
     options: DownloadOptions,
     #[cfg(test)]
     panic_worker: bool,
     #[cfg(test)]
     checkpoint_writes: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DownloadRequest {
-    pub bucket_name: String,
-    pub object_name: String,
-    pub range: Option<crate::object::ByteRange>,
-    pub file_path: PathBuf,
-}
-impl DownloadRequest {
-    pub fn new(
-        bucket: impl Into<String>,
-        object: impl Into<String>,
-        path: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            file_path: path.into(),
-            range: None,
-        }
-    }
-    pub fn range(mut self, range: crate::object::ByteRange) -> Self {
-        self.range = Some(range);
-        self
-    }
-    pub async fn send(self, downloader: &Downloader) -> Result<()> {
-        downloader.download(&self).await
-    }
 }
 
 /// An SDK-internal failure (a panicked task or a broken invariant).
@@ -568,10 +651,10 @@ async fn download_part(
     id: Arc<Identity>,
     staging: Staging,
     index: usize,
-    limiter: Option<Arc<governor::DefaultDirectRateLimiter>>,
+    limiter: Option<RequestLimiter>,
 ) -> Result<(usize, String)> {
     if let Some(limiter) = limiter {
-        limiter.until_ready().await;
+        limiter.acquire().await;
     }
     let (start, end) = part_bounds(&id, index);
     let mut request = ClientRequest::new(&id.bucket, &id.object, Method::GET);
@@ -625,9 +708,7 @@ async fn download_part(
 }
 
 impl Downloader {
-    /// The downloader keeps its own handle; pass `client.clone()` to keep
-    /// using the caller's (clones share one connection pool).
-    pub fn new(client: Client, options: DownloadOptions) -> Self {
+    fn new(client: Client, options: DownloadOptions) -> Self {
         Self {
             client,
             options,
@@ -638,14 +719,18 @@ impl Downloader {
         }
     }
 
-    /// Atomically replace the destination only after every part is verified.
-    /// Concurrent calls for the same canonical parent/filename fail while locked.
-    /// Without a strong ETag, restart as one streaming request; do not resume.
-    pub async fn download(&self, request: &DownloadRequest) -> Result<()> {
-        crate::object::validate_object(&request.bucket_name, &request.object_name)?;
-        let input = request.file_path.clone();
-        let destination = Arc::new(blocking(move || Destination::acquire(&input)).await?);
-        let result = self.download_locked(request, &destination).await;
+    /// Callers validate the names and options first.
+    async fn download(
+        &self,
+        bucket: &str,
+        object: &str,
+        range: Option<crate::object::ByteRange>,
+        path: PathBuf,
+    ) -> Result<()> {
+        let destination = Arc::new(blocking(move || Destination::acquire(&path)).await?);
+        let result = self
+            .download_locked(bucket, object, range, &destination)
+            .await;
         // Every worker and blocking write has ended; unlock off the runtime thread.
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(destination) = Arc::try_unwrap(destination) {
@@ -658,16 +743,15 @@ impl Downloader {
 
     async fn download_locked(
         &self,
-        request: &DownloadRequest,
+        bucket: &str,
+        object: &str,
+        range: Option<crate::object::ByteRange>,
         destination: &Arc<Destination>,
     ) -> Result<()> {
+        // The HEAD of `head_object`, but 404 stays an error (NotFound).
         let head = self
             .client
-            .do_request(ClientRequest::new(
-                &request.bucket_name,
-                &request.object_name,
-                Method::HEAD,
-            ))
+            .do_request(crate::object::head_request(bucket, object, None)?)
             .await?;
         let size = head
             .headers()
@@ -685,7 +769,7 @@ impl Downloader {
             .filter(|s| s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
             .unwrap_or("")
             .to_string();
-        let (start, end) = effective_range(request.range, size)?;
+        let (start, end) = effective_range(range, size)?;
         let part_size = if etag.is_empty() {
             (end - start).max(1)
         } else {
@@ -694,8 +778,8 @@ impl Downloader {
         let id = Arc::new(Identity {
             version: 2,
             endpoint: self.client.configuration().endpoint().to_string(),
-            bucket: request.bucket_name.clone(),
-            object: request.object_name.clone(),
+            bucket: bucket.to_string(),
+            object: object.to_string(),
             size,
             etag,
             start,
@@ -808,6 +892,16 @@ impl Downloader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn options(concurrency: usize) -> DownloadOptions {
+        DownloadOptions {
+            part_size: 4,
+            concurrency,
+            resume: true,
+            request_limiter: None,
+        }
+    }
+
     #[tokio::test]
     async fn panic_does_not_publish() {
         let mut server = mockito::Server::new_async().await;
@@ -827,24 +921,9 @@ mod tests {
             .credentials("ak", "sk")
             .build()
             .unwrap();
-        let mut downloader = Downloader::new(
-            client,
-            crate::manager::DownloadOptions::builder()
-                .part_size(4)
-                .concurrency(2)
-                .resume(true)
-                .build()
-                .unwrap(),
-        );
+        let mut downloader = Downloader::new(client, options(2));
         downloader.panic_worker = true;
-        let result = downloader
-            .download(&DownloadRequest {
-                bucket_name: "b".into(),
-                object_name: "o".into(),
-                file_path: path.to_str().unwrap().into(),
-                range: None,
-            })
-            .await;
+        let result = downloader.download("b", "o", None, path.clone()).await;
         assert!(result.is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"original");
         assert!(!root.join("out.download.lock").exists());
@@ -932,18 +1011,8 @@ mod tests {
             .credentials("ak", "sk")
             .build()
             .unwrap();
-        let downloader = Downloader::new(
-            client,
-            crate::manager::DownloadOptions::builder()
-                .part_size(4)
-                .concurrency(1)
-                .resume(true)
-                .build()
-                .unwrap(),
-        );
-        let result = downloader
-            .download(&DownloadRequest::new("b", "o", root.join("out")))
-            .await;
+        let downloader = Downloader::new(client, options(1));
+        let result = downloader.download("b", "o", None, root.join("out")).await;
         std::fs::remove_dir_all(root).unwrap();
         let writes = downloader
             .checkpoint_writes

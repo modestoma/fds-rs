@@ -142,7 +142,7 @@
       "title": "分片上传与 Downloader 迁移到流式 builder",
       "type": "feat",
       "document": "tasks/fluent-multipart-manager.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 5,
       "depends_on": [
         "fluent-object"

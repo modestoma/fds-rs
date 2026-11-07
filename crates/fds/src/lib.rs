@@ -38,11 +38,13 @@
 //!     [`object::ByteRange`], [`object::StorageClass`]);
 //!   - [`bucket`]: bucket operations, lifecycle and access-log models;
 //!   - [`acl`]: ACL models shared by buckets and objects;
-//!   - [`multipart`]: the low-level multipart requests and the managed
+//!   - [`multipart`]: the low-level multipart builders, the
+//!     [`multipart::MultipartUploadSession`] and the managed file upload
 //!     [`multipart::MultipartUpload`];
 //!   - [`oauth`]: endpoint discovery, storage-token exchange and the
 //!     app-scoped bucket listing;
-//!   - `manager` (default `manager` feature): the resumable `Downloader`.
+//!   - `manager` (default `manager` feature): the resumable file download
+//!     `DownloadFile` and its `RequestLimiter`.
 //! - A type defined in a domain module is never re-exported from the root or
 //!   from another module, and implementation modules are private. New
 //!   operations and their builders follow the same rule.
@@ -57,9 +59,8 @@
 //!
 //! Every operation is written as
 //! `client.<operation>(required arguments).<option>(..).send().await`.
-//! Single-object, bucket, OAuth, listing and bulk-delete operations follow
-//! this convention today; multipart operations still use request structs
-//! until they are migrated to it.
+//! Every operation follows this convention: single-object, bucket, OAuth,
+//! listing, bulk-delete, multipart and managed transfer operations.
 //!
 //! - The [`Client`] method takes only the required arguments (bucket, object,
 //!   body, ACL, ...) and returns a builder type named after the operation,
@@ -86,6 +87,14 @@
 //! - An operation that makes no request ends in `build()` instead of `send()`
 //!   and has no timeout (for example [`Client::presign_object`]); one without
 //!   options is a plain method (for example [`Client::absolute_object_url`]).
+//! - Managed transfers ([`Client::upload_file`], `Client::download_file`)
+//!   send many requests, so they have no single-request `timeout`; the
+//!   client's connect and idle timeouts bound every request. Their options
+//!   share names (`part_size`, `concurrency`) and are validated, like names,
+//!   before any file or network IO, failing with [`ErrorKind::InvalidInput`].
+//!   `upload_file` ends in `start()`, which initiates the upload and returns
+//!   the [`multipart::MultipartUpload`] session to run, so that progress can
+//!   be inspected and recovered after a failure.
 //! - Builders are `#[must_use]`: nothing happens until `send` is awaited.
 //!
 //! POST object creation, archive restoration and multipart copy remain deferred.

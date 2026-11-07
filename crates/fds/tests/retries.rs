@@ -1,4 +1,3 @@
-use fds::multipart::InitMultipartUploadRequest;
 use fds::object::UploadBody;
 use fds::{Client, RetryPolicy};
 use std::{
@@ -126,14 +125,7 @@ async fn writes_streams_and_success_decode_errors_are_never_replayed() {
         .expect(1)
         .create_async()
         .await;
-    assert!(c
-        .init_multipart_upload(&InitMultipartUploadRequest {
-            bucket_name: "b".into(),
-            object_name: "k".into(),
-            metadata: None
-        })
-        .await
-        .is_err());
+    assert!(c.create_multipart_upload("b", "k").send().await.is_err());
     init.assert_async().await;
     for (key, body) in [
         ("bytes", UploadBody::from(vec![1])),

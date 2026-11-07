@@ -1,6 +1,5 @@
 //! Compile-only migration contract against the real SDK; main performs no I/O.
 use fds::acl::{AccessControlList, AclAction};
-use fds::multipart::InitMultipartUploadRequest;
 use fds::object::ByteRange;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
@@ -31,25 +30,20 @@ async fn migrate(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
         .action(AclAction::Add)
         .send()
         .await?;
-    let init = client
-        .init_multipart_upload(&InitMultipartUploadRequest {
-            bucket_name: bucket.into(),
-            object_name: key.into(),
-            metadata: None,
-        })
-        .await?;
-    let part = match init.part(1, b"part".to_vec()).send(client).await {
+    let session = client.create_multipart_upload(bucket, key).send().await?;
+    let first = std::num::NonZeroU16::MIN;
+    let part = match session.upload_part(first, b"part".to_vec()).send().await {
         Ok(part) => part,
         Err(primary) => {
-            let cleanup = init.abort(client).await.err();
-            record_failure(&init.upload_id, &primary, cleanup.as_ref());
+            let cleanup = session.abort().send().await.err();
+            record_failure(session.upload_id(), &primary, cleanup.as_ref());
             return Err(primary);
         }
     };
     let parts = vec![part];
-    if let Err(primary) = init.complete(parts).send(client).await {
+    if let Err(primary) = session.complete(parts).send().await {
         // Outcome may be unknown: preserve recovery context, never auto-abort/retry.
-        record_failure(&init.upload_id, &primary, None);
+        record_failure(session.upload_id(), &primary, None);
         return Err(primary);
     }
     Ok(())

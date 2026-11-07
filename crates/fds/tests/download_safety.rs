@@ -1,5 +1,5 @@
 #![cfg(feature = "manager")]
-use fds::manager::{DownloadRequest, Downloader};
+use fds::manager::DownloadFile;
 use fds::Client;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,39 +19,55 @@ impl Output {
     fn path(&self) -> PathBuf {
         self.0.join("out")
     }
-    fn request(&self) -> DownloadRequest {
-        DownloadRequest {
-            bucket_name: "b".into(),
-            object_name: "o".into(),
-            file_path: self.path().to_str().unwrap().into(),
-            range: None,
-        }
-    }
 }
 impl Drop for Output {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+/// Reusable settings for downloading `b/o`; every download is a new builder.
+struct DownloadSettings {
+    client: Client,
+    part: u64,
+    concurrency: usize,
+    resume: bool,
+}
+impl DownloadSettings {
+    fn file(&self, path: impl Into<PathBuf>) -> DownloadFile {
+        let builder = self
+            .client
+            .download_file("b", "o", path)
+            .part_size(self.part)
+            .concurrency(self.concurrency);
+        if self.resume {
+            builder.resume()
+        } else {
+            builder
+        }
+    }
+    async fn download(&self, out: &Output) -> fds::Result<()> {
+        self.file(out.path()).send().await
+    }
+}
+fn client(url: impl Into<String>) -> Client {
+    Client::builder()
+        .endpoint(url)
+        .credentials("ak", "sk")
+        .build()
+        .unwrap()
+}
 fn downloader(
     server: &mockito::ServerGuard,
     part: u64,
     concurrency: usize,
     resume: bool,
-) -> Downloader {
-    Downloader::new(
-        Client::builder()
-            .endpoint(server.url())
-            .credentials("ak", "sk")
-            .build()
-            .unwrap(),
-        fds::manager::DownloadOptions::builder()
-            .part_size(part)
-            .concurrency(concurrency)
-            .resume(resume)
-            .build()
-            .unwrap(),
-    )
+) -> DownloadSettings {
+    DownloadSettings {
+        client: client(server.url()),
+        part,
+        concurrency,
+        resume,
+    }
 }
 async fn head(server: &mut mockito::ServerGuard, size: usize, etag: &str) -> mockito::Mock {
     server
@@ -103,7 +119,7 @@ async fn rejects_invalid_wire_responses_without_replacing_destination() {
         let out = Output::new();
         std::fs::write(out.path(), "original").unwrap();
         assert!(downloader(&server, 4, 2, true)
-            .download(&out.request())
+            .download(&out)
             .await
             .is_err());
         assert_eq!(std::fs::read(out.path()).unwrap(), b"original");
@@ -128,12 +144,11 @@ async fn stale_temp_zero_and_range_downloads_have_exact_length() {
         };
         let out = Output::new();
         std::fs::write(out.0.join("out.tmp"), [b'x'; 100]).unwrap();
-        let mut req = out.request();
-        req.range = range.map(str::parse).transpose().unwrap();
-        downloader(&server, 4, 2, true)
-            .download(&req)
-            .await
-            .unwrap();
+        let mut builder = downloader(&server, 4, 2, true).file(out.path());
+        if let Some(range) = range {
+            builder = builder.range(range.parse().unwrap());
+        }
+        builder.send().await.unwrap();
         assert_eq!(std::fs::read(out.path()).unwrap(), expected.as_bytes());
     }
 }
@@ -151,7 +166,7 @@ async fn resume_validates_source_geometry_and_local_bytes() {
             .await;
         let out = Output::new();
         let dl = downloader(&server, 4, 1, true);
-        assert!(dl.download(&out.request()).await.is_err());
+        assert!(dl.download(&out).await.is_err());
         first.assert_async().await;
         failure.remove_async().await;
         let mut cp: serde_json::Value =
@@ -197,7 +212,7 @@ async fn resume_validates_source_geometry_and_local_bytes() {
             .with_body("efgh")
             .create_async()
             .await;
-        dl.download(&out.request()).await.unwrap();
+        dl.download(&out).await.unwrap();
         a.assert_async().await;
         b.assert_async().await;
         assert_eq!(std::fs::read(out.path()).unwrap(), b"abcdefgh");
@@ -213,27 +228,105 @@ async fn no_strong_validator_restarts_in_one_request() {
         let out = Output::new();
         std::fs::write(out.0.join("out.tmp"), "bad").unwrap();
         downloader(&server, 1, 8, true)
-            .download(&out.request())
+            .download(&out)
             .await
             .unwrap();
         p.assert_async().await;
         assert_eq!(std::fs::read(out.path()).unwrap(), b"abcdefgh");
     }
 }
-#[test]
-fn invalid_options_fail_at_construction() {
-    assert!(fds::manager::DownloadOptions::builder()
-        .part_size(0)
+#[tokio::test]
+async fn invalid_options_fail_before_lock_and_network() {
+    // Nothing listens here: a request that is sent fails with Transport.
+    let client = client("http://127.0.0.1:1");
+    let out = Output::new();
+    for builder in [
+        client.download_file("b", "o", out.path()).part_size(0),
+        client
+            .download_file("b", "o", out.path())
+            .part_size(u64::MAX),
+        client.download_file("b", "o", out.path()).concurrency(0),
+        client.download_file("", "o", out.path()),
+        client.download_file("b", "", out.path()),
+    ] {
+        let error = builder.send().await.unwrap_err();
+        assert_eq!(error.kind(), fds::ErrorKind::InvalidInput, "{error:?}");
+        assert_eq!(error.dispatch(), fds::Dispatch::NotSent);
+        assert!(!out.0.join("out.download.lock").exists());
+        assert!(!out.0.join("out.tmp").exists());
+    }
+}
+
+// The HEAD is the read-only request of `head_object`: retried under the
+// client's retry policy, and a missing object is NotFound.
+#[tokio::test]
+async fn head_is_retried_and_missing_object_is_not_found() {
+    use std::time::Duration;
+    let mut server = mockito::Server::new_async().await;
+    let unavailable = server
+        .mock("HEAD", "/b/o")
+        .with_status(503)
+        .expect(1)
+        .create_async()
+        .await;
+    let out = Output::new();
+    let retrying = Client::builder()
+        .endpoint(server.url())
+        .credentials("ak", "sk")
+        .retry_policy(
+            fds::RetryPolicy::new(1, Duration::from_millis(1), Duration::from_millis(2)).unwrap(),
+        )
         .build()
-        .is_err());
-    assert!(fds::manager::DownloadOptions::builder()
-        .concurrency(0)
-        .build()
-        .is_err());
-    assert!(fds::manager::DownloadOptions::builder()
-        .part_size(u64::MAX)
-        .build()
-        .is_err());
+        .unwrap();
+    let download = |client: &Client| client.download_file("b", "o", out.path()).part_size(4);
+    // Without retries the 503 is returned as it is.
+    let error = download(&client(server.url())).send().await.unwrap_err();
+    assert_eq!(error.kind(), fds::ErrorKind::ServerError);
+    assert_eq!(error.status().map(|s| s.as_u16()), Some(503));
+    unavailable.assert_async().await;
+    unavailable.remove_async().await;
+
+    // The first HEAD answers 503, the retry succeeds and the download finishes.
+    let first = server
+        .mock("HEAD", "/b/o")
+        .with_status(503)
+        .expect(1)
+        .create_async()
+        .await;
+    // mockito prefers the earlier mock until its expected hits are reached.
+    let h = head(&mut server, 4, "\"v1\"").await;
+    let p = part(&mut server, 0, 3, 4, "abcd").await;
+    download(&retrying).send().await.unwrap();
+    assert_eq!(std::fs::read(out.path()).unwrap(), b"abcd");
+    first.assert_async().await;
+    h.assert_async().await;
+    p.assert_async().await;
+    drop((first, h, p));
+
+    let mut server = mockito::Server::new_async().await;
+    let missing = server
+        .mock("HEAD", "/b/o")
+        .with_status(404)
+        .expect(1)
+        .create_async()
+        .await;
+    let no_get = server
+        .mock("GET", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    std::fs::write(out.path(), b"original").unwrap();
+    let error = client(server.url())
+        .download_file("b", "o", out.path())
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.is_not_found(), "{error:?}");
+    assert_eq!(error.status().map(|s| s.as_u16()), Some(404));
+    assert_eq!(std::fs::read(out.path()).unwrap(), b"original");
+    assert!(!out.0.join("out.download.lock").exists());
+    missing.assert_async().await;
+    no_get.assert_async().await;
 }
 
 // Raw HTTP peer holds one body open to observe cancellation of the actual socket.
@@ -272,32 +365,21 @@ async fn cancellation_and_checkpoint_failure_stop_workers_and_preserve_destinati
                 });
             }
         });
-        let client = Client::builder()
-            .endpoint(format!("http://{address}"))
-            .credentials("ak", "sk")
-            .build()
-            .unwrap();
-        let dl = Arc::new(Downloader::new(
-            client,
-            fds::manager::DownloadOptions::builder()
-                .part_size(4)
-                .concurrency(2)
-                .resume(true)
-                .build()
-                .unwrap(),
-        ));
+        let dl = DownloadSettings {
+            client: client(format!("http://{address}")),
+            part: 4,
+            concurrency: 2,
+            resume: true,
+        };
         let out = Output::new();
         std::fs::write(out.path(), "original").unwrap();
-        let req = out.request();
-        let worker_dl = dl.clone();
-        let task = tokio::spawn(async move { worker_dl.download(&req).await });
+        let task = tokio::spawn(dl.file(out.path()).send());
         tokio::time::timeout(Duration::from_secs(3), started.notified())
             .await
             .unwrap();
         // The same destination (including a normalized parent alias) is rejected.
-        let mut alias = out.request();
-        alias.file_path = out.0.join(".").join("out").to_str().unwrap().into();
-        assert!(dl.download(&alias).await.is_err());
+        let alias = out.0.join(".").join("out");
+        assert!(dl.file(alias).send().await.is_err());
         if checkpoint_failure {
             std::fs::create_dir(out.0.join("out.download.bp.new")).unwrap();
             finish_first.notify_one();
@@ -345,9 +427,7 @@ async fn chunked_bodies_are_counted_through_eof() {
             .await;
         let out = Output::new();
         std::fs::write(out.path(), "original").unwrap();
-        let result = downloader(&server, 4, 1, true)
-            .download(&out.request())
-            .await;
+        let result = downloader(&server, 4, 1, true).download(&out).await;
         assert_eq!(result.is_ok(), body == "abcd");
         assert_eq!(
             std::fs::read(out.path()).unwrap(),
@@ -374,7 +454,7 @@ async fn staging_aliases_cannot_modify_an_existing_file() {
             std::os::unix::fs::symlink(out.path(), out.0.join("out.tmp")).unwrap();
         }
         assert!(downloader(&server, 4, 1, false)
-            .download(&out.request())
+            .download(&out)
             .await
             .is_err());
         assert_eq!(std::fs::read(out.path()).unwrap(), b"original");
@@ -385,7 +465,6 @@ async fn staging_aliases_cannot_modify_an_existing_file() {
 async fn limiter_controls_part_request_admission() {
     use std::{
         num::NonZeroU32,
-        sync::Arc,
         time::{Duration, Instant},
     };
     let mut server = mockito::Server::new_async().await;
@@ -393,22 +472,18 @@ async fn limiter_controls_part_request_admission() {
     let a = part(&mut server, 0, 3, 8, "abcd").await;
     let b = part(&mut server, 4, 7, 8, "efgh").await;
     let out = Output::new();
-    let client = Client::builder()
-        .endpoint(server.url())
-        .credentials("ak", "sk")
-        .build()
-        .unwrap();
-    let options = fds::manager::DownloadOptions::builder()
+    // One permit per second (burst 1): the second part waits for the next.
+    let limiter = fds::manager::RequestLimiter::per_second(NonZeroU32::new(1).unwrap());
+    let start = Instant::now();
+    client(server.url())
+        .download_file("b", "o", out.path())
         .part_size(4)
         .concurrency(2)
-        .request_limiter(Arc::new(governor::RateLimiter::direct(
-            governor::Quota::per_second(NonZeroU32::new(2).unwrap())
-                .allow_burst(NonZeroU32::new(1).unwrap()),
-        )));
-    let dl = Downloader::new(client, options.build().unwrap());
-    let start = Instant::now();
-    dl.download(&out.request()).await.unwrap();
-    assert!(start.elapsed() >= Duration::from_millis(450));
+        .request_limiter(limiter)
+        .send()
+        .await
+        .unwrap();
+    assert!(start.elapsed() >= Duration::from_millis(900));
     a.assert_async().await;
     b.assert_async().await;
 }
@@ -425,8 +500,10 @@ async fn invalid_download_target_precedes_lock_and_network() {
     std::fs::write(out.path(), b"original").unwrap();
     let dl = downloader(&s, 4, 2, true);
     for (bucket, object) in [("", "o"), ("b", "")] {
-        let error = DownloadRequest::new(bucket, object, out.path())
-            .send(&dl)
+        let error = dl
+            .client
+            .download_file(bucket, object, out.path())
+            .send()
             .await
             .unwrap_err();
         assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
@@ -445,9 +522,10 @@ async fn path_destination_supports_typed_range() {
     let p = part(&mut s, 1, 2, 4, "bc").await;
     let out = Output::new();
     let path = out.0.join("下载 output");
-    DownloadRequest::new("b", "o", &path)
+    downloader(&s, 4, 2, true)
+        .file(&path)
         .range(fds::object::ByteRange::inclusive(1, 2).unwrap())
-        .send(&downloader(&s, 4, 2, true))
+        .send()
         .await
         .unwrap();
     assert_eq!(std::fs::read(path).unwrap(), b"bc");
@@ -455,13 +533,23 @@ async fn path_destination_supports_typed_range() {
     p.assert_async().await;
 }
 
+// The destination is used as the given bytes, never converted lossily: the
+// download either lands at exactly that name or the file system rejects the
+// name (macOS file systems require UTF-8 names).
 #[cfg(unix)]
-#[test]
-fn request_preserves_non_utf8_path_without_lossy_conversion() {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-    let path = std::ffi::OsString::from_vec(vec![b'o', 0xff]);
-    let request = DownloadRequest::new("b", "o", PathBuf::from(path));
-    assert_eq!(request.file_path.as_os_str().as_bytes(), &[b'o', 0xff]);
+#[tokio::test]
+async fn non_utf8_destination_is_not_converted_lossily() {
+    use std::os::unix::ffi::OsStringExt;
+    let mut s = mockito::Server::new_async().await;
+    let _h = head(&mut s, 4, "\"v1\"").await;
+    let _p = part(&mut s, 0, 3, 4, "abcd").await;
+    let out = Output::new();
+    let path = out.0.join(std::ffi::OsString::from_vec(vec![b'o', 0xff]));
+    match downloader(&s, 4, 1, false).file(&path).send().await {
+        Ok(()) => assert_eq!(std::fs::read(&path).unwrap(), b"abcd"),
+        Err(error) => assert_eq!(error.kind(), fds::ErrorKind::Io, "{error:?}"),
+    }
+    assert!(!out.0.join("o\u{fffd}").exists());
 }
 
 fn pattern(len: usize) -> Vec<u8> {
@@ -526,7 +614,7 @@ async fn with_ticker<F: std::future::Future>(future: F) -> (F::Output, std::time
     (output, ticker.await.unwrap())
 }
 
-// AC-2: the Downloader must not stall a current_thread runtime with file IO,
+// AC-2: the file download must not stall a current_thread runtime with file IO,
 // fsync or resume hashing. 32 x 1 MiB parts: the first run fails on the last
 // part (fresh writes + checkpoints), the second resumes (hashes ~31 MiB of
 // local data, writes the rest, fsyncs and renames).
@@ -541,14 +629,14 @@ async fn current_thread_runtime_keeps_ticking_during_download_and_resume() {
     let failing = serve_parts(&mut server, &body, PART, Some(PARTS - 1)).await;
     let out = Output::new();
     let dl = downloader(&server, PART as u64, 4, true);
-    let (first, first_gap) = with_ticker(dl.download(&out.request())).await;
+    let (first, first_gap) = with_ticker(dl.download(&out)).await;
     assert!(first.is_err());
     assert!(out.0.join("out.download.bp").exists());
     for mock in failing {
         mock.remove_async().await;
     }
     let _ok = serve_parts(&mut server, &body, PART, None).await;
-    let (second, second_gap) = with_ticker(dl.download(&out.request())).await;
+    let (second, second_gap) = with_ticker(dl.download(&out)).await;
     second.unwrap();
     assert!(std::fs::read(out.path()).unwrap() == body);
     // Threshold: with all file IO in spawn_blocking the ticker is delayed only
@@ -583,7 +671,7 @@ async fn throttled_checkpoint_still_resumes_exactly_the_missing_parts() {
     let out = Output::new();
     // concurrency 1 makes the set of completed parts deterministic: 0..FAIL.
     let dl = downloader(&server, 4, 1, true);
-    assert!(dl.download(&out.request()).await.is_err());
+    assert!(dl.download(&out).await.is_err());
     assert!(!out.0.join("out.download.lock").exists());
     let cp: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.0.join("out.download.bp")).unwrap()).unwrap();
@@ -614,7 +702,7 @@ async fn throttled_checkpoint_still_resumes_exactly_the_missing_parts() {
                 .await,
         );
     }
-    dl.download(&out.request()).await.unwrap();
+    dl.download(&out).await.unwrap();
     for mock in &resumed {
         mock.assert_async().await;
     }

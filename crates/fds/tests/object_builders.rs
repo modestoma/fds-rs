@@ -366,7 +366,7 @@ async fn file_upload_helper_keeps_body_and_options() {
 
 #[tokio::test]
 async fn multipart_helpers_bind_identity_and_preserve_receipts() {
-    use fds::multipart::InitMultipartUploadRequest;
+    use std::num::NonZeroU16;
     let mut server = mockito::Server::new_async().await;
     let init = server
         .mock("PUT", "/b/a%2Fb?uploads=")
@@ -394,23 +394,28 @@ async fn multipart_helpers_bind_identity_and_preserve_receipts() {
         .create_async()
         .await;
     let client = client(server.url());
-    let session = InitMultipartUploadRequest::new("b", "a/b")
-        .send(&client)
+    let session = client
+        .create_multipart_upload("b", "a/b")
+        .send()
         .await
         .unwrap();
+    assert_eq!(
+        (session.bucket(), session.object(), session.upload_id()),
+        ("b", "a/b", "id")
+    );
     let receipt = session
-        .part(1, b"hello".to_vec())
-        .send(&client)
+        .upload_part(NonZeroU16::MIN, b"hello".to_vec())
+        .send()
         .await
         .unwrap();
     let second = session
-        .part(2, b"world".to_vec())
-        .send(&client)
+        .upload_part(NonZeroU16::new(2).unwrap(), b"world".to_vec())
+        .send()
         .await
         .unwrap();
     let output = session
         .complete(vec![receipt, second])
-        .send(&client)
+        .send()
         .await
         .unwrap();
     assert_eq!(output.object_name, "a/b");
@@ -433,18 +438,11 @@ async fn direct_client_entry_points_validate_before_transport() {
         client.put_object("b", "", vec![]).send().await.map(|_| ()),
         client.list_objects("").send().await.map(|_| ()),
         client
-            .upload_part(fds::multipart::UploadPartRequest::new(
-                "b",
-                "o",
-                "id",
-                0,
-                vec![],
-            ))
+            .upload_part("b", "o", "", std::num::NonZeroU16::MIN, vec![])
+            .send()
             .await
             .map(|_| ()),
-        fds::multipart::InitMultipartUploadResponse::default()
-            .abort(&client)
-            .await,
+        client.abort_multipart_upload("b", "o", "").send().await,
     ] {
         assert!(matches!(result, Err(e) if e.kind() == fds::ErrorKind::InvalidInput));
     }

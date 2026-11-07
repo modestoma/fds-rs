@@ -91,7 +91,7 @@ flowchart LR
   subgraph G9["批次 9（可并行）"]
     t_fluent_bucket["fluent-bucket：Bucket 与 OAuth 操作迁移到流式 builder ✅"]
     t_fluent_listing_delete["fluent-listing-delete：列举与批量删除迁移到流式 builder ✅"]
-    t_fluent_multipart_manager["fluent-multipart-manager：分片上传与 Downloader 迁移到流式 builder"]
+    t_fluent_multipart_manager["fluent-multipart-manager：分片上传与 Downloader 迁移到流式 builder ✅"]
   end
   subgraph G10["批次 10"]
     t_delete_prefix_options["delete-prefix-options：delete_prefix 增加显式 marker/delimiter，CLI 改用 SDK"]
@@ -136,7 +136,7 @@ flowchart LR
   t_internal_cleanup --> t_cslb_internal
   t_fluent_listing_delete --> t_delete_prefix_options
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_baseline_green,t_upload_idle_timeout,t_cslb_internal done
+  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_baseline_green,t_upload_idle_timeout,t_cslb_internal done
 ```
 
 - 批次 1：baseline-green✅
@@ -147,7 +147,7 @@ flowchart LR
 - 批次 6：internal-cleanup✅
 - 批次 7：cslb-internal✅
 - 批次 8：fluent-object✅
-- 批次 9（可并行）：fluent-bucket✅、fluent-listing-delete✅、fluent-multipart-manager
+- 批次 9（可并行）：fluent-bucket✅、fluent-listing-delete✅、fluent-multipart-manager✅
 - 批次 10：delete-prefix-options
 - 批次 11：typed-responses
 - 批次 12：object-metadata

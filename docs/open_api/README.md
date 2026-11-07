@@ -69,11 +69,11 @@
 
 | 文件 | 功能 | 原始方法、路径与参数 | SDK 状态 | SDK 入口与差异 |
 | --- | --- | --- | --- | --- |
-| [init-multipart-upload.yaml](init-multipart-upload.yaml) | 初始化分片上传 | `PUT /{bucketname}/{objectname}`；`?uploads` | implemented | `init_multipart_upload`；metadata 可发送模式头，typed MULTI_BLOB 未启用 |
-| [upload-part.yaml](upload-part.yaml) | 上传一个分片 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?partNumber`、`B:body` | implemented | `UploadPartRequest` 支持消耗式内存/file/stream；Client 和 send 均消耗请求 |
+| [init-multipart-upload.yaml](init-multipart-upload.yaml) | 初始化分片上传 | `PUT /{bucketname}/{objectname}`；`?uploads` | implemented | `create_multipart_upload` 返回 `MultipartUploadSession`；metadata 可发送模式头，typed MULTI_BLOB 未启用 |
+| [upload-part.yaml](upload-part.yaml) | 上传一个分片 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?partNumber`、`B:body` | implemented | `upload_part`（或会话的 `upload_part`）支持消耗式内存/file/stream，`NonZeroU16` 片号，发送前检查不超过 10,000 |
 | [upload-part-copy.yaml](upload-part-copy.yaml) | 复制一个分片 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?partNumber`、`H:x-xiaomi-copy-source`、`H:x-xiaomi-copy-source-range` | missing | 无复制分片 |
-| [complete-multipart-upload.yaml](complete-multipart-upload.yaml) | 完成分片上传 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?expires`、`H:content-type`、`B:body` | implemented | `CompleteMultipartUploadRequest::expires` 支持 expires 和 metadata |
-| [abort-multipart-upload.yaml](abort-multipart-upload.yaml) | 取消分片上传 | `DELETE /{bucketname}/{objectname}`；`?uploadId` | implemented | `abort_multipart_upload` |
+| [complete-multipart-upload.yaml](complete-multipart-upload.yaml) | 完成分片上传 | `PUT /{bucketname}/{objectname}`；`?uploadId`、`?expires`、`H:content-type`、`B:body` | implemented | `complete_multipart_upload`（或会话的 `complete`）支持 `.expires` 和 `.metadata` |
+| [abort-multipart-upload.yaml](abort-multipart-upload.yaml) | 取消分片上传 | `DELETE /{bucketname}/{objectname}`；`?uploadId` | implemented | `abort_multipart_upload`（或会话的 `abort`） |
 
 ### 恢复与缓存操作
 
@@ -105,7 +105,7 @@
 | Metadata codec | `ObjectMetadata::serialize` 输出 rawMeta map；Deserialize 输入 rawMeta.entry 数组；`from_headers` 解析头 |
 | Presign / URL | `presign_object`、`absolute_object_url`，HEAD 签名附 metadata，expires 毫秒，Signature 原样追加 |
 | Prefix delete | `delete_prefix` 列举后逐页批删 |
-| Download manager | `Downloader` / `DownloadRequest`，默认 manager feature |
+| Download manager | `download_file`（`DownloadFile`、`RequestLimiter`），默认 manager feature |
 | CSLB | `cslb` feature 下 Client 使用内部 DNS resolver（`cslb_max_nodes`），不提供公开类型 |
 
 ## 快照校验

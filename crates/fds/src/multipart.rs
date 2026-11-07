@@ -1,18 +1,51 @@
-//! Multipart uploads: the low-level requests (initiate, upload part,
-//! complete, abort) and the explicitly owned, bounded-memory file upload
+//! Multipart uploads: the low-level requests (create, upload part, complete,
+//! abort) and the explicitly owned, bounded-memory file upload
 //! [`MultipartUpload`].
+//!
+//! # Manual multipart
+//!
+//! [`Client::create_multipart_upload`] initiates an upload and returns a
+//! [`MultipartUploadSession`]; its [`upload_part`](MultipartUploadSession::upload_part),
+//! [`complete`](MultipartUploadSession::complete) and
+//! [`abort`](MultipartUploadSession::abort) return the same operation builders
+//! as [`Client::upload_part`], [`Client::complete_multipart_upload`] and
+//! [`Client::abort_multipart_upload`], which take the upload ID explicitly
+//! (for example after a restart).
+//!
+//! ```no_run
+//! # async fn example(client: &fds::Client) -> fds::Result<()> {
+//! use std::num::NonZeroU16;
+//!
+//! let session = client.create_multipart_upload("bucket", "big.bin").send().await?;
+//! let part = session
+//!     .upload_part(NonZeroU16::MIN, b"first part".to_vec())
+//!     .send()
+//!     .await?;
+//! session.complete([part]).send().await?;
+//! # Ok(()) }
+//! ```
+//!
+//! # Managed file upload
+//!
+//! [`Client::upload_file`] configures a [`MultipartUpload`];
+//! [`UploadFile::start`] validates the options and the file, initiates the
+//! upload and returns the session, and [`MultipartUpload::upload`] runs it
+//! once. See [`MultipartUpload`] for inspecting progress and recovering
+//! manually after a failure.
 use crate::object::{ObjectMetadata, PutObjectResponse};
 use crate::{Client, Dispatch, Error, ErrorKind, Result};
 use futures_util::future::{Fuse, FutureExt};
 use futures_util::{StreamExt, TryStreamExt};
 use std::future::Future;
+use std::num::NonZeroU16;
+use std::path::PathBuf;
 use std::pin::{pin, Pin};
-use std::{path::Path, time::SystemTime};
+use std::time::SystemTime;
 use tokio::io::AsyncReadExt;
 
 pub use crate::object::multipart::{
-    CompleteMultipartUploadRequest, InitMultipartUploadRequest, InitMultipartUploadResponse,
-    UploadPartRequest, UploadPartResponse,
+    AbortMultipartUpload, CompleteMultipartUpload, CreateMultipartUpload, MultipartUploadSession,
+    UploadPart, UploadPartResponse, MAX_PART_NUMBER,
 };
 
 /// Action after a part/read failure or cooperative cancellation before completion.
@@ -26,50 +59,143 @@ pub enum CleanupPolicy {
     AbortOnFailure,
 }
 
-/// Local resource limits, not assertions about server multipart constraints.
-#[derive(Debug, Clone)]
-pub struct MultipartOptions {
-    part_size: usize,
+const DEFAULT_PART_SIZE: u64 = 8 * 1024 * 1024;
+const DEFAULT_CONCURRENCY: usize = 4;
+const MAX_PART_SIZE: u64 = 64 * 1024 * 1024;
+const MAX_CONCURRENCY: usize = 64;
+const MAX_BUFFERED: u64 = 256 * 1024 * 1024;
+
+/// Builder for [`Client::upload_file`]: a managed multipart upload of a local
+/// file. [`start`](Self::start) returns the [`MultipartUpload`] session.
+#[derive(Debug)]
+#[must_use = "an upload builder does nothing until `start` is awaited"]
+pub struct UploadFile {
+    client: Client,
+    bucket: String,
+    object: String,
+    path: PathBuf,
+    part_size: u64,
     concurrency: usize,
     cleanup: CleanupPolicy,
+    metadata: Option<ObjectMetadata>,
 }
-impl Default for MultipartOptions {
-    fn default() -> Self {
-        Self {
-            part_size: 8 * 1024 * 1024,
-            concurrency: 4,
-            cleanup: CleanupPolicy::Preserve,
-        }
+
+impl UploadFile {
+    /// Bytes per part (default 8 MiB), at most 64 MiB. Every part but the
+    /// last has exactly this size; match it to the service's part limits.
+    pub fn part_size(mut self, bytes: u64) -> Self {
+        self.part_size = bytes;
+        self
     }
-}
-impl MultipartOptions {
-    /// At most 64 MiB per part, 64 concurrent requests, 256 MiB combined part
-    /// buffers and 10,000 parts. Match part size to the actual service limits.
-    pub fn new(part_size: usize, concurrency: usize, cleanup: CleanupPolicy) -> Result<Self> {
-        if part_size == 0
-            || part_size > 64 * 1024 * 1024
-            || concurrency == 0
-            || concurrency > 64
-            || part_size
-                .checked_mul(concurrency)
-                .is_none_or(|n| n > 256 * 1024 * 1024)
+
+    /// Part requests in flight at once (default 4), at most 64. Part buffers
+    /// (`part_size × concurrency`) may total at most 256 MiB.
+    pub fn concurrency(mut self, requests: usize) -> Self {
+        self.concurrency = requests;
+        self
+    }
+
+    /// What happens to the unfinished upload after a failure or cancellation
+    /// before completion (default [`CleanupPolicy::Preserve`]).
+    pub fn cleanup(mut self, policy: CleanupPolicy) -> Self {
+        self.cleanup = policy;
+        self
+    }
+
+    /// Metadata sent with the initiation and again with the completion.
+    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Validate, open the file and initiate the upload exactly once.
+    ///
+    /// The bucket and object names and the options are checked first, then
+    /// the file must be a nonempty regular file of at most
+    /// [`MAX_PART_NUMBER`] parts; each of these failures is
+    /// [`ErrorKind::InvalidInput`] (or [`ErrorKind::Io`] for the file) with
+    /// nothing sent. Initiation errors (including a dropped future) may leave
+    /// an upload whose ID was not received: never retry it blindly.
+    pub async fn start(self) -> Result<MultipartUpload> {
+        crate::object::validate_object(&self.bucket, &self.object)?;
+        if self.part_size == 0
+            || self.part_size > MAX_PART_SIZE
+            || self.concurrency == 0
+            || self.concurrency > MAX_CONCURRENCY
+            || self.part_size * self.concurrency as u64 > MAX_BUFFERED
         {
             return Err(Error::invalid_input("invalid multipart resource limits"));
         }
-        Ok(Self {
-            part_size,
-            concurrency,
-            cleanup,
+        let file = tokio::fs::File::open(&self.path).await?;
+        let metadata = file.metadata().await?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err(Error::invalid_input(
+                "managed multipart requires a nonempty regular file; use PUT for empty files",
+            ));
+        }
+        let count = (metadata.len() - 1) / self.part_size + 1;
+        if count > u64::from(MAX_PART_NUMBER) {
+            return Err(Error::invalid_input("managed upload exceeds 10000 parts"));
+        }
+        let mut create = self
+            .client
+            .create_multipart_upload(&self.bucket, &self.object);
+        if let Some(metadata) = &self.metadata {
+            create = create.metadata(metadata.clone());
+        }
+        let session = create.send().await?;
+        Ok(MultipartUpload {
+            file,
+            modified: metadata.modified().ok(),
+            metadata: self.metadata,
+            part_size: self.part_size as usize,
+            concurrency: self.concurrency,
+            cleanup: self.cleanup,
+            progress: MultipartProgress {
+                session,
+                parts: Vec::new(),
+                total_parts: count as usize,
+                file_size: metadata.len(),
+                state: MultipartState::Ready,
+            },
         })
     }
-    pub fn part_size(&self) -> usize {
-        self.part_size
-    }
-    pub fn concurrency(&self) -> usize {
-        self.concurrency
-    }
-    pub fn cleanup_policy(&self) -> CleanupPolicy {
-        self.cleanup
+}
+
+impl Client {
+    /// Upload a local file in parts with bounded memory and concurrency.
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// use fds::multipart::CleanupPolicy;
+    ///
+    /// let mut upload = client
+    ///     .upload_file("bucket", "big.bin", "/data/big.bin")
+    ///     .part_size(16 * 1024 * 1024)
+    ///     .concurrency(4)
+    ///     .cleanup(CleanupPolicy::AbortOnFailure)
+    ///     .start()
+    ///     .await?;
+    /// // Persist `upload.progress().session.upload_id()` for recovery here.
+    /// upload.upload(std::future::pending()).await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn upload_file(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        path: impl Into<PathBuf>,
+    ) -> UploadFile {
+        UploadFile {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            path: path.into(),
+            part_size: DEFAULT_PART_SIZE,
+            concurrency: DEFAULT_CONCURRENCY,
+            cleanup: CleanupPolicy::Preserve,
+            metadata: None,
+        }
     }
 }
 
@@ -90,7 +216,9 @@ pub enum MultipartState {
 /// confirmed parts; missing receipts do NOT prove absence on the server.
 #[derive(Clone)]
 pub struct MultipartProgress {
-    pub upload: InitMultipartUploadResponse,
+    /// The initiated upload, bound to the requested bucket and object.
+    pub session: MultipartUploadSession,
+    /// Confirmed part receipts; in ascending part order once uploading ended.
     pub parts: Vec<UploadPartResponse>,
     pub total_parts: usize,
     pub file_size: u64,
@@ -106,17 +234,59 @@ impl std::fmt::Debug for MultipartProgress {
     }
 }
 
-/// A single-run session. Keep it alive until success or explicit recovery.
-/// No Drop implementation performs network IO. To cancel with cleanup, let the
-/// cancellation future passed to [`upload`](Self::upload) complete and keep
-/// awaiting `upload`; dropping the future skips cleanup.
-/// The source file must remain unchanged for the entire session.
+/// A single-run managed upload session, created by [`UploadFile::start`].
+///
+/// Keep it alive until success or explicit recovery. No Drop implementation
+/// performs network IO. To cancel with cleanup, let the cancellation future
+/// passed to [`upload`](Self::upload) complete and keep awaiting `upload`;
+/// dropping the future skips cleanup. The source file must remain unchanged
+/// for the entire session.
+///
+/// # Recovering after a failure
+///
+/// [`upload`](Self::upload) runs at most once. After it failed, or after its
+/// future was dropped, [`progress`](Self::progress) still holds the
+/// [`MultipartUploadSession`], the confirmed receipts and the
+/// [`MultipartState`]. Reconcile from there with the low-level builders
+/// instead of running the upload again:
+///
+/// - [`MultipartState::Failed`] or `Uploading`: upload the missing parts with
+///   [`MultipartUploadSession::upload_part`] (part `n` covers file bytes
+///   `(n - 1) × part_size ..`), then complete with every receipt in part
+///   order; or give up with [`MultipartUploadSession::abort`].
+/// - [`MultipartState::CompletionUnknown`]: the completion may have taken
+///   effect. Check the object before completing again or aborting; a `HEAD`
+///   alone cannot prove that this upload produced it.
+/// - [`MultipartState::Aborted`] and `Completed` need nothing further.
+///
+/// ```no_run
+/// # async fn example(mut upload: fds::multipart::MultipartUpload) -> fds::Result<()> {
+/// use fds::multipart::MultipartState;
+/// use std::num::NonZeroU16;
+///
+/// if let Err(error) = upload.upload(std::future::pending()).await {
+///     let progress = upload.progress();
+///     if progress.state == MultipartState::Failed && progress.parts.len() + 1 == progress.total_parts {
+///         // Re-read and upload the last part, then complete with every receipt.
+///         let last = NonZeroU16::new(progress.total_parts as u16).unwrap();
+///         let body = b"bytes of the last part".to_vec();
+///         let receipt = progress.session.upload_part(last, body).send().await?;
+///         let mut parts = progress.parts.clone();
+///         parts.push(receipt);
+///         progress.session.complete(parts).send().await?;
+///     } else {
+///         return Err(error);
+///     }
+/// }
+/// # Ok(()) }
+/// ```
 pub struct MultipartUpload {
-    client: Client,
     file: tokio::fs::File,
     modified: Option<SystemTime>,
     metadata: Option<ObjectMetadata>,
-    options: MultipartOptions,
+    part_size: usize,
+    concurrency: usize,
+    cleanup: CleanupPolicy,
     progress: MultipartProgress,
 }
 impl std::fmt::Debug for MultipartUpload {
@@ -127,54 +297,6 @@ impl std::fmt::Debug for MultipartUpload {
     }
 }
 impl MultipartUpload {
-    /// Open and validate a nonempty regular file, then initialize exactly once.
-    /// Initialization errors (including a dropped future) may leave an upload
-    /// whose ID was not received. Never blindly retry initialization.
-    pub async fn start(
-        client: &Client,
-        request: InitMultipartUploadRequest,
-        path: impl AsRef<Path>,
-        options: MultipartOptions,
-    ) -> Result<Self> {
-        crate::object::validate_object(&request.bucket_name, &request.object_name)?;
-        let file = tokio::fs::File::open(path).await?;
-        let metadata = file.metadata().await?;
-        if !metadata.is_file() || metadata.len() == 0 {
-            return Err(Error::invalid_input(
-                "managed multipart requires a nonempty regular file; use PUT for empty files",
-            ));
-        }
-        let count = (metadata.len() - 1) / options.part_size as u64 + 1;
-        if count > 10_000 {
-            return Err(Error::invalid_input("managed upload exceeds 10000 parts"));
-        }
-        let mut upload = client.init_multipart_upload(&request).await?;
-        if upload.upload_id.is_empty() {
-            return Err(
-                Error::protocol("multipart initialization returned no upload ID")
-                    .into_outcome_unknown(
-                        "multipart initialization outcome unknown; an upload may have been created",
-                    ),
-            );
-        }
-        // All subsequent requests stay bound to caller identity, never server-returned paths.
-        upload.bucket_name = request.bucket_name;
-        upload.object_name = request.object_name;
-        Ok(Self {
-            client: client.clone(),
-            file,
-            modified: metadata.modified().ok(),
-            metadata: request.metadata,
-            options,
-            progress: MultipartProgress {
-                upload,
-                parts: Vec::new(),
-                total_parts: count as usize,
-                file_size: metadata.len(),
-                state: MultipartState::Ready,
-            },
-        })
-    }
     pub fn progress(&self) -> &MultipartProgress {
         &self.progress
     }
@@ -224,12 +346,8 @@ impl MultipartUpload {
         let result = self.upload_parts(cancel.as_mut()).await;
         if let Err(mut cause) = result {
             self.progress.state = MultipartState::Failed;
-            if self.options.cleanup == CleanupPolicy::AbortOnFailure {
-                match self
-                    .client
-                    .abort_multipart_upload(&self.progress.upload)
-                    .await
-                {
+            if self.cleanup == CleanupPolicy::AbortOnFailure {
+                match self.progress.session.abort().send().await {
                     Ok(()) => self.progress.state = MultipartState::Aborted,
                     Err(error) => cause = cause.with_context("cleanup_error", error),
                 }
@@ -238,14 +356,10 @@ impl MultipartUpload {
         }
         // Set BEFORE polling the network future, so external drop is recoverable.
         self.progress.state = MultipartState::CompletionUnknown;
-        let request = CompleteMultipartUploadRequest {
-            bucket_name: self.progress.upload.bucket_name.clone(),
-            object_name: self.progress.upload.object_name.clone(),
-            upload_id: self.progress.upload.upload_id.clone(),
-            upload_parts: self.progress.parts.clone(),
-            metadata: self.metadata.clone(),
-            expires: None,
-        };
+        let mut complete = self.progress.session.complete(self.progress.parts.clone());
+        if let Some(metadata) = &self.metadata {
+            complete = complete.metadata(metadata.clone());
+        }
         const UNKNOWN: &str = "multipart completion outcome unknown; reconcile before retrying";
         let output = tokio::select! {
             biased;
@@ -254,15 +368,15 @@ impl MultipartUpload {
                 "cancelled while multipart completion was in flight",
             )
             .with_dispatch(Dispatch::Unknown)),
-            result = self.client.complete_multipart_upload(&request) => result,
+            result = complete.send() => result,
         }
         .map_err(|e| match e.dispatch() {
             Dispatch::NotSent => e,
             _ => e.into_outcome_unknown(UNKNOWN),
         })?;
-        if output.object_name != self.progress.upload.object_name
-            || (!output.bucket_name.is_empty()
-                && output.bucket_name != self.progress.upload.bucket_name)
+        let session = &self.progress.session;
+        if output.object_name != session.object()
+            || (!output.bucket_name.is_empty() && output.bucket_name != session.bucket())
         {
             return Err(Error::protocol(
                 "multipart completion returned an unexpected object identity",
@@ -277,11 +391,10 @@ impl MultipartUpload {
     where
         C: Future<Output = ()>,
     {
-        let part_size = self.options.part_size;
-        let client = &self.client;
-        let upload = &self.progress.upload;
+        let part_size = self.part_size;
+        let session = &self.progress.session;
         let source = futures_util::stream::try_unfold(
-            (&mut self.file, self.progress.file_size, 1i32),
+            (&mut self.file, self.progress.file_size, NonZeroU16::MIN),
             move |(file, remaining, number)| async move {
                 if remaining == 0 {
                     return Ok::<_, Error>(None);
@@ -289,25 +402,20 @@ impl MultipartUpload {
                 let size = remaining.min(part_size as u64) as usize;
                 let mut bytes = vec![0; size];
                 file.read_exact(&mut bytes).await?;
+                // At most MAX_PART_NUMBER parts (checked by `start`), so the
+                // next number exists whenever another part follows.
+                let next = number.saturating_add(1);
                 Ok(Some((
                     (number, bytes),
-                    (file, remaining - size as u64, number + 1),
+                    (file, remaining - size as u64, next),
                 )))
             },
         );
         let parts = source
             .map_ok(|(number, bytes)| async move {
                 let size = bytes.len() as i64;
-                let receipt = UploadPartRequest::new(
-                    &upload.bucket_name,
-                    &upload.object_name,
-                    &upload.upload_id,
-                    number,
-                    bytes,
-                )
-                .send(client)
-                .await?;
-                if receipt.part_number != number
+                let receipt = session.upload_part(number, bytes).send().await?;
+                if receipt.part_number != i32::from(number.get())
                     || receipt.part_size != size
                     || receipt.etag.is_empty()
                     || receipt.etag.len() > 1024
@@ -318,7 +426,7 @@ impl MultipartUpload {
                 }
                 Ok(receipt)
             })
-            .try_buffer_unordered(self.options.concurrency);
+            .try_buffer_unordered(self.concurrency);
         {
             futures_util::pin_mut!(parts);
             loop {

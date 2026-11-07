@@ -53,12 +53,12 @@ futures-util = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 ```
 
-按用到的类型添加依赖：字节流示例需要 `bytes`/`futures-util`，UTC 过期时间需要 `chrono`。下面的下载限流示例还需要 `governor = "0.6"`；组合示例文件另列依赖。SDK 的传递依赖不能代替应用自己的直接依赖声明。
+按用到的类型添加依赖：字节流示例需要 `bytes`/`futures-util`，UTC 过期时间需要 `chrono`。组合示例文件另列依赖。SDK 的传递依赖不能代替应用自己的直接依赖声明。
 
 | feature | 默认开启 | 功能与选择 |
 | --- | --- | --- |
 | 核心 SDK | 始终 | Bucket、对象、OAuth、手动及托管分片、流式读写、读取重试 |
-| `manager` | 是 | `Downloader`、下载选项、断点与请求限流 |
+| `manager` | 是 | `Client::download_file`（`DownloadFile`）、断点与请求限流（`RequestLimiter`） |
 | `cslb` | 否 | 让 Client 通过内部 CSLB DNS resolver 解析主机；不增加公开模块或类型 |
 
 只用核心：`fds = { version = "1.0.0", registry = "artifactory", default-features = false }`。
@@ -320,7 +320,7 @@ async fn consume_chunks(client: &Client, bucket: &str, key: &str) -> fds::Result
 }
 ```
 
-`copy_to` 不 flush、不 shutdown，也不回滚 writer；示例的 `File::create` 会截断已有文件，错误时可能留下部分内容。需要失败保留旧目标、原子替换、续传时使用后文的 Downloader。
+`copy_to` 不 flush、不 shutdown，也不回滚 writer；示例的 `File::create` 会截断已有文件，错误时可能留下部分内容。需要失败保留旧目标、原子替换、续传时使用后文的 `download_file`。
 
 `GetObjectOutput` 还提供 `headers()`、`metadata()` 和 `into_raw()`；后者转移出 `reqwest::Response`，供需要底层能力的调用者使用。
 
@@ -359,7 +359,7 @@ async fn read_first_kib(client: &Client, bucket: &str, key: &str) -> fds::Result
 | `ByteRange::suffix(512)?` | `bytes=-512` |
 | `"bytes=0-1023".parse::<ByteRange>()?` | 解析单范围字符串 |
 
-闭区间 start 不能大于 end，suffix 不能为零，不支持多范围。普通 `get_object` 在请求 Range 时接受 200 和 206：200 可能代表服务器忽略 Range，因此调用者需检查状态与范围。Downloader 会严格校验响应范围、长度与一致性。
+闭区间 start 不能大于 end，suffix 不能为零，不支持多范围。普通 `get_object` 在请求 Range 时接受 200 和 206：200 可能代表服务器忽略 Range，因此调用者需检查状态与范围。`download_file` 会严格校验响应范围、长度与一致性。
 
 ## 对象信息与元数据
 
@@ -636,59 +636,54 @@ async fn create_public_read_bucket(client: &Client, bucket: &str) -> fds::Result
 
 ## 手动分片上传
 
-适合调用者自行管理分片来源、调度、回执和恢复流程。步骤是 init → 一个或多个 part → complete；放弃已知会话时显式 abort。普通文件上传优先考虑下一节托管接口。
+适合调用者自行管理分片来源、调度、回执和恢复流程。步骤是 create → 一个或多个 part → complete；放弃已知会话时显式 abort。普通文件上传优先考虑下一节托管接口。
 
 ```rust,no_run
-use fds::{Client, Error, ErrorKind};
-use fds::multipart::{InitMultipartUploadRequest, InitMultipartUploadResponse, UploadPartResponse};
+use fds::Client;
+use fds::multipart::{MultipartUploadSession, UploadPartResponse};
 use fds::object::PutObjectResponse;
+use std::num::NonZeroU16;
 
 // 返回会话给调用者保存；随后执行分片，不把会话藏在一个会丢失上下文的函数内。
-async fn begin(client: &Client, bucket: &str, key: &str) -> fds::Result<InitMultipartUploadResponse> {
-    let mut session = InitMultipartUploadRequest::new(bucket, key).send(client).await?;
-    if session.upload_id.is_empty() {
-        return Err(Error::new(ErrorKind::OutcomeUnknown, "未收到 upload ID，初始化结果需核对"));
-    }
-    // 手动入口保留服务响应字段；后续地址显式绑定调用者输入。
-    session.bucket_name = bucket.into();
-    session.object_name = key.into();
-    Ok(session)
+async fn begin(client: &Client, bucket: &str, key: &str) -> fds::Result<MultipartUploadSession> {
+    // 会话绑定调用者传入的 bucket/key；响应缺少 upload ID 时返回 OutcomeUnknown。
+    client.create_multipart_upload(bucket, key).send().await
 }
 
-async fn send_part(client: &Client, session: &InitMultipartUploadResponse,
-    number: i32, bytes: bytes::Bytes) -> fds::Result<UploadPartResponse>
+async fn send_part(session: &MultipartUploadSession, number: NonZeroU16, bytes: bytes::Bytes)
+    -> fds::Result<UploadPartResponse>
 {
-    session.part(number, bytes).send(client).await
+    session.upload_part(number, bytes).send().await
 }
 
-async fn finish(client: &Client, session: &InitMultipartUploadResponse,
-    mut receipts: Vec<UploadPartResponse>) -> fds::Result<PutObjectResponse>
+async fn finish(session: &MultipartUploadSession, mut receipts: Vec<UploadPartResponse>)
+    -> fds::Result<PutObjectResponse>
 {
     receipts.sort_by_key(|part| part.part_number);
     session.complete(receipts)
         .expires(chrono::Utc::now() + chrono::Duration::minutes(10))
-        .send(client).await
+        .send().await
 }
 
-async fn abandon(client: &Client, session: &InitMultipartUploadResponse) -> fds::Result<()> {
-    session.abort(client).await
+async fn abandon(session: &MultipartUploadSession) -> fds::Result<()> {
+    session.abort().send().await
 }
 ```
 
-调用顺序示例：保存 `begin()` 的返回值；按从 1 开始的编号调用 `send_part()`，每收到一份回执就保存；确认分片编号、长度、ETag 和总数满足预期后把回执交给 `finish()`。回执为 `UploadPartResponse { part_number, etag, part_size }`。手动 complete 按调用者提供的集合序列化，不替调用者检查完整性或自动排序。
+调用顺序示例：保存 `begin()` 返回的会话（至少持久化 `bucket()`、`object()`、`upload_id()`）；按从 1 开始的编号调用 `send_part()`，每收到一份回执就保存；确认分片编号、长度、ETag 和总数满足预期后把回执交给 `finish()`。回执为 `UploadPartResponse { part_number, etag, part_size }`。手动 complete 按调用者提供的集合序列化，不替调用者检查完整性或自动排序。
 
-init 与 complete 支持 `.metadata(...)`，complete 另支持 `.expires(...)`。part 支持和 PUT 一样的 UploadBody，可显式 `.content_md5(...)`；也可用 `UploadPartRequest::new(bucket, key, upload_id, number, body)` 从持久化信息重建请求。
+create 与 complete 支持 `.metadata(...)`，complete 另支持 `.expires(...)`；四个 builder 都支持 `.timeout(...)`。part 支持和 PUT 一样的 UploadBody，可显式 `.content_md5(...)`。跨进程恢复时不需要会话对象：`client.upload_part(bucket, key, upload_id, number, body)`、`client.complete_multipart_upload(bucket, key, upload_id, parts)` 和 `client.abort_multipart_upload(bucket, key, upload_id)` 直接接收持久化的 upload ID，会话上的同名方法返回同样的 builder。
 
-分片编号必须为正数。服务端分片尺寸、数量和地区限制需单独满足；库内 `MIN_PART_SIZE`/`MAX_PART_SIZE` 常量不代表所有接口都自动检查，更不能当成各地区统一约束。
+分片编号是 `NonZeroU16`（不能为 0），`send` 时再检查不超过 `fds::multipart::MAX_PART_NUMBER`（10,000），否则返回 `InvalidInput` 且不发送。服务端分片尺寸、数量和地区限制需单独满足；库内 `MIN_PART_SIZE`/`MAX_PART_SIZE` 常量不代表所有接口都自动检查，更不能当成各地区统一约束。
 
 初始化超时可能已创建远端会话但没有收到 ID。part 失败可能已被接收。complete 失败可能已经完成对象：保留 upload ID、回执和目标身份，先核对远端结果，再决定下一步；不要在 complete 错误后自动 abort 或重发。SDK 没有 list-parts 或通用的跨进程续传协调接口。
 
 ## 托管文件分片上传
 
-`MultipartUpload` 打开一个非空普通文件，限制并发和缓冲，收集回执并按编号 complete。它属于核心 SDK，不依赖 manager feature。
+`client.upload_file(bucket, key, path)` 打开一个非空普通文件，限制并发和缓冲，收集回执并按编号 complete。它属于核心 SDK，不依赖 manager feature。`start()` 校验选项和文件、初始化一次并返回 `MultipartUpload` 会话；`upload(cancel)` 运行一次上传。
 
 ```rust,no_run
-use fds::multipart::{CleanupPolicy, InitMultipartUploadRequest, MultipartOptions, MultipartUpload};
+use fds::multipart::{CleanupPolicy, MultipartUpload};
 use fds::object::PutObjectResponse;
 use fds::Client;
 use std::future::Future;
@@ -696,9 +691,13 @@ use std::future::Future;
 async fn prepare_large_file(client: &Client, bucket: &str, key: &str, path: &std::path::Path)
     -> fds::Result<MultipartUpload>
 {
-    let options = MultipartOptions::new(8 * 1024 * 1024, 4, CleanupPolicy::Preserve)?;
-    let request = InitMultipartUploadRequest::new(bucket, key);
-    MultipartUpload::start(client, request, path, options).await
+    client
+        .upload_file(bucket, key, path)
+        .part_size(8 * 1024 * 1024)
+        .concurrency(4)
+        .cleanup(CleanupPolicy::Preserve)
+        .start()
+        .await
 }
 
 // session 由上层持有；错误返回后仍可读取 progress，不会随本函数丢失。
@@ -717,7 +716,7 @@ async fn run_upload(session: &mut MultipartUpload, cancel: impl Future<Output = 
 
 调用者先 await `prepare_large_file` 并保存会话，再调用 `run_upload(&mut session, cancel)`。取消信号是任意 `Future<Output = ()>`：完成即请求合作式取消，SDK 仍会执行清理策略并返回最终状态；不需要取消时传 `std::future::pending()`，使用 tokio-util 的 `CancellationToken` 时传 `token.cancelled()`。失败后从仍存活的 session 读取并持久化进度，随后决定恢复。
 
-默认 8 MiB、4 并发、Preserve。`MultipartOptions::new` 的本地限制：每片 1 字节至 64 MiB，并发 1–64，二者乘积不超过 256 MiB，文件最多 10,000 片。非最后一片仍需满足服务要求；不要因本地允许 1 字节就按 1 字节部署。payload 缓冲约束为 `part_size × concurrency`，另有 HTTP、TLS、文件和响应模型开销，不是进程 RSS 上限。
+默认 8 MiB、4 并发、Preserve。`start()` 在打开文件和发送任何请求前校验：每片 1 字节至 64 MiB，并发 1–64，二者乘积不超过 256 MiB，违反时返回 `InvalidInput`；随后要求文件非空且最多 10,000 片。非最后一片仍需满足服务要求；不要因本地允许 1 字节就按 1 字节部署。payload 缓冲约束为 `part_size × concurrency`，另有 HTTP、TLS、文件和响应模型开销，不是进程 RSS 上限。
 
 | 状态 | 含义与处理 |
 | --- | --- |
@@ -728,7 +727,7 @@ async fn run_upload(session: &mut MultipartUpload, cancel: impl Future<Output = 
 | CompletionUnknown | complete 可能已发送或返回无效结果；先核对，禁止盲目清理 |
 | Completed | complete 响应有效且对象身份匹配 |
 
-`progress()` 包含 `upload`（bucket/key/upload_id）、`parts`、`total_parts`、`file_size`、`state`。这是会话快照，不是可直接导入的自动恢复格式。`upload(&mut self, ...)` 只允许运行一次；失败后不能再次调用它来隐式续传。
+`progress()` 包含 `session`（`MultipartUploadSession`，含 bucket/key/upload_id）、`parts`、`total_parts`、`file_size`、`state`。这是会话快照，不是可直接导入的自动恢复格式。`upload(&mut self, ...)` 只允许运行一次；失败后不能再次调用它来隐式续传，而是用 `progress().session` 的 `upload_part` 补传缺失分片（第 n 片对应文件偏移 `(n - 1) × part_size`），再用全部回执 `complete`，或 `abort` 放弃。完整示例见 `MultipartUpload` 的 rustdoc。
 
 `CleanupPolicy::AbortOnFailure` 仅在完成前错误/合作式取消时尝试一次 abort；返回的是原始错误，abort 也失败时其文本附加在 `error.context()` 的 `cleanup_error` 项中。complete 可能已发出后的失败统一为 `ErrorKind::OutcomeUnknown`。`Preserve` 是默认策略。合作式取消要调用 token.cancel() 后继续 await；直接 timeout/drop future 不执行异步清理，整个 session Drop 也不发请求。源文件在全会话期间必须保持不变。
 
@@ -736,49 +735,50 @@ async fn run_upload(session: &mut MultipartUpload, cancel: impl Future<Output = 
 
 ## 并发下载与断点续传
 
-需要 `manager`（默认开启）。下载器接受 Client 的廉价副本，配置和单次下载请求分开构造。
+需要 `manager`（默认开启）。`client.download_file(bucket, key, path)` 返回 builder，选项链式设置，`send()` 执行一次下载。
 
 ```rust,no_run
 use fds::Client;
-use fds::manager::{DownloadOptions, DownloadRequest, Downloader};
 
 async fn download_safely(client: &Client, bucket: &str, key: &str, path: &std::path::Path)
     -> fds::Result<()>
 {
-    let options = DownloadOptions::builder()
+    client
+        .download_file(bucket, key, path)
         .part_size(4 * 1024 * 1024)
         .concurrency(4)
-        .resume(true)
-        .build()?;
-    let downloader = Downloader::new(client.clone(), options);
-    DownloadRequest::new(bucket, key, path).send(&downloader).await
+        .resume()
+        .send()
+        .await
 }
 ```
 
-默认每片 1 MiB、4 并发、resume=false、无限流。分片字节数和并发须大于零；最大分片数为 1,000,000，太多时应增大片尺寸。范围下载使用 `.range(ByteRange::from(...))`，只将选中范围写入目标文件，文件开头对应选中范围的起点。
+默认每片 1 MiB、4 并发、不续传、无限流。分片字节数和并发须大于零，在 `send()` 中、加锁和发送请求前校验，违反时返回 `InvalidInput`（与托管上传相同）；最大分片数为 1,000,000，太多时应增大片尺寸。范围下载使用 `.range(ByteRange::from(...))`，只将选中范围写入目标文件，文件开头对应选中范围的起点。
 
-执行时 HEAD 获取对象长度。具有强 ETag 时，逐片检查相同 ETag、206、Content-Range 和精确长度；没有强 ETag 时使用单个流式 Range 请求，不复用断点。HTTP 200 忽略 Range 会报错。
+执行时先发送与 `head_object` 相同的 HEAD 获取对象长度：它是只读请求，按 Client 的 `RetryPolicy` 重试；对象不存在时返回 `is_not_found()` 为真的错误。具有强 ETag 时，逐片检查相同 ETag、206、Content-Range 和精确长度；没有强 ETag 时使用单个流式 Range 请求，不复用断点。HTTP 200 忽略 Range 会报错。
 
-下载先写同目录暂存文件，全部成功并同步后替换目标，失败保留旧目标。父目录必须存在且可写。同目标使用 `.download.lock` 合作式排他；还会使用 `.tmp`、`.download.bp`、`.download.bp.new` 等路径，调用者不能同时使用这些附属路径。中断后对同一路径重新调用并开启 resume，下载器校验对象身份和本地分片摘要，损坏或不匹配分片重新下载。进程被杀死可能留下锁，确认无下载进程后才移除。
+下载先写同目录暂存文件，全部成功并同步后替换目标，失败保留旧目标。父目录必须存在且可写。同目标使用 `.download.lock` 合作式排他；还会使用 `.tmp`、`.download.bp`、`.download.bp.new` 等路径，调用者不能同时使用这些附属路径。中断后对同一路径重新调用并开启 `resume()`，下载器校验对象身份和本地分片摘要，损坏或不匹配分片重新下载。进程被杀死可能留下锁，确认无下载进程后才移除。
 
 取消直接丢弃 download future；worker 结束前仍持有锁，立即重试可能暂时报 AlreadyExists。文件 IO、fsync 和恢复摘要都在阻塞线程中执行，不占用 async 运行时线程。它不承诺跨程序目录防篡改或目录 fsync 级断电持久性；详见 [下载安全](docs/runtime.md#下载文件与断点)。
 
 ### 请求启动限流
 
 ```rust,no_run
-use fds::manager::DownloadOptions;
-use governor::{Quota, RateLimiter};
-use std::{num::NonZeroU32, sync::Arc};
+use fds::manager::RequestLimiter;
+use std::num::NonZeroU32;
 
-fn limited_download_options() -> fds::Result<DownloadOptions> {
-    let limiter = Arc::new(RateLimiter::direct(
-        Quota::per_second(NonZeroU32::new(5).unwrap()),
-    ));
-    DownloadOptions::builder().concurrency(4).request_limiter(limiter).build()
+async fn limited_download(client: &fds::Client, path: &std::path::Path) -> fds::Result<()> {
+    let limiter = RequestLimiter::per_second(NonZeroU32::new(5).unwrap());
+    client
+        .download_file("bucket", "key", path)
+        .concurrency(4)
+        .request_limiter(limiter.clone())
+        .send()
+        .await
 }
 ```
 
-每个分片请求启动消耗一个 permit，限的是请求频率，不是字节带宽。governor 的 quota 允许突发，并非严格每 200 ms 一次；多个 downloader 共用同一个 Arc 可共享此预算。
+每个分片请求启动消耗一个 permit，限的是请求频率，不是字节带宽。`per_second(n)` 允许最多 n 个请求的突发，并非严格每 1/n 秒一次；`RequestLimiter` 的克隆共享同一预算，可让多个下载共用。限流器是 SDK 自己的类型，应用不需要直接依赖限流库。
 
 ## 预签名与普通 URL
 

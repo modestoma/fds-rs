@@ -1,7 +1,5 @@
 //! Run with FDS_ENDPOINT/FDS_ACCESS_KEY/FDS_SECRET_KEY and bucket, key, file args.
-use fds::multipart::{
-    CleanupPolicy, InitMultipartUploadRequest, MultipartOptions, MultipartUpload,
-};
+use fds::multipart::CleanupPolicy;
 use fds::Client;
 use tokio_util::sync::CancellationToken;
 
@@ -18,13 +16,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::env::var("FDS_SECRET_KEY")?,
         )
         .build()?;
-    let request = InitMultipartUploadRequest {
-        bucket_name: args[1].clone(),
-        object_name: args[2].clone(),
-        metadata: None,
-    };
-    let options = MultipartOptions::new(8 * 1024 * 1024, 4, CleanupPolicy::Preserve)?;
-    let mut session = MultipartUpload::start(&client, request, &args[3], options).await?;
+    let mut session = client
+        .upload_file(&args[1], &args[2], &args[3])
+        .part_size(8 * 1024 * 1024)
+        .concurrency(4)
+        .cleanup(CleanupPolicy::Preserve)
+        .start()
+        .await?;
     // Retain session outside the future. Another task can call token.cancel(),
     // but keep awaiting upload to receive its failure/cleanup result.
     let token = CancellationToken::new();

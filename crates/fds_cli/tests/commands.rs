@@ -449,6 +449,56 @@ async fn managed_failure_records_receipts_and_never_aborts_ambiguous_completion(
 }
 
 #[tokio::test]
+async fn invalid_managed_upload_options_fail_before_the_recovery_file() {
+    let mut server = Server::new_async().await;
+    let init = server
+        .mock("PUT", Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let files = Files::new();
+    let source = files.write("source", b"data");
+    for (part_size, concurrency) in [
+        ("0", "1"),
+        ("4", "0"),
+        ("4", "65"),
+        ("67108865", "1"),
+        ("67108864", "5"),
+    ] {
+        let recovery = files.path("recovery.jsonl");
+        let result = run(
+            &server.url(),
+            &[
+                "multipart",
+                "upload",
+                "b",
+                "k",
+                "--file",
+                &source,
+                "--part-size",
+                part_size,
+                "--concurrency",
+                concurrency,
+                "--recovery",
+                &recovery,
+            ],
+        )
+        .await;
+        assert_eq!(result.status.code(), Some(1), "{part_size} x {concurrency}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("invalid multipart resource limits"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            !std::path::Path::new(&recovery).exists(),
+            "recovery file created for {part_size} x {concurrency}"
+        );
+    }
+    init.assert_async().await;
+}
+
+#[tokio::test]
 async fn discovery_needs_no_keys_and_oauth_exchange_authenticates_app_listing() {
     let mut server = Server::new_async().await;
     let discovery = server

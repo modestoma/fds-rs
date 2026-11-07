@@ -3,7 +3,6 @@
 
 #![cfg(feature = "manager")]
 
-use fds::manager::{DownloadRequest, Downloader};
 use fds::Client;
 
 fn client_for(server: &mockito::ServerGuard) -> Client {
@@ -48,22 +47,11 @@ async fn download_single_part_concurrency_one() {
 
     let client = client_for(&server);
     // concurrency = 1 must NOT deadlock (Go BUG-2 is fixed).
-    let downloader = Downloader::new(
-        client,
-        fds::manager::DownloadOptions::builder()
-            .part_size(1024 * 1024)
-            .concurrency(1)
-            .resume(false)
-            .build()
-            .unwrap(),
-    );
-    downloader
-        .download(&DownloadRequest {
-            bucket_name: "b".into(),
-            object_name: "o".into(),
-            range: None,
-            file_path: out.clone(),
-        })
+    client
+        .download_file("b", "o", &out)
+        .part_size(1024 * 1024)
+        .concurrency(1)
+        .send()
         .await
         .unwrap();
 
@@ -108,22 +96,11 @@ async fn download_multi_part_concurrent() {
     let _ = std::fs::remove_file(&out);
 
     let client = client_for(&server);
-    let downloader = Downloader::new(
-        client,
-        fds::manager::DownloadOptions::builder()
-            .part_size(4)
-            .concurrency(3)
-            .resume(false)
-            .build()
-            .unwrap(),
-    );
-    downloader
-        .download(&DownloadRequest {
-            bucket_name: "b".into(),
-            object_name: "big".into(),
-            range: None,
-            file_path: out.clone(),
-        })
+    client
+        .download_file("b", "big", &out)
+        .part_size(4)
+        .concurrency(3)
+        .send()
         .await
         .unwrap();
 

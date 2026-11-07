@@ -72,6 +72,8 @@ mod presign;
 mod put;
 
 pub use acl::{GetObjectAcl, SetObjectAcl, SetObjectPublic};
+#[cfg(feature = "manager")]
+pub(crate) use basic::head_request;
 pub use basic::{
     CopyObject, CopyObjectResponse, GetObject, HeadObject, ObjectExists, PrefetchObject,
     RefreshObject, RenameObject, RestoreObject,

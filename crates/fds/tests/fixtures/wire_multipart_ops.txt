@@ -1,0 +1,245 @@
+=== init_multipart_upload ===
+PUT /b/dir%2Fa%20b%2Bc.txt?uploads= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== init_multipart_upload metadata ===
+PUT /b/dir%2Fa%20b%2Bc.txt?uploads= HTTP/1.1
+x-xiaomi-meta-k: v
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== upload_part bytes ===
+PUT /b/dir%2Fa%20b%2Bc.txt?partNumber=2&uploadId=u%2F1+%2B2 HTTP/1.1
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+efgh
+
+=== upload_part content_md5 ===
+PUT /b/o?partNumber=1&uploadId=u HTTP/1.1
+content-md5: 4vxxTEcn7pOV8yTNLn8zHw==
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+abcd
+
+=== upload_part bytes md5 ===
+PUT /b/o?partNumber=1&uploadId=u HTTP/1.1
+content-md5: e2fc714c4727ee9395f324cd2e7f331f
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+abcd
+
+=== upload_part stream ===
+PUT /b/o?partNumber=1&uploadId=u HTTP/1.1
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+abcd
+
+=== upload_part from_file ===
+PUT /b/o?partNumber=1&uploadId=u HTTP/1.1
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+abcd
+
+=== complete_multipart_upload ===
+PUT /b/dir%2Fa%20b%2Bc.txt?uploadId=u%2F1+%2B2 HTTP/1.1
+content-length: 110
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"uploadPartResultList":[{"partNumber":1,"etag":"e1","partSize":4},{"partNumber":2,"etag":"e2","partSize":4}]}
+
+=== complete_multipart_upload metadata expires ===
+PUT /b/o?expires=1752400000123&uploadId=u HTTP/1.1
+content-type: text/plain
+content-length: 68
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"uploadPartResultList":[{"partNumber":1,"etag":"e1","partSize":4}]}
+
+=== complete_multipart_upload no parts ===
+PUT /b/o?uploadId=u HTTP/1.1
+content-length: 27
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"uploadPartResultList":[]}
+
+=== abort_multipart_upload ===
+DELETE /b/dir%2Fa%20b%2Bc.txt?uploadId=u%2F1+%2B2 HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== managed upload ===
+--- request 1 ---
+PUT /b/dir%2Fa%20b%2Bc.txt?uploads= HTTP/1.1
+x-xiaomi-meta-k: v
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+PUT /b/dir%2Fa%20b%2Bc.txt?partNumber=1&uploadId=u%2F1+%2B2 HTTP/1.1
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+abcd
+--- request 3 ---
+PUT /b/dir%2Fa%20b%2Bc.txt?partNumber=2&uploadId=u%2F1+%2B2 HTTP/1.1
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+efgh
+--- request 4 ---
+PUT /b/dir%2Fa%20b%2Bc.txt?uploadId=u%2F1+%2B2 HTTP/1.1
+x-xiaomi-meta-k: v
+content-length: 110
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+{"uploadPartResultList":[{"partNumber":1,"etag":"e1","partSize":4},{"partNumber":2,"etag":"e2","partSize":4}]}
+
+=== managed upload abort on failure ===
+--- request 1 ---
+PUT /b/dir%2Fa%20b%2Bc.txt?uploads= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+PUT /b/dir%2Fa%20b%2Bc.txt?partNumber=1&uploadId=u%2F1+%2B2 HTTP/1.1
+content-length: 4
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+abcd
+--- request 3 ---
+DELETE /b/dir%2Fa%20b%2Bc.txt?uploadId=u%2F1+%2B2 HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== download parts ===
+--- request 1 ---
+HEAD /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+GET /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
+range: bytes=0-3
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 3 ---
+GET /b/dir%2Fa%20b%2Bc.txt HTTP/1.1
+range: bytes=4-7
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== download range ===
+--- request 1 ---
+HEAD /b/o HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+GET /b/o HTTP/1.1
+range: bytes=2-5
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---

@@ -8,7 +8,6 @@
 
 use std::error::Error;
 
-use fds::manager::{DownloadRequest, Downloader};
 use fds::Client;
 
 #[tokio::main]
@@ -30,16 +29,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build()?;
 
     // 1 MiB parts, 10 concurrent workers, breakpoint/resume enabled.
-    let downloader = Downloader::new(
-        client.clone(),
-        fds::manager::DownloadOptions::builder()
-            .part_size(1024 * 1024)
-            .concurrency(10)
-            .resume(true)
-            .build()?,
-    );
-    downloader
-        .download(&DownloadRequest::new(bucket, object, &file_path))
+    client
+        .download_file(bucket, object, &file_path)
+        .part_size(1024 * 1024)
+        .concurrency(10)
+        .resume()
+        .send()
         .await?;
 
     println!("downloaded to {file_path}");

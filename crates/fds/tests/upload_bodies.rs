@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use chrono::{TimeZone, Utc};
-use fds::multipart::UploadPartRequest;
 use fds::object::UploadBody;
 use fds::Client;
 use futures_util::stream;
@@ -96,8 +95,9 @@ async fn part_file_empty_and_owned_owned_send() {
     let body = UploadBody::from_file(&path).await.unwrap();
     assert!(body.try_clone().is_none());
     let client = client(server.url(), false);
-    let result = UploadPartRequest::new("b", "k", "id", 1, body)
-        .send(&client)
+    let result = client
+        .upload_part("b", "k", "id", std::num::NonZeroU16::MIN, body)
+        .send()
         .await
         .unwrap();
     assert_eq!(result.part_number, 1);

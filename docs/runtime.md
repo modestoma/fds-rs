@@ -94,7 +94,7 @@ marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环�
 
 ## 重试与超时
 
-默认关闭 SDK 重试。启用后，只有显式分类为读取且无 body/可克隆 Bytes body 的请求可重试。包括对象 GET/HEAD、列举、basicInfo、metadata/ACL 和 Bucket 信息/lifecycle/accessLog 读取；前缀删除仅其列举步骤适用。
+默认关闭 SDK 重试。启用后，只有显式分类为读取且无 body/可克隆 Bytes body 的请求可重试。包括对象 GET/HEAD（含 `download_file` 的 HEAD）、列举、basicInfo、metadata/ACL 和 Bucket 信息/lifecycle/accessLog 读取；前缀删除仅其列举步骤适用。
 
 连接、发送、超时错误和 429/502/503/504 可在成功响应交付前重试；body producer、成功后的读取/JSON 解码错误不重试。写入、复制、rename、删除、ACL 更新、分片全链路、CDN 和 OAuth exchange 不自动重发；reqwest 自带重试关闭。
 
@@ -104,9 +104,9 @@ max_retries 不含首次，范围 0–100；initial_delay 必须大于零且不�
 
 ## 分片会话与恢复
 
-手动接口由调用者保存 upload ID、确认回执及目标身份，检查分片完整性、排序后 complete；SDK 不提供 list-parts 或可自动导入的恢复格式。初始化响应丢失可能留下没有本地 ID 的远端会话；缺少 part 回执不代表上传未发生。
+手动接口（`create_multipart_upload` 返回的 `MultipartUploadSession`，或直接接收 upload ID 的 `upload_part`/`complete_multipart_upload`/`abort_multipart_upload`）由调用者保存 upload ID、确认回执及目标身份，检查分片完整性、排序后 complete；SDK 不提供 list-parts 或可自动导入的恢复格式。会话绑定调用者传入的 bucket/key；响应缺少 upload ID 时为 OutcomeUnknown。初始化响应丢失可能留下没有本地 ID 的远端会话；缺少 part 回执不代表上传未发生。分片编号为 `NonZeroU16`，发送前检查不超过 10,000。
 
-托管 MultipartUpload 属于核心 SDK，不依赖 manager。start 打开非空普通文件后初始化一次；后续请求绑定调用者输入 bucket/key。upload 只允许运行一次，失败或丢弃 future 后不能通过再次调用隐式恢复。
+托管 MultipartUpload 属于核心 SDK，不依赖 manager，由 `client.upload_file(bucket, key, path)` 配置。`start()` 先校验名字和选项（失败为 InvalidInput，不打开文件、不发请求），再打开非空普通文件并初始化一次；后续请求绑定调用者输入 bucket/key。upload 只允许运行一次，失败或丢弃 future 后不能通过再次调用隐式恢复。
 
 默认 8 MiB × 4 并发、Preserve；本地允许每片 1 字节至 64 MiB、并发 1–64，乘积不超过 256 MiB，总片数不超过 10,000。服务尺寸限制仍需满足。内存 body 上界为 part_size × concurrency，另有文件、网络与响应解析开销；每份回执 ETag 最多 1024 字节，整体 JSON 无通用上限。
 
@@ -123,13 +123,13 @@ max_retries 不含首次，范围 0–100；initial_delay 必须大于零且不�
 
 Preserve 默认不清理。AbortOnFailure 仅在完成前的错误/合作式取消尝试一次 abort；先丢弃分片 future，返回原始错误；abort 也失败时其文本附加在错误上下文 `cleanup_error` 中。complete 可能已发出后的失败统一为 OutcomeUnknown。调用 token.cancel 后继续 await 才能获得清理结果；timeout/drop future 或整个 session Drop 不执行异步清理。
 
-进度包含会话、确认回执、文件大小、总片数和状态，应用应按业务需求持久保存。确认放弃后可显式 abort；确认需要补片时构造 UploadPartRequest；确认全部回执后可手动 complete。CompletionUnknown 不能自动 abort/retry，也不能仅用 HEAD 存在证明本次完成，同名对象可能来自旧版本或并发写入。
+进度包含会话、确认回执、文件大小、总片数和状态，应用应按业务需求持久保存。进度中的 `session` 即 `MultipartUploadSession`：确认放弃后可显式 `abort()`；确认需要补片时用 `upload_part(n, body)`（第 n 片对应文件偏移 `(n - 1) × part_size`）；确认全部回执后可手动 `complete(parts)`。CompletionUnknown 不能自动 abort/retry，也不能仅用 HEAD 存在证明本次完成，同名对象可能来自旧版本或并发写入。
 
 ## 下载文件与断点
 
-Downloader 接收不可变选项与 Client clone。路径使用 PathBuf，父目录须存在；路径层不要求 UTF-8，实际支持由文件系统决定。每片字节数与并发须大于零，分片大小不超过 i64::MAX；运行时再校验范围、文件资源和对象。
+`client.download_file(bucket, key, path)` 返回 builder，`send()` 执行一次下载。路径使用 PathBuf，父目录须存在；路径层不要求 UTF-8，实际支持由文件系统决定。每片字节数与并发须大于零，分片大小不超过 i64::MAX，这些在 `send()` 中、加锁和请求前校验（InvalidInput）；运行时再校验范围、文件资源和对象。
 
-- 使用真实 HEAD Content-Length。数据响应必须是 206、精确 Content-Range 及精确长度；200 忽略 Range 会失败。
+- 使用真实 HEAD Content-Length。HEAD 与 `head_object` 是同一个只读请求，配置重试后按策略重试；对象不存在为 NotFound（`is_not_found()`）。数据响应必须是 206、精确 Content-Range 及精确长度；200 忽略 Range 会失败。
 - 有强 ETag 时每片需同一 ETag；无强 ETag（含弱值）时改为单个流式 Range 请求，不复用断点，不以大小/Last-Modified 推断跨请求一致性。
 - 范围结束超过对象时截断；不可满足范围报错；零字节完整对象生成空文件。
 - 分片在同目录暂存，全部成功并同步后由主 future rename 替换目标；没有后台 rename。失败保留旧目标。
@@ -142,4 +142,4 @@ Downloader 接收不可变选项与 Client clone。路径使用 PathBuf，父目
 
 最多 concurrency 个 worker，无全量任务队列；每个 worker 把网络数据攒成最多 256 KiB 一批交给阻塞线程写入，不累计整个分片。最多 1,000,000 片，检查点读取上限 64 MiB。文件 IO、fsync、恢复摘要、加锁与发布都在 `spawn_blocking` 中执行，不占用 async 运行时线程，current_thread 运行时也可以使用；取消后，已提交的阻塞写入会先执行完，锁才会释放。
 
-request_limiter 每个分片请求启动消耗一个 permit，不是字节带宽限制。性能测量方法统一见 [验证指南](validation.md#本地下载基准)。
+`request_limiter(RequestLimiter)` 每个分片请求启动消耗一个 permit，不是字节带宽限制；`RequestLimiter::per_second(n)` 的突发上限为 n，克隆共享预算。性能测量方法统一见 [验证指南](validation.md#本地下载基准)。

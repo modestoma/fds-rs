@@ -1,4 +1,5 @@
-//! Manual multipart requests and session helpers. See crate::multipart for managed file uploads.
+//! Low-level multipart requests: create, upload part, complete and abort.
+//! Re-exported from [`crate::multipart`]; see there for the managed file upload.
 
 use super::{insert_header_opt, validate_object};
 use super::{ObjectMetadata, PutObjectResponse, UploadBody};
@@ -8,39 +9,23 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use http::Method;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU16;
+use std::time::Duration;
 
-/// Input of `init_multipart_upload`.
-#[derive(Debug, Clone, Default)]
-pub struct InitMultipartUploadRequest {
-    pub bucket_name: String,
-    pub object_name: String,
-    pub metadata: Option<ObjectMetadata>,
-}
+/// The largest part number FDS accepts.
+pub const MAX_PART_NUMBER: u16 = 10_000;
 
 crate::de::lenient! {
-    /// Result of `init_multipart_upload`.
-    #[derive(Debug, Clone, Default, Deserialize)]
+    /// The initiation response; only the upload ID is trusted.
+    #[derive(Debug, Default, Deserialize)]
     #[serde(rename_all = "camelCase", default)]
-    pub struct InitMultipartUploadResponse {
-        pub bucket_name: String,
-        pub object_name: String,
+    pub(crate) struct InitMultipartUploadResponse {
         pub upload_id: String,
     }
 }
 
-/// Single-use multipart part request; part numbers start at 1.
-#[derive(Debug)]
-pub struct UploadPartRequest {
-    bucket_name: String,
-    object_name: String,
-    upload_id: String,
-    part_number: i32,
-    body: crate::object::UploadBody,
-    content_md5: Option<String>,
-}
-
-/// Result of `upload_part`, sent back verbatim on completion. Every key is
-/// required.
+/// Result of [`UploadPart::send`], sent back verbatim on completion. Every
+/// key is required.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadPartResponse {
@@ -49,83 +34,185 @@ pub struct UploadPartResponse {
     pub part_size: i64,
 }
 
-/// Input of `complete_multipart_upload`.
-#[derive(Debug, Clone, Default)]
-pub struct CompleteMultipartUploadRequest {
-    pub bucket_name: String,
-    pub object_name: String,
-    pub upload_id: String,
-    pub upload_parts: Vec<UploadPartResponse>,
-    pub metadata: Option<ObjectMetadata>,
-    pub expires: Option<DateTime<Utc>>,
+fn validate_upload(bucket: &str, object: &str, upload_id: &str) -> Result<()> {
+    validate_object(bucket, object)?;
+    if upload_id.is_empty() {
+        return Err(Error::invalid_input("upload ID must be non-empty"));
+    }
+    Ok(())
 }
 
-impl InitMultipartUploadRequest {
-    pub fn new(bucket: impl Into<String>, object: impl Into<String>) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            metadata: None,
-        }
-    }
-    pub async fn send(self, client: &Client) -> Result<InitMultipartUploadResponse> {
-        client.init_multipart_upload(&self).await
-    }
+/// Builder for [`Client::create_multipart_upload`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct CreateMultipartUpload {
+    client: Client,
+    bucket: String,
+    object: String,
+    metadata: Option<ObjectMetadata>,
+    timeout: Option<Duration>,
+}
 
-    pub fn metadata(mut self, value: ObjectMetadata) -> Self {
-        self.metadata = Some(value);
+impl CreateMultipartUpload {
+    /// Metadata sent as request headers with the initiation.
+    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
+        self.metadata = Some(metadata);
         self
     }
+
+    timeout_option!();
+
+    /// PUT `/{bucket}/{object}?uploads` once and return the session.
+    ///
+    /// The session is bound to the requested bucket and object, never to
+    /// names echoed by the service. A response without an upload ID is
+    /// [`ErrorKind::OutcomeUnknown`](crate::ErrorKind::OutcomeUnknown): an
+    /// upload may have been created. Never retry initiation blindly; a failure
+    /// after the request was sent can leave an upload whose ID was not
+    /// received.
+    pub async fn send(self) -> Result<MultipartUploadSession> {
+        validate_object(&self.bucket, &self.object)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .with_timeout(self.timeout)?;
+        cr.query.add("uploads", "");
+        cr.metadata = self.metadata.as_ref();
+        let response: InitMultipartUploadResponse = self.client.do_json(cr).await?;
+        if response.upload_id.is_empty() {
+            return Err(
+                Error::protocol("multipart initialization returned no upload ID")
+                    .into_outcome_unknown(
+                        "multipart initialization outcome unknown; an upload may have been created",
+                    ),
+            );
+        }
+        Ok(MultipartUploadSession {
+            client: self.client,
+            bucket: self.bucket,
+            object: self.object,
+            upload_id: response.upload_id,
+        })
+    }
 }
 
-impl UploadPartRequest {
-    pub fn new(
-        bucket: impl Into<String>,
-        object: impl Into<String>,
-        upload_id: impl Into<String>,
-        part_number: i32,
-        body: impl Into<UploadBody>,
-    ) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            upload_id: upload_id.into(),
-            part_number,
-            body: body.into(),
-            content_md5: None,
-        }
+/// An initiated multipart upload: the bucket, object and upload ID, plus the
+/// [`Client`] that sends the follow-up requests.
+///
+/// Created by [`CreateMultipartUpload::send`]. Each method returns the same
+/// builder as the matching [`Client`] method with the session's identity
+/// filled in. Nothing is sent implicitly, also not on drop: persist
+/// [`upload_id`](Self::upload_id) if the upload may need to be completed or
+/// aborted later, from another process through
+/// [`Client::upload_part`], [`Client::complete_multipart_upload`] and
+/// [`Client::abort_multipart_upload`].
+#[derive(Debug, Clone)]
+pub struct MultipartUploadSession {
+    client: Client,
+    bucket: String,
+    object: String,
+    upload_id: String,
+}
+
+impl MultipartUploadSession {
+    pub fn bucket(&self) -> &str {
+        &self.bucket
     }
+
+    pub fn object(&self) -> &str {
+        &self.object
+    }
+
+    pub fn upload_id(&self) -> &str {
+        &self.upload_id
+    }
+
+    /// Upload one part; see [`Client::upload_part`].
+    pub fn upload_part(&self, part_number: NonZeroU16, body: impl Into<UploadBody>) -> UploadPart {
+        self.client.upload_part(
+            &self.bucket,
+            &self.object,
+            &self.upload_id,
+            part_number,
+            body,
+        )
+    }
+
+    /// Complete with the confirmed part receipts; see
+    /// [`Client::complete_multipart_upload`].
+    pub fn complete(
+        &self,
+        parts: impl IntoIterator<Item = UploadPartResponse>,
+    ) -> CompleteMultipartUpload {
+        self.client
+            .complete_multipart_upload(&self.bucket, &self.object, &self.upload_id, parts)
+    }
+
+    /// Abort the upload; see [`Client::abort_multipart_upload`].
+    pub fn abort(&self) -> AbortMultipartUpload {
+        self.client
+            .abort_multipart_upload(&self.bucket, &self.object, &self.upload_id)
+    }
+}
+
+/// Builder for [`Client::upload_part`]. It owns the body, so it is single-use.
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct UploadPart {
+    client: Client,
+    bucket: String,
+    object: String,
+    upload_id: String,
+    part_number: NonZeroU16,
+    body: UploadBody,
+    content_md5: Option<String>,
+    timeout: Option<Duration>,
+}
+
+impl UploadPart {
+    /// Send this `Content-MD5` value instead of letting the client compute
+    /// one (see `ClientBuilder::enable_md5_calculate`). Empty is not sent.
     pub fn content_md5(mut self, value: impl Into<String>) -> Self {
         self.content_md5 = Some(value.into());
         self
     }
-    pub async fn send(self, client: &Client) -> Result<UploadPartResponse> {
-        client.upload_part(self).await
+
+    timeout_option!();
+
+    /// PUT `/{bucket}/{object}?uploadId=..&partNumber=..`, consuming the body
+    /// without copying it. Never retried. The part number must not exceed
+    /// [`MAX_PART_NUMBER`]; the upload ID must be non-empty.
+    pub async fn send(self) -> Result<UploadPartResponse> {
+        validate_upload(&self.bucket, &self.object, &self.upload_id)?;
+        if self.part_number.get() > MAX_PART_NUMBER {
+            return Err(Error::invalid_input("part number must be at most 10000"));
+        }
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .with_timeout(self.timeout)?;
+        cr.query.add("uploadId", &self.upload_id);
+        cr.query.add("partNumber", self.part_number.to_string());
+        insert_header_opt(&mut cr.headers, "content-md5", self.content_md5.as_deref())?;
+        cr.body = Some(self.body);
+        self.client.do_json(cr).await
     }
 }
 
-impl CompleteMultipartUploadRequest {
-    pub fn new(
-        bucket: impl Into<String>,
-        object: impl Into<String>,
-        upload_id: impl Into<String>,
-        upload_parts: impl IntoIterator<Item = UploadPartResponse>,
-    ) -> Self {
-        Self {
-            bucket_name: bucket.into(),
-            object_name: object.into(),
-            upload_id: upload_id.into(),
-            upload_parts: upload_parts.into_iter().collect(),
-            metadata: None,
-            expires: None,
-        }
-    }
-    pub async fn send(self, client: &Client) -> Result<PutObjectResponse> {
-        client.complete_multipart_upload(&self).await
-    }
+/// Builder for [`Client::complete_multipart_upload`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct CompleteMultipartUpload {
+    client: Client,
+    bucket: String,
+    object: String,
+    upload_id: String,
+    parts: Vec<UploadPartResponse>,
+    metadata: Option<ObjectMetadata>,
+    expires: Option<DateTime<Utc>>,
+    timeout: Option<Duration>,
+}
 
-    pub fn metadata(mut self, value: ObjectMetadata) -> Self {
-        self.metadata = Some(value);
+impl CompleteMultipartUpload {
+    /// Metadata sent as request headers with the completion.
+    pub fn metadata(mut self, metadata: ObjectMetadata) -> Self {
+        self.metadata = Some(metadata);
         self
     }
 
@@ -134,108 +221,159 @@ impl CompleteMultipartUploadRequest {
         self.expires = Some(expires);
         self
     }
-}
 
-impl InitMultipartUploadResponse {
-    /// Build a single-use part request bound to this upload session.
-    pub fn part(
-        &self,
-        number: i32,
-        body: impl Into<crate::object::UploadBody>,
-    ) -> UploadPartRequest {
-        UploadPartRequest::new(
-            &self.bucket_name,
-            &self.object_name,
-            &self.upload_id,
-            number,
-            body,
-        )
-    }
-    /// Build completion from the caller's confirmed part receipts.
-    pub fn complete(
-        &self,
-        parts: impl IntoIterator<Item = UploadPartResponse>,
-    ) -> CompleteMultipartUploadRequest {
-        CompleteMultipartUploadRequest::new(
-            &self.bucket_name,
-            &self.object_name,
-            &self.upload_id,
-            parts,
-        )
-    }
-    /// Explicitly abort this session; no implicit cleanup or retries.
-    pub async fn abort(&self, client: &Client) -> Result<()> {
-        client.abort_multipart_upload(self).await
-    }
-}
+    timeout_option!();
 
-impl Client {
-    /// Start a multipart upload (PUT `/{b}/{o}?uploads`).
-    pub async fn init_multipart_upload(
-        &self,
-        req: &InitMultipartUploadRequest,
-    ) -> Result<InitMultipartUploadResponse> {
-        validate_object(&req.bucket_name, &req.object_name)?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
-        cr.query.add("uploads", "");
-        cr.metadata = req.metadata.as_ref();
-        self.do_json(cr).await
-    }
-
-    /// Upload one part, consuming its body without copying or retrying it.
-    pub async fn upload_part(&self, req: UploadPartRequest) -> Result<UploadPartResponse> {
-        validate_object(&req.bucket_name, &req.object_name)?;
-        if req.upload_id.is_empty() || req.part_number <= 0 {
-            return Err(Error::invalid_input(
-                "upload ID must be non-empty and part number positive",
-            ));
-        }
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
-        cr.query.add("uploadId", &req.upload_id);
-        cr.query.add("partNumber", req.part_number.to_string());
-        insert_header_opt(&mut cr.headers, "content-md5", req.content_md5.as_deref())?;
-        cr.body = Some(req.body);
-        self.do_json(cr).await
-    }
-
-    /// Complete a multipart upload (PUT `/{b}/{o}?uploadId`, body =
-    /// `{"uploadPartResultList":[...]}`).
-    pub async fn complete_multipart_upload(
-        &self,
-        req: &CompleteMultipartUploadRequest,
-    ) -> Result<PutObjectResponse> {
-        validate_object(&req.bucket_name, &req.object_name)?;
-        if req.upload_id.is_empty() {
-            return Err(Error::invalid_input("upload ID must be non-empty"));
-        }
+    /// PUT `/{bucket}/{object}?uploadId=..` with body
+    /// `{"uploadPartResultList":[...]}`, the receipts in the given order.
+    /// Never retried; reconcile before repeating a completion whose outcome
+    /// is unknown.
+    pub async fn send(self) -> Result<PutObjectResponse> {
+        validate_upload(&self.bucket, &self.object, &self.upload_id)?;
         #[derive(Serialize)]
         struct Parts<'a> {
             #[serde(rename = "uploadPartResultList")]
             parts: &'a [UploadPartResponse],
         }
-        let body = serde_json::to_vec(&Parts {
-            parts: &req.upload_parts,
-        })
-        .map_err(Error::json_encode)?;
-        let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
-        cr.query.add("uploadId", &req.upload_id);
-        if let Some(expires) = req.expires {
+        let body = serde_json::to_vec(&Parts { parts: &self.parts }).map_err(Error::json_encode)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .with_timeout(self.timeout)?;
+        cr.query.add("uploadId", &self.upload_id);
+        if let Some(expires) = self.expires {
             cr.query
                 .add("expires", expires.timestamp_millis().to_string());
         }
-        cr.metadata = req.metadata.as_ref();
+        cr.metadata = self.metadata.as_ref();
         cr.body = Some(Bytes::from(body).into());
-        self.do_json(cr).await
+        self.client.do_json(cr).await
+    }
+}
+
+/// Builder for [`Client::abort_multipart_upload`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct AbortMultipartUpload {
+    client: Client,
+    bucket: String,
+    object: String,
+    upload_id: String,
+    timeout: Option<Duration>,
+}
+
+impl AbortMultipartUpload {
+    timeout_option!();
+
+    /// DELETE `/{bucket}/{object}?uploadId=..`. Never retried.
+    pub async fn send(self) -> Result<()> {
+        validate_upload(&self.bucket, &self.object, &self.upload_id)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::DELETE)
+            .with_timeout(self.timeout)?;
+        cr.query.add("uploadId", &self.upload_id);
+        self.client.do_discard(cr).await
+    }
+}
+
+impl Client {
+    /// Initiate a multipart upload; `send` returns the
+    /// [`MultipartUploadSession`] that uploads, completes or aborts it. For a
+    /// local file, [`Client::upload_file`] runs the whole upload.
+    pub fn create_multipart_upload(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+    ) -> CreateMultipartUpload {
+        CreateMultipartUpload {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            metadata: None,
+            timeout: None,
+        }
     }
 
-    /// Abort a multipart upload (DELETE `/{b}/{o}?uploadId`).
-    pub async fn abort_multipart_upload(&self, init: &InitMultipartUploadResponse) -> Result<()> {
-        validate_object(&init.bucket_name, &init.object_name)?;
-        if init.upload_id.is_empty() {
-            return Err(Error::invalid_input("upload ID must be non-empty"));
+    /// Upload one part of the upload `upload_id`, for example when resuming
+    /// from a persisted upload ID in another process. Within one process the
+    /// same builder comes from [`MultipartUploadSession::upload_part`].
+    ///
+    /// Part numbers start at 1 and must not exceed [`MAX_PART_NUMBER`]
+    /// (checked by `send`).
+    pub fn upload_part(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        upload_id: impl Into<String>,
+        part_number: NonZeroU16,
+        body: impl Into<UploadBody>,
+    ) -> UploadPart {
+        UploadPart {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            upload_id: upload_id.into(),
+            part_number,
+            body: body.into(),
+            content_md5: None,
+            timeout: None,
         }
-        let mut cr = ClientRequest::new(&init.bucket_name, &init.object_name, Method::DELETE);
-        cr.query.add("uploadId", &init.upload_id);
-        self.do_discard(cr).await
+    }
+
+    /// Complete the upload `upload_id` from the caller's confirmed part
+    /// receipts, sent in the given order (FDS expects ascending part
+    /// numbers). Also available as [`MultipartUploadSession::complete`].
+    pub fn complete_multipart_upload(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        upload_id: impl Into<String>,
+        parts: impl IntoIterator<Item = UploadPartResponse>,
+    ) -> CompleteMultipartUpload {
+        CompleteMultipartUpload {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            upload_id: upload_id.into(),
+            parts: parts.into_iter().collect(),
+            metadata: None,
+            expires: None,
+            timeout: None,
+        }
+    }
+
+    /// Abort the upload `upload_id` explicitly. Also available as
+    /// [`MultipartUploadSession::abort`].
+    pub fn abort_multipart_upload(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        upload_id: impl Into<String>,
+    ) -> AbortMultipartUpload {
+        AbortMultipartUpload {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            upload_id: upload_id.into(),
+            timeout: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InitMultipartUploadResponse;
+
+    // Lenient: `null`, missing and unknown keys decode; only the upload ID is kept.
+    #[test]
+    fn init_response_is_lenient() {
+        for body in [
+            r#"{"bucketName":"b","objectName":"o","uploadId":"u","x":1}"#,
+            r#"{"uploadId":"u","bucketName":null}"#,
+        ] {
+            let parsed: InitMultipartUploadResponse = serde_json::from_str(body).unwrap();
+            assert_eq!(parsed.upload_id, "u");
+        }
+        for body in [r#"{}"#, r#"{"uploadId":null}"#] {
+            let parsed: InitMultipartUploadResponse = serde_json::from_str(body).unwrap();
+            assert_eq!(parsed.upload_id, "");
+        }
     }
 }

@@ -94,16 +94,26 @@ impl ObjectExists {
     }
 }
 
+/// The validated, read-only (retryable) HEAD request of [`HeadObject`],
+/// [`ObjectExists`] and the file download; it accepts only 200.
+pub(crate) fn head_request<'a>(
+    bucket: &'a str,
+    object: &'a str,
+    timeout: Option<Duration>,
+) -> Result<ClientRequest<'a>> {
+    validate_object(bucket, object)?;
+    ClientRequest::new(bucket, object, Method::HEAD)
+        .read_only()
+        .with_timeout(timeout)
+}
+
 async fn head(
     client: &Client,
     bucket: &str,
     object: &str,
     timeout: Option<Duration>,
 ) -> Result<Option<ObjectMetadata>> {
-    validate_object(bucket, object)?;
-    let mut cr = ClientRequest::new(bucket, object, Method::HEAD)
-        .read_only()
-        .with_timeout(timeout)?;
+    let mut cr = head_request(bucket, object, timeout)?;
     cr.accepted_statuses = &[200, 404];
     let resp = client.do_request(cr).await?;
     Ok((resp.status().as_u16() == 200).then(|| ObjectMetadata::from_headers(resp.headers())))

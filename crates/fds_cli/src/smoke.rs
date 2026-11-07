@@ -1,6 +1,6 @@
 use super::util::parse_meta;
 use anyhow::{anyhow, bail, Result};
-use fds::{manager::*, multipart::*, object::*, *};
+use fds::{object::*, *};
 use http::Method;
 use std::time::{SystemTime, UNIX_EPOCH};
 struct Report {
@@ -228,15 +228,11 @@ pub async fn smoke(
     if !skip_download {
         let out = std::env::temp_dir().join(format!("fds-smoke-{ts}.bin"));
         let r = async {
-            let d = Downloader::new(
-                client.clone(),
-                fds::manager::DownloadOptions::builder()
-                    .part_size(1024 * 1024)
-                    .concurrency(4)
-                    .resume(false)
-                    .build()?,
-            );
-            d.download(&DownloadRequest::new(bucket, &hello, &out))
+            client
+                .download_file(bucket, &hello, &out)
+                .part_size(1024 * 1024)
+                .concurrency(4)
+                .send()
                 .await
                 .map_err(|e| anyhow!(e))?;
             let got = std::fs::read(&out)?;
@@ -305,28 +301,29 @@ async fn multipart_put(
     data: &[u8],
     part_size: usize,
 ) -> Result<PutObjectResponse> {
-    let mut init = InitMultipartUploadRequest::new(bucket, object)
-        .send(client)
+    // The session is bound to the requested identity, not names echoed back.
+    let session = client
+        .create_multipart_upload(bucket, object)
+        .send()
         .await?;
-    init.bucket_name = bucket.to_owned();
-    init.object_name = object.to_owned();
     eprintln!(
         "smoke multipart session: {}",
-        serde_json::json!({"bucket":bucket,"object":object,"upload_id":init.upload_id})
+        serde_json::json!({"bucket":bucket,"object":object,"upload_id":session.upload_id()})
     );
     let mut parts = Vec::new();
-    for (number, chunk) in (1i32..).zip(data.chunks(part_size)) {
-        match init.part(number, chunk.to_vec()).send(client).await {
+    let numbers = std::iter::successors(Some(std::num::NonZeroU16::MIN), |n| n.checked_add(1));
+    for (number, chunk) in numbers.zip(data.chunks(part_size)) {
+        match session.upload_part(number, chunk.to_vec()).send().await {
             Ok(part) => parts.push(part),
             Err(error) => {
-                if let Err(cleanup) = init.abort(client).await {
+                if let Err(cleanup) = session.abort().send().await {
                     eprintln!("smoke multipart abort failed: {cleanup}");
                 }
                 return Err(error.into());
             }
         }
     }
-    match init.complete(parts.clone()).send(client).await {
+    match session.complete(parts.clone()).send().await {
         Ok(value) => Ok(value),
         Err(error) => {
             eprintln!(

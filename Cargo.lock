@@ -357,7 +357,6 @@ dependencies = [
  "clap",
  "fds",
  "futures-util",
- "governor",
  "http",
  "mockito",
  "serde",

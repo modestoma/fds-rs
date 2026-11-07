@@ -8,7 +8,7 @@ use fds::bucket::{
     AccessLog, GetBucketInfoResponse, LifecycleBaseItem, LifecycleConfig, LifecycleRule,
     ListBucketsResponse,
 };
-use fds::multipart::{InitMultipartUploadResponse, UploadPartResponse};
+use fds::multipart::UploadPartResponse;
 use fds::oauth::{AppBucket, AppBuckets};
 use fds::object::{
     CopyObjectResponse, DeleteObjectFailure, ObjectBasicInfo, ObjectListing, ObjectMetadata,
@@ -186,9 +186,6 @@ fn object_metadata_model() {
 
 #[test]
 fn multipart_models() {
-    lenient::<InitMultipartUploadResponse>(json!({
-        "bucketName": "b", "objectName": "o", "uploadId": "u",
-    }));
     strict::<UploadPartResponse>(
         json!({"partNumber": 1, "etag": "e", "partSize": 5}),
         &["partNumber", "etag", "partSize"],

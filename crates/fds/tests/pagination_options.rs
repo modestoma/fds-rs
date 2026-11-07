@@ -1,6 +1,5 @@
 use chrono::{TimeZone, Utc};
 use fds::acl::{AccessControlList, AclAction, BucketCannedAcl};
-use fds::multipart::CompleteMultipartUploadRequest;
 use fds::object::ListObjects;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
@@ -310,19 +309,11 @@ async fn signature_expiry_is_milliseconds_and_omitted_by_default() {
             .with_body("{}")
             .create_async()
             .await;
-        let req = CompleteMultipartUploadRequest {
-            bucket_name: "b".into(),
-            object_name: "a/b".into(),
-            upload_id: "id".into(),
-            ..Default::default()
-        };
+        let mut complete_upload = c.complete_multipart_upload("b", "a/b", "id", []);
         if let Some(expiry) = expiry {
-            c.complete_multipart_upload(&req.expires(expiry))
-                .await
-                .unwrap();
-        } else {
-            c.complete_multipart_upload(&req).await.unwrap();
+            complete_upload = complete_upload.expires(expiry);
         }
+        complete_upload.send().await.unwrap();
         complete.assert_async().await;
     }
 }

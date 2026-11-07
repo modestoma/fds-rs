@@ -3,7 +3,10 @@ use super::util::{print_json, read_json, BodyArgs, MetadataArgs};
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use fds::{manager::*, multipart::*, object::*, *};
-use std::{num::NonZeroU32, path::PathBuf, sync::Arc};
+use std::{
+    num::{NonZeroU16, NonZeroU32},
+    path::PathBuf,
+};
 
 #[derive(Args)]
 pub struct DownloadArgs {
@@ -24,21 +27,20 @@ pub struct DownloadArgs {
 }
 impl DownloadArgs {
     pub async fn run(&self, client: &Client) -> Result<()> {
-        let mut options = DownloadOptions::builder()
+        let mut download = client
+            .download_file(&self.bucket, &self.object, &self.out)
             .part_size(self.part_size)
-            .concurrency(self.concurrency)
-            .resume(self.resume);
+            .concurrency(self.concurrency);
+        if self.resume {
+            download = download.resume();
+        }
         if let Some(rate) = self.requests_per_second {
-            options = options.request_limiter(Arc::new(governor::RateLimiter::direct(
-                governor::Quota::per_second(rate),
-            )));
+            download = download.request_limiter(RequestLimiter::per_second(rate));
         }
-        let downloader = Downloader::new(client.clone(), options.build()?);
-        let mut request = DownloadRequest::new(&self.bucket, &self.object, &self.out);
         if let Some(range) = self.range {
-            request = request.range(range);
+            download = download.range(range);
         }
-        downloader.download(&request).await?;
+        download.send().await?;
         eprintln!("downloaded to {}", self.out.display());
         Ok(())
     }
@@ -50,15 +52,6 @@ pub struct Session {
     object: String,
     #[arg(long)]
     upload_id: String,
-}
-impl Session {
-    fn sdk(&self) -> InitMultipartUploadResponse {
-        InitMultipartUploadResponse {
-            bucket_name: self.bucket.clone(),
-            object_name: self.object.clone(),
-            upload_id: self.upload_id.clone(),
-        }
-    }
 }
 
 #[derive(Subcommand)]
@@ -119,11 +112,21 @@ pub enum MultipartCmd {
     },
 }
 
-fn identity(upload: &InitMultipartUploadResponse) -> serde_json::Value {
-    serde_json::json!({"bucketName": upload.bucket_name, "objectName": upload.object_name, "uploadId": upload.upload_id})
+fn identity(upload: &MultipartUploadSession) -> serde_json::Value {
+    serde_json::json!({"bucketName": upload.bucket(), "objectName": upload.object(), "uploadId": upload.upload_id()})
 }
 fn progress(value: &MultipartProgress) -> serde_json::Value {
-    serde_json::json!({"upload": identity(&value.upload), "parts": value.parts, "state": format!("{:?}", value.state), "total_parts": value.total_parts, "file_size": value.file_size})
+    serde_json::json!({"upload": identity(&value.session), "parts": value.parts, "state": format!("{:?}", value.state), "total_parts": value.total_parts, "file_size": value.file_size})
+}
+/// The SDK checks the upper bound (`MAX_PART_NUMBER`); clap already rejects
+/// numbers below 1.
+fn part_number(number: i32) -> Result<NonZeroU16> {
+    u16::try_from(number)
+        .ok()
+        .and_then(NonZeroU16::new)
+        .ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, "part number must be at most 10000").into()
+        })
 }
 
 pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
@@ -133,16 +136,13 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             object,
             metadata,
         } => {
-            let upload = InitMultipartUploadRequest::new(&bucket, &object)
+            // The session is bound to the requested identity, not names echoed by the server.
+            let upload = client
+                .create_multipart_upload(&bucket, &object)
                 .metadata(metadata.build()?)
-                .send(client)
+                .send()
                 .await?;
-            // Bind receipts to requested identity, not paths echoed by the server.
-            print_json(&identity(&InitMultipartUploadResponse {
-                bucket_name: bucket,
-                object_name: object,
-                upload_id: upload.upload_id,
-            }))?;
+            print_json(&identity(&upload))?;
         }
         MultipartCmd::Part {
             session,
@@ -150,11 +150,17 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             body,
             content_md5,
         } => {
-            let mut request = session.sdk().part(number, body.load().await?);
+            let mut request = client.upload_part(
+                &session.bucket,
+                &session.object,
+                &session.upload_id,
+                part_number(number)?,
+                body.load().await?,
+            );
             if let Some(md5) = content_md5 {
                 request = request.content_md5(md5);
             }
-            print_json(&request.send(client).await?)?;
+            print_json(&request.send().await?)?;
         }
         MultipartCmd::Complete {
             session,
@@ -163,14 +169,24 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             expires,
         } => {
             let parts: Vec<UploadPartResponse> = read_json(parts)?;
-            let mut request = session.sdk().complete(parts).metadata(metadata.build()?);
+            let mut request = client
+                .complete_multipart_upload(
+                    &session.bucket,
+                    &session.object,
+                    &session.upload_id,
+                    parts,
+                )
+                .metadata(metadata.build()?);
             if let Some(value) = expires {
                 request = request.expires(value);
             }
-            print_json(&output::put(&request.send(client).await?))?;
+            print_json(&output::put(&request.send().await?))?;
         }
         MultipartCmd::Abort { session } => {
-            session.sdk().abort(client).await?;
+            client
+                .abort_multipart_upload(&session.bucket, &session.object, &session.upload_id)
+                .send()
+                .await?;
             output::ok()?;
         }
         MultipartCmd::Upload {
@@ -183,17 +199,19 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
             recovery,
             metadata,
         } => {
-            let options = MultipartOptions::new(
-                part_size,
-                concurrency,
-                if abort_on_failure {
+            // Validate before the recovery file is claimed: invalid options
+            // must not leave a receipt behind (the SDK checks again in `start`).
+            validate_upload_options(part_size, concurrency)?;
+            let upload = client
+                .upload_file(&bucket, &object, file)
+                .part_size(part_size as u64)
+                .concurrency(concurrency)
+                .cleanup(if abort_on_failure {
                     CleanupPolicy::AbortOnFailure
                 } else {
                     CleanupPolicy::Preserve
-                },
-            )?;
-            let request =
-                InitMultipartUploadRequest::new(bucket, object).metadata(metadata.build()?);
+                })
+                .metadata(metadata.build()?);
             // Claim the receipt path before any remote mutation. Never overwrite an older session.
             let mut receipt = std::fs::OpenOptions::new()
                 .write(true)
@@ -202,13 +220,13 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
                 .context("create recovery file (must not already exist)")?;
             write_receipt(
                 &mut receipt,
-                &serde_json::json!({"state":"Initializing", "bucketName":request.bucket_name, "objectName":request.object_name}),
+                &serde_json::json!({"state":"Initializing", "bucketName":bucket, "objectName":object}),
             )?;
-            let mut upload = MultipartUpload::start(client, request, file, options).await?;
+            let mut upload = upload.start().await?;
             if let Err(error) = write_receipt(&mut receipt, &progress(upload.progress())) {
                 eprintln!(
                     "initialized session (receipt write failed): {}",
-                    identity(&upload.progress().upload)
+                    identity(&upload.progress().session)
                 );
                 return Err(error);
             }
@@ -257,6 +275,23 @@ pub async fn run(client: &Client, command: MultipartCmd) -> Result<()> {
     Ok(())
 }
 
+/// The managed-upload resource limits that `UploadFile::start` enforces
+/// (part size 1 B to 64 MiB, concurrency 1 to 64, product at most 256 MiB),
+/// with the same error. Checked by the CLI before it creates the recovery
+/// file; `upload_limits_match_the_sdk` keeps both in sync.
+fn validate_upload_options(part_size: usize, concurrency: usize) -> Result<()> {
+    const MIB: u64 = 1024 * 1024;
+    let (part_size, concurrency) = (part_size as u64, concurrency as u64);
+    if (1..=64 * MIB).contains(&part_size)
+        && (1..=64).contains(&concurrency)
+        && part_size * concurrency <= 256 * MIB
+    {
+        Ok(())
+    } else {
+        Err(Error::new(ErrorKind::InvalidInput, "invalid multipart resource limits").into())
+    }
+}
+
 fn write_receipt(file: &mut std::fs::File, value: &serde_json::Value) -> Result<()> {
     use std::io::{Seek, SeekFrom, Write};
     // Append snapshots: an interrupted write cannot destroy the previous complete snapshot.
@@ -265,4 +300,43 @@ fn write_receipt(file: &mut std::fs::File, value: &serde_json::Value) -> Result<
     writeln!(file)?;
     file.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_upload_options;
+
+    // The CLI pre-check must accept exactly what the SDK accepts. With a
+    // missing source file the SDK fails with InvalidInput for invalid options
+    // and with Io (file not found) for valid ones; nothing is sent.
+    #[tokio::test]
+    async fn upload_limits_match_the_sdk() {
+        const MIB: usize = 1024 * 1024;
+        let client = fds::Client::builder()
+            .endpoint("http://127.0.0.1:1")
+            .credentials("ak", "sk")
+            .build()
+            .unwrap();
+        let missing = std::env::temp_dir().join("fds-cli-missing-upload-source");
+        let sizes = [0, 1, 4, MIB, 4 * MIB, 64 * MIB, 64 * MIB + 1, usize::MAX];
+        let counts = [0, 1, 4, 16, 63, 64, 65, usize::MAX];
+        for part_size in sizes {
+            for concurrency in counts {
+                let cli = validate_upload_options(part_size, concurrency);
+                let sdk = client
+                    .upload_file("b", "k", &missing)
+                    .part_size(part_size as u64)
+                    .concurrency(concurrency)
+                    .start()
+                    .await
+                    .unwrap_err();
+                let expected = if cli.is_ok() {
+                    fds::ErrorKind::Io
+                } else {
+                    fds::ErrorKind::InvalidInput
+                };
+                assert_eq!(sdk.kind(), expected, "{part_size} x {concurrency}");
+            }
+        }
+    }
 }

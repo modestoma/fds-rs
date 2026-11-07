@@ -1019,3 +1019,439 @@ async fn listing_and_bulk_delete_match_the_wire_snapshot() {
         .unwrap_or_else(|e| panic!("read {LISTING_SNAPSHOT}: {e}; set FDS_UPDATE_WIRE_SNAPSHOT=1"));
     assert_eq!(actual, expected, "wire bytes changed");
 }
+
+// ---------------------------------------------------------------------------
+// Multipart requests and the managed transfers (upload and download).
+//
+// Same normalization as above; the expected text is
+// `tests/fixtures/wire_multipart_ops.txt`, rewritten by the same
+// `FDS_UPDATE_WIRE_SNAPSHOT=1`. Managed transfers send several requests, so
+// `capture_sequence` serves one reply per connection in order and joins the
+// normalized requests.
+
+const MULTIPART_SNAPSHOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/wire_multipart_ops.txt"
+);
+
+/// One scripted reply: status, extra header lines (each ending in `\r\n`)
+/// and body. `Content-Length` is the body length unless `headers` sets it.
+struct Reply {
+    status: u16,
+    headers: &'static str,
+    body: &'static str,
+}
+
+fn reply(status: u16, body: &'static str) -> Reply {
+    Reply {
+        status,
+        headers: "",
+        body,
+    }
+}
+
+async fn read_one(socket: &mut tokio::net::TcpStream) -> (String, Vec<u8>) {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "peer closed before the request head");
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = find(&buf, b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let head = String::from_utf8(buf[..head_end].to_vec()).unwrap();
+    assert!(
+        !head.to_ascii_lowercase().contains("transfer-encoding"),
+        "bodies are sent with a known length"
+    );
+    let length = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+        .unwrap_or(0);
+    while buf.len() < head_end + length {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "peer closed before the request body");
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    assert_eq!(buf.len(), head_end + length, "no bytes after the body");
+    (head, buf[head_end..].to_vec())
+}
+
+/// Serve `replies.len()` sequential requests (one per connection) and return
+/// the normalized requests in arrival order.
+async fn capture_sequence<F, Fut>(
+    configure: impl FnOnce(fds::ClientBuilder) -> fds::ClientBuilder,
+    replies: Vec<Reply>,
+    op: F,
+) -> String
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut captured = Vec::new();
+        for reply in replies {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (head, body) = read_one(&mut socket).await;
+            let length = if reply.headers.contains("Content-Length:") {
+                String::new()
+            } else {
+                format!("Content-Length: {}\r\n", reply.body.len())
+            };
+            let response = format!(
+                "HTTP/1.1 {} Snapshot\r\n{}{length}Connection: close\r\n\r\n{}",
+                reply.status, reply.headers, reply.body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.shutdown().await.ok();
+            captured.push((head, body));
+        }
+        // Nothing else may be sent.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "unexpected extra request"
+        );
+        captured
+    });
+    let client = configure(
+        Client::builder()
+            .endpoint(format!("http://{addr}"))
+            .credentials("AKID", "sk"),
+    )
+    .build()
+    .unwrap();
+    op(client).await;
+    let captured = server.await.unwrap();
+    captured
+        .iter()
+        .enumerate()
+        .map(|(index, (head, body))| {
+            format!("--- request {} ---\n{}", index + 1, normalize(head, body))
+        })
+        .collect()
+}
+
+fn tmp_file(name: &str, data: &[u8]) -> std::path::PathBuf {
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, data).unwrap();
+    path
+}
+
+#[cfg(feature = "manager")]
+fn tmp_dir(name: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+const INIT_BODY: &str = r#"{"bucketName":"b","objectName":"dir/a b+c.txt","uploadId":"u/1 +2"}"#;
+const PART1_BODY: &str = r#"{"partNumber":1,"etag":"e1","partSize":4}"#;
+const PART2_BODY: &str = r#"{"partNumber":2,"etag":"e2","partSize":4}"#;
+const COMPLETE_BODY: &str = r#"{"bucketName":"b","objectName":"dir/a b+c.txt"}"#;
+
+fn receipt(number: i32, etag: &str, size: i64) -> fds::multipart::UploadPartResponse {
+    fds::multipart::UploadPartResponse {
+        part_number: number,
+        etag: etag.into(),
+        part_size: size,
+    }
+}
+
+async fn multipart_requests() -> Vec<(&'static str, String)> {
+    use fds::multipart::CleanupPolicy;
+    use std::num::NonZeroU16;
+    let n = |number| NonZeroU16::new(number).unwrap();
+    let mut cases = Vec::new();
+
+    cases.push((
+        "init_multipart_upload",
+        capture(plain, 200, INIT_BODY, |c| async move {
+            c.create_multipart_upload("b", ODD).send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "init_multipart_upload metadata",
+        capture(plain, 200, INIT_BODY, |c| async move {
+            c.create_multipart_upload("b", ODD)
+                .metadata(meta("x-xiaomi-meta-k", "v"))
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "upload_part bytes",
+        capture(plain, 200, PART2_BODY, |c| async move {
+            c.upload_part("b", ODD, "u/1 +2", n(2), b"efgh".to_vec())
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "upload_part content_md5",
+        capture(plain, 200, PART1_BODY, |c| async move {
+            c.upload_part("b", "o", "u", n(1), b"abcd".to_vec())
+                .content_md5("4vxxTEcn7pOV8yTNLn8zHw==")
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "upload_part bytes md5",
+        capture(md5, 200, PART1_BODY, |c| async move {
+            c.upload_part("b", "o", "u", n(1), b"abcd".to_vec())
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "upload_part stream",
+        capture(plain, 200, PART1_BODY, |c| async move {
+            let chunks = [
+                Ok(bytes::Bytes::from_static(b"ab")),
+                Ok(bytes::Bytes::from_static(b"cd")),
+            ];
+            let body = UploadBody::from_stream(futures_util::stream::iter(chunks), 4);
+            c.upload_part("b", "o", "u", n(1), body)
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    let part_file = tmp_file("wire_snapshot_part.txt", b"abcd");
+    cases.push((
+        "upload_part from_file",
+        capture(plain, 200, PART1_BODY, |c| async move {
+            let body = UploadBody::from_file(&part_file).await.unwrap();
+            c.upload_part("b", "o", "u", n(1), body)
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "complete_multipart_upload",
+        capture(plain, 200, COMPLETE_BODY, |c| async move {
+            c.complete_multipart_upload(
+                "b",
+                ODD,
+                "u/1 +2",
+                [receipt(1, "e1", 4), receipt(2, "e2", 4)],
+            )
+            .send()
+            .await
+            .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "complete_multipart_upload metadata expires",
+        capture(plain, 200, COMPLETE_BODY, |c| async move {
+            c.complete_multipart_upload("b", "o", "u", [receipt(1, "e1", 4)])
+                .metadata(meta("content-type", "text/plain"))
+                .expires(at(1_752_400_000_123))
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "complete_multipart_upload no parts",
+        capture(plain, 200, COMPLETE_BODY, |c| async move {
+            c.complete_multipart_upload("b", "o", "u", [])
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "abort_multipart_upload",
+        capture(plain, 200, "", |c| async move {
+            c.abort_multipart_upload("b", ODD, "u/1 +2")
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+
+    let source = tmp_file("wire_snapshot_managed.txt", b"abcdefgh");
+    let path = source.clone();
+    cases.push((
+        "managed upload",
+        capture_sequence(
+            plain,
+            vec![
+                reply(200, INIT_BODY),
+                reply(200, PART1_BODY),
+                reply(200, PART2_BODY),
+                reply(200, COMPLETE_BODY),
+            ],
+            |c| async move {
+                let mut upload = c
+                    .upload_file("b", ODD, &path)
+                    .part_size(4)
+                    .concurrency(1)
+                    .cleanup(CleanupPolicy::Preserve)
+                    .metadata(meta("x-xiaomi-meta-k", "v"))
+                    .start()
+                    .await
+                    .unwrap();
+                upload.upload(std::future::pending()).await.unwrap();
+            },
+        )
+        .await,
+    ));
+    let path = source.clone();
+    cases.push((
+        "managed upload abort on failure",
+        capture_sequence(
+            plain,
+            vec![
+                reply(200, INIT_BODY),
+                reply(503, "unavailable"),
+                reply(200, ""),
+            ],
+            |c| async move {
+                let mut upload = c
+                    .upload_file("b", ODD, &path)
+                    .part_size(4)
+                    .concurrency(1)
+                    .cleanup(CleanupPolicy::AbortOnFailure)
+                    .start()
+                    .await
+                    .unwrap();
+                upload.upload(std::future::pending()).await.unwrap_err();
+            },
+        )
+        .await,
+    ));
+    cases
+}
+
+#[cfg(feature = "manager")]
+async fn download_requests() -> Vec<(&'static str, String)> {
+    let mut cases = Vec::new();
+    const HEAD: &str = "Content-Length: 8\r\nETag: \"v1\"\r\n";
+    let dir = tmp_dir("wire_snapshot_download");
+    let out = dir.join("out");
+    cases.push((
+        "download parts",
+        capture_sequence(
+            plain,
+            vec![
+                Reply {
+                    status: 200,
+                    headers: HEAD,
+                    body: "",
+                },
+                Reply {
+                    status: 206,
+                    headers: "Content-Range: bytes 0-3/8\r\nETag: \"v1\"\r\n",
+                    body: "abcd",
+                },
+                Reply {
+                    status: 206,
+                    headers: "Content-Range: bytes 4-7/8\r\nETag: \"v1\"\r\n",
+                    body: "efgh",
+                },
+            ],
+            |c| async move {
+                c.download_file("b", ODD, &out)
+                    .part_size(4)
+                    .concurrency(1)
+                    .send()
+                    .await
+                    .unwrap();
+            },
+        )
+        .await,
+    ));
+    let out = dir.join("out");
+    assert_eq!(std::fs::read(&out).unwrap(), b"abcdefgh");
+    cases.push((
+        "download range",
+        capture_sequence(
+            plain,
+            vec![
+                Reply {
+                    status: 200,
+                    headers: HEAD,
+                    body: "",
+                },
+                Reply {
+                    status: 206,
+                    headers: "Content-Range: bytes 2-5/8\r\nETag: \"v1\"\r\n",
+                    body: "cdef",
+                },
+            ],
+            |c| async move {
+                c.download_file("b", "o", &out)
+                    .range(fds::object::ByteRange::inclusive(2, 5).unwrap())
+                    .part_size(4)
+                    .send()
+                    .await
+                    .unwrap();
+            },
+        )
+        .await,
+    ));
+    assert_eq!(std::fs::read(dir.join("out")).unwrap(), b"cdef");
+    cases
+}
+
+#[cfg(not(feature = "manager"))]
+async fn download_requests() -> Vec<(&'static str, String)> {
+    Vec::new()
+}
+
+#[tokio::test]
+async fn multipart_and_transfer_operations_match_the_wire_snapshot() {
+    let mut actual = String::new();
+    for (name, request) in multipart_requests().await {
+        actual.push_str(&format!("=== {name} ===\n{request}\n"));
+    }
+    let downloads = download_requests().await;
+    for (name, request) in &downloads {
+        actual.push_str(&format!("=== {name} ===\n{request}\n"));
+    }
+    let actual = format!("{}\n", actual.trim_end());
+    if std::env::var_os("FDS_UPDATE_WIRE_SNAPSHOT").is_some() && !downloads.is_empty() {
+        std::fs::write(MULTIPART_SNAPSHOT, &actual).unwrap();
+    }
+    let expected = std::fs::read_to_string(MULTIPART_SNAPSHOT).unwrap_or_else(|e| {
+        panic!("read {MULTIPART_SNAPSHOT}: {e}; set FDS_UPDATE_WIRE_SNAPSHOT=1")
+    });
+    if downloads.is_empty() {
+        // Without the manager feature only the multipart prefix is compared.
+        let prefix = expected
+            .split("=== download parts ===")
+            .next()
+            .unwrap()
+            .trim_end();
+        assert_eq!(actual.trim_end(), prefix, "wire bytes changed");
+    } else {
+        assert_eq!(actual, expected, "wire bytes changed");
+    }
+}
