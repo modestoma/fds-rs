@@ -45,7 +45,7 @@
 
 | 文件 | 功能 | 原始方法、路径与参数 | SDK 状态 | SDK 入口与差异 |
 | --- | --- | --- | --- | --- |
-| [list-objects.yaml](list-objects.yaml) | 获取某个Bucket下的Object列表 | `GET /{bucketname}`；`?prefix`、`?delimiter`、`?marker`、`?maxKeys` | implemented | 同一 ListObjectsRequest 支持 marker、单页与惰性 pages / objects |
+| [list-objects.yaml](list-objects.yaml) | 获取某个Bucket下的Object列表 | `GET /{bucketname}`；`?prefix`、`?delimiter`、`?marker`、`?maxKeys` | implemented | `list_objects(bucket)` builder 支持 marker、单页 `send` 与惰性 `into_pages` / `into_objects` |
 | [put-object.yaml](put-object.yaml) | 上传object，如果有同名Object，将会覆盖 | `PUT /{bucketname}/{objectname}`；`H:content-type`、`H:x-xiaomi-meta-`、`?expires`、`B:body` | implemented | `put_object(..)` builder 与 `UploadBody` 支持消耗式 bytes/file/stream 与 expires；`send` 消耗 builder |
 | [post-object.yaml](post-object.yaml) | POST 创建对象；指定 key 与覆盖语义未明确 | `POST /{bucketname}/`；`?expires`、`B:body`、`form-data:contentType`、`form-data:cannedAcl`、`form:key` | missing | 无 POST 创建对象 |
 | [get-object.yaml](get-object.yaml) | 获取object | `GET /{bucketname}/{objectname}`；`H:Range` | implemented | `get_object(..).send()` 返回 `GetObjectOutput`，支持 `ByteRange` |
@@ -54,7 +54,7 @@
 | [copy-object.yaml](copy-object.yaml) | 将一个src_objectname从src_bucketname复制到dst_bucketname，并重命名为dst_objectname | `PUT /{dst_bucketname}/{dst_objectname}`；`?cp`、`B:body` | implemented | `copy_object` 返回校验后的回执；409 文案不能作为防覆盖保证 |
 | [rename-object.yaml](rename-object.yaml) | 重命名文件 | `PUT /{bucketname}/{objectname}`；`?renameTo` | implemented | `rename_object` |
 | [delete-object.yaml](delete-object.yaml) | 删除指定object | `DELETE /{bucketname}/{objectname}`；— | implemented | `delete_object` |
-| [delete-multiple-objects.yaml](delete-multiple-objects.yaml) | 删除指定Bucket下多个object | `PUT /{bucketname}`；`?deleteObjects`、`B:body` | implemented | `delete_objects` 返回逐项失败；prefix helper 保留已确认进度与失败 |
+| [delete-multiple-objects.yaml](delete-multiple-objects.yaml) | 删除指定Bucket下多个object | `PUT /{bucketname}`；`?deleteObjects`、`B:body` | implemented | `delete_objects(bucket).keys(..)` 在 `Ok` 中返回逐项失败；`delete_prefix` 保留已确认进度与失败 |
 | [delete-objects.yaml](delete-objects.yaml) | 删除指定Bucket下多个object | `PUT /{bucketname}`；`?deleteObjects`、`B:body` | duplicate | 与 delete-multiple-objects 内容相同，复用同一方法 |
 
 ### Object ACL
@@ -104,7 +104,7 @@
 | Metadata GET/SET | `get_object_metadata` GET `?metadata`；`set_object_metadata` PUT `?setMetaData` |
 | Metadata codec | `ObjectMetadata::serialize` 输出 rawMeta map；Deserialize 输入 rawMeta.entry 数组；`from_headers` 解析头 |
 | Presign / URL | `presign_object`、`absolute_object_url`，HEAD 签名附 metadata，expires 毫秒，Signature 原样追加 |
-| Prefix delete | `delete_objects_with_prefix` 列举后逐页批删 |
+| Prefix delete | `delete_prefix` 列举后逐页批删 |
 | Download manager | `Downloader` / `DownloadRequest`，默认 manager feature |
 | CSLB | `cslb` feature 下 Client 使用内部 DNS resolver（`cslb_max_nodes`），不提供公开类型 |
 

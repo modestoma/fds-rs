@@ -744,3 +744,61 @@ async fn headers_and_opt_in_response_diagnostics_keep_stdout_usable() {
     assert!(String::from_utf8_lossy(&diagnostic.stderr).contains("sensitive-diagnostic"));
     failure.assert_async().await;
 }
+
+#[tokio::test]
+async fn delete_prefix_keeps_listing_flags_and_stops_on_a_repeated_marker() {
+    let mut server = Server::new_async().await;
+    let first = server
+        .mock("GET", "/b")
+        .match_query(Matcher::Exact(
+            "delimiter=%2F&marker=start&maxKeys=7&prefix=p%2F".into(),
+        ))
+        .with_body(r#"{"truncated":true,"nextMarker":"a","objects":[{"name":"p/1"}]}"#)
+        .create_async()
+        .await;
+    let delete = server
+        .mock("PUT", "/b?deleteObjects=&enableTrash=true")
+        .match_body(r#"["p/1"]"#)
+        .with_body("[]")
+        .create_async()
+        .await;
+    // Back to the starting marker: nothing from this page is deleted.
+    let second = server
+        .mock("GET", "/b")
+        .match_query(Matcher::Exact(
+            "delimiter=%2F&marker=a&maxKeys=7&prefix=p%2F".into(),
+        ))
+        .with_body(r#"{"truncated":true,"nextMarker":"start","objects":[{"name":"p/2"}]}"#)
+        .create_async()
+        .await;
+    let no_delete = server
+        .mock("PUT", "/b?deleteObjects=&enableTrash=true")
+        .match_body(r#"["p/2"]"#)
+        .expect(0)
+        .create_async()
+        .await;
+    let result = run(
+        &server.url(),
+        &[
+            "object",
+            "delete-prefix",
+            "b",
+            "p/",
+            "--delimiter",
+            "/",
+            "--marker",
+            "start",
+            "--max-keys",
+            "7",
+            "--trash",
+        ],
+    )
+    .await;
+    assert_eq!(result.status.code(), Some(1));
+    assert_eq!(value(&result)["output"]["deleted"], json!(["p/1"]));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("ProtocolViolation"));
+    first.assert_async().await;
+    delete.assert_async().await;
+    second.assert_async().await;
+    no_delete.assert_async().await;
+}

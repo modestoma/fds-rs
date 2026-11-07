@@ -1,7 +1,7 @@
 //! Compile-only migration contract against the real SDK; main performs no I/O.
 use fds::acl::{AccessControlList, AclAction};
 use fds::multipart::InitMultipartUploadRequest;
-use fds::object::{ByteRange, ListObjectsRequest};
+use fds::object::ByteRange;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 
@@ -21,7 +21,7 @@ async fn migrate(client: &Client, bucket: &str, key: &str) -> fds::Result<()> {
         let _ = chunk;
     }
     let _metadata = client.head_object(bucket, key).send().await?;
-    let pages = ListObjectsRequest::new(bucket).prefix(key).pages(client);
+    let pages = client.list_objects(bucket).prefix(key).into_pages();
     pin_mut!(pages);
     while let Some(page) = pages.next().await {
         let _ = page?;

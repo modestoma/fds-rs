@@ -45,21 +45,44 @@ pub fn delete_result(
     batch: &[String],
 ) -> anyhow::Result<()> {
     match result {
-        Ok(output) => super::util::print_json(&deleted(&output)),
+        Ok(output) => delete_outcome(output, None, &[]),
         Err(error) => {
-            let empty = DeleteObjectsOutput::default();
-            let output = error.partial_delete_output().unwrap_or(&empty);
-            let not_submitted: &[String] = if error.dispatch() == Dispatch::NotSent {
+            let output = error.partial_delete_output().cloned().unwrap_or_default();
+            let not_submitted = if error.dispatch() == Dispatch::NotSent {
                 batch
             } else {
                 &[]
             };
-            super::util::print_json(
-                &json!({"output":deleted(output),"unconfirmed":output.unconfirmed,"not_submitted":not_submitted}),
-            )?;
-            Err(error.into())
+            delete_outcome(output, Some(error), not_submitted)
         }
     }
+}
+/// Print a bulk-deletion outcome. Per-object failures are reported as an error
+/// even when the SDK returned them in `Ok`, so the JSON and the exit code do
+/// not depend on how the SDK classifies them.
+pub fn delete_outcome(
+    output: DeleteObjectsOutput,
+    error: Option<fds::Error>,
+    not_submitted: &[String],
+) -> anyhow::Result<()> {
+    let error = match error {
+        Some(error) => error,
+        None if output.failures.is_empty() => return super::util::print_json(&deleted(&output)),
+        None => partial_failure(&output),
+    };
+    super::util::print_json(
+        &json!({"output":deleted(&output),"unconfirmed":output.unconfirmed,"not_submitted":not_submitted}),
+    )?;
+    Err(error.into())
+}
+/// The error reported for one batch with per-object failures.
+pub fn partial_failure(batch: &DeleteObjectsOutput) -> fds::Error {
+    fds::Error::new(
+        ErrorKind::PartialFailure,
+        "bulk deletion failed for some objects",
+    )
+    .with_context("deleted", batch.deleted.len())
+    .with_context("failed", batch.failures.len())
 }
 pub fn ok() -> anyhow::Result<()> {
     super::util::print_json(&json!({"ok":true}))

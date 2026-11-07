@@ -9,7 +9,6 @@
 
 use std::error::Error;
 
-use fds::object::ListObjectsRequest;
 use fds::Client;
 use http::Method;
 
@@ -51,9 +50,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         String::from_utf8_lossy(&bytes)
     );
 
-    let listing = ListObjectsRequest::new(&bucket)
+    let listing = client
+        .list_objects(&bucket)
         .prefix("quickstart/")
-        .send(&client)
+        .send()
         .await?;
     for o in &listing.object_summaries {
         println!("  - {} ({} bytes)", o.object_name, o.size);

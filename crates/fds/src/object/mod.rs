@@ -1,9 +1,9 @@
 //! Single-object operations, listing, bulk delete, presigned URLs and the
 //! object models.
 //!
-//! Each single-object operation starts from a [`Client`](crate::Client)
-//! method that takes the required arguments and returns an operation builder
-//! defined here; optional settings are chained, and `send().await` runs it.
+//! Each single-object, listing and bulk-delete operation starts from a
+//! [`Client`](crate::Client) method that takes the required arguments and
+//! returns an operation builder defined here; optional settings are chained, and `send().await` runs it.
 //! See the crate-level "Operation builders" section for the convention.
 //!
 //! ```no_run
@@ -76,8 +76,10 @@ pub use basic::{
     CopyObject, CopyObjectResponse, GetObject, HeadObject, ObjectExists, PrefetchObject,
     RefreshObject, RenameObject, RestoreObject,
 };
-pub use delete::{DeleteObject, DeleteObjectFailure, DeleteObjectsOutput};
-pub use listing::{ListObjectsRequest, ObjectListing, ObjectSummary};
+pub use delete::{
+    DeleteObject, DeleteObjectFailure, DeleteObjects, DeleteObjectsOutput, DeletePrefix,
+};
+pub use listing::{ListObjects, ObjectListing, ObjectSummary};
 pub use metadata::{GetObjectBasicInfo, GetObjectMetadata, ObjectBasicInfo, SetObjectMetadata};
 pub use presign::PresignObject;
 pub use put::{PutObject, PutObjectResponse};

@@ -126,7 +126,7 @@
       "title": "列举与批量删除迁移到流式 builder",
       "type": "feat",
       "document": "tasks/fluent-listing-delete.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 4,
       "depends_on": [
         "fluent-object"

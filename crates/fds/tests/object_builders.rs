@@ -431,10 +431,7 @@ async fn direct_client_entry_points_validate_before_transport() {
             .await
             .map(|_| ()),
         client.put_object("b", "", vec![]).send().await.map(|_| ()),
-        client
-            .list_objects(&fds::object::ListObjectsRequest::new("b").max_keys(0))
-            .await
-            .map(|_| ()),
+        client.list_objects("").send().await.map(|_| ()),
         client
             .upload_part(fds::multipart::UploadPartRequest::new(
                 "b",

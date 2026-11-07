@@ -1,5 +1,5 @@
 //! Explicit, isolated real-service acceptance. Never part of the default suite.
-use fds::object::{ByteRange, ListObjectsRequest};
+use fds::object::ByteRange;
 use fds::Client;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,14 +64,12 @@ async fn live_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         }
         // Distinguish bare Bucket GET from explicit empty/nonempty prefix requests.
         let _ = client.get_bucket_info(&bucket).send().await?;
-        let _ = ListObjectsRequest::new(&bucket)
-            .max_keys(1)
-            .send(&client)
+        let _ = client
+            .list_objects(&bucket)
+            .max_keys(std::num::NonZeroU32::MIN)
+            .send()
             .await?;
-        let listing = ListObjectsRequest::new(&bucket)
-            .prefix(&key)
-            .send(&client)
-            .await?;
+        let listing = client.list_objects(&bucket).prefix(&key).send().await?;
         if !listing
             .object_summaries
             .iter()

@@ -2,7 +2,6 @@
 //! the full send pipeline — URL construction, header assembly, signing, and
 //! status-code handling — which the in-crate unit tests cannot reach.
 
-use fds::object::ListObjectsRequest;
 use fds::Client;
 use mockito::Matcher;
 
@@ -107,13 +106,9 @@ async fn list_objects_encodes_query_and_parses() {
         .await;
 
     let listing = client_for(&server)
-        .list_objects(&ListObjectsRequest {
-            bucket_name: "mybucket".into(),
-            prefix: "logs/".into(),
-            delimiter: String::new(),
-            max_keys: 1000,
-            marker: None,
-        })
+        .list_objects("mybucket")
+        .prefix("logs/")
+        .send()
         .await
         .unwrap();
 
@@ -502,10 +497,7 @@ async fn every_request_identifies_the_sdk_in_user_agent() {
         .with_body(r#"{"name":"b"}"#)
         .create_async()
         .await;
-    client_for(&server)
-        .list_objects(&ListObjectsRequest::new("b"))
-        .await
-        .unwrap();
+    client_for(&server).list_objects("b").send().await.unwrap();
     plain.assert_async().await;
 
     let suffixed = server

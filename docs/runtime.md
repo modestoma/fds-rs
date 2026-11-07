@@ -74,23 +74,23 @@ ACL Add 省略 action，Delete 发送 action=delete，并携带要增删的 gran
 
 ## 分页与批量删除
 
-普通 pages/objects 没有预取或后台任务，保留一个解码页和常数个 marker。bucket/prefix/delimiter/max_keys 始终来自调用者，不能被响应回显替换。空但 truncated 的页继续，非 truncated 结束；错误只输出一次后终止。objects 展开对象但忽略 common_prefixes，不递归进入目录分组。
+`list_objects(..).into_pages()` / `into_objects()` 没有预取或后台任务，保留一个解码页和常数个 marker。bucket/prefix/delimiter/max_keys 始终来自调用者，不能被响应回显替换。空但 truncated 的页继续，非 truncated 结束；错误只输出一次后终止。objects 展开对象但忽略 common_prefixes，不递归进入目录分组。
 
 marker 为不透明字符串。缺失和相邻重复立即拒绝，更长循环采用常数空间 Brent 检测，可能先输出部分重复页再报错；普通分页不是快照或去重保证。有副作用的消费应自行防重复。
 
-批量删除返回 `fds::Result<DeleteObjectsOutput>`，未全部确认删除时返回的错误通过 `partial_delete_output()` 携带已确认结果。空 names 不请求，即使 bucket 为空也返回空成功。非空批次先校验所有名字，一次请求一个 JSON 数组，不自动按服务限制切批。
+`delete_objects(bucket).keys(..).send()` 返回 `fds::Result<DeleteObjectsOutput>`：服务给出合法失败数组时一律是 `Ok`，逐项失败放在 `failures` 里；批次未发出时返回原错误（`NotSent`，不附带结果）；可能已发出但结果无法确认时返回 `OutcomeUnknown`，`partial_delete_output()` 的 `unconfirmed` 列出整批名字。空批次不请求，即使 bucket 为空也返回空成功。非空批次先校验所有名字，一次请求一个 JSON 数组，不自动按服务限制切批。
 
 | 字段 / 判定 | 含义 |
 | --- | --- |
 | `deleted` | 根据合法服务失败数组推导的确认成功项，不是逐个 HEAD 检查 |
-| `failures` | 服务失败数组，保留对象名、错误码、描述、顺序与重复次数；此时 kind 为 PartialFailure |
-| `unconfirmed` | 已尝试传输但无法确定结果的批次（kind 为 OutcomeUnknown），不能认定未删除 |
+| `failures` | 服务失败数组，保留对象名、错误码、描述、顺序与重复次数；单批删除时在 `Ok` 里 |
+| `unconfirmed` | 已尝试传输但无法确定结果的批次（kind 为 OutcomeUnknown），不能认定未删除；只出现在错误附带的结果里 |
 | `dispatch() == NotSent` | 失败批次未提交（本地校验或连接失败），不附带 partial output |
-| `source()` | 底层错误；纯逐项失败为 None |
+| `source()` | OutcomeUnknown 的底层错误 |
 
 重复输入名字保留在线路和成功输出中；某名字失败则其全部出现均不计成功。响应必须为合法 JSON 失败数组，空 body/null/非法模型不视为全成功；出现未请求名字时保留失败数组并将整个批次标记未确认。
 
-前缀删除逐页执行，首个部分失败或请求错误即停并保留先前结果。它使用包含初始 marker 的严格已见集合，在删除当前页前拒绝循环和前缀外 key；与普通分页的常数空间循环检测不同。后续未列举项不在结果中，并发新增不保证被清空。累计结果与 marker 集合随处理量增长，海量任务可由应用分批持久化。
+`delete_prefix(bucket, prefix)` 只按 bucket 和 prefix 选择对象（不带 delimiter，也不接受起始 marker），逐页执行，首个逐项失败（kind 为 PartialFailure）或请求错误即停，错误的 `partial_delete_output()` 保留先前结果。它使用记住本次全部 marker 的严格已见集合，在删除当前页前拒绝循环和前缀外 key；与普通分页的常数空间循环检测不同。后续未列举项不在结果中，并发新增不保证被清空。累计结果与 marker 集合随处理量增长，海量任务可由应用分批持久化。
 
 ## 重试与超时
 

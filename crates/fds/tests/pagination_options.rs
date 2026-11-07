@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
 use fds::acl::{AccessControlList, AclAction, BucketCannedAcl};
 use fds::multipart::CompleteMultipartUploadRequest;
-use fds::object::ListObjectsRequest;
+use fds::object::ListObjects;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 use mockito::{Matcher, Server};
@@ -21,11 +21,11 @@ fn query(marker: &str) -> Matcher {
         Matcher::UrlEncoded("marker".into(), marker.into()),
     ])
 }
-fn request() -> ListObjectsRequest {
-    ListObjectsRequest::new("b")
+fn request(c: &Client) -> ListObjects {
+    c.list_objects("b")
         .prefix("logs/")
         .delimiter("/")
-        .max_keys(2)
+        .max_keys(std::num::NonZeroU32::new(2).unwrap())
 }
 
 #[tokio::test]
@@ -41,7 +41,7 @@ async fn lazy_pages_preserve_scope_initial_marker_and_empty_pages() {
         .with_body(r#"{"objects":[{"name":"logs/a"}],"truncated":false}"#)
         .create_async()
         .await;
-    let pages = request().marker("b/start +").pages(&c);
+    let pages = request(&c).marker("b/start +").into_pages();
     pin_mut!(pages);
     assert!(!first.matched_async().await);
     assert_eq!(
@@ -83,7 +83,7 @@ async fn objects_skip_empty_pages_and_do_not_prefetch() {
         .with_body(r#"{"objects":[{"name":"three"}]}"#)
         .create_async()
         .await;
-    let objects = request().marker("start").objects(&c);
+    let objects = request(&c).marker("start").into_objects();
     pin_mut!(objects);
     assert_eq!(objects.next().await.unwrap().unwrap().object_name, "one");
     assert_eq!(objects.next().await.unwrap().unwrap().object_name, "two");
@@ -110,7 +110,7 @@ async fn missing_and_repeated_markers_end_with_one_error() {
             .expect(1)
             .create_async()
             .await;
-        let pages = request().marker("start").pages(&c);
+        let pages = request(&c).marker("start").into_pages();
         pin_mut!(pages);
         assert!(matches!(
             pages.next().await.unwrap(),
@@ -139,7 +139,7 @@ async fn opaque_marker_cycle_terminates_in_constant_space() {
         .expect(1)
         .create_async()
         .await;
-    let pages = request().marker("a").pages(&c);
+    let pages = request(&c).marker("a").into_pages();
     pin_mut!(pages);
     assert!(pages.next().await.unwrap().is_ok());
     assert!(pages.next().await.unwrap().is_ok());
@@ -167,7 +167,7 @@ async fn service_and_decode_errors_propagate_after_progress() {
             .with_body(body)
             .create_async()
             .await;
-        let objects = request().marker("start").objects(&c);
+        let objects = request(&c).marker("start").into_objects();
         pin_mut!(objects);
         assert_eq!(objects.next().await.unwrap().unwrap().object_name, "one");
         assert!(objects.next().await.unwrap().is_err());
@@ -187,7 +187,7 @@ async fn one_page_initial_marker_and_default_omission() {
         .with_body("{}")
         .create_async()
         .await;
-    request().marker("start").send(&c).await.unwrap();
+    request(&c).marker("start").send().await.unwrap();
     let default = s
         .mock("GET", "/b")
         .match_query(Matcher::Exact(
@@ -196,7 +196,7 @@ async fn one_page_initial_marker_and_default_omission() {
         .with_body("{}")
         .create_async()
         .await;
-    let pages = request().pages(&c);
+    let pages = request(&c).into_pages();
     pin_mut!(pages);
     pages.next().await.unwrap().unwrap();
     assert!(pages.next().await.is_none());
@@ -337,21 +337,36 @@ async fn transport_and_local_validation_errors_terminate() {
         .credentials("AKID", "sk")
         .build()
         .unwrap();
-    let pages = ListObjectsRequest::new("b").pages(&c);
+    let pages = c.list_objects("b").into_pages();
     pin_mut!(pages);
     assert!(pages.next().await.unwrap().is_err());
     assert!(pages.next().await.is_none());
-    let pages = ListObjectsRequest::new("").pages(&c);
+    let pages = c.list_objects("").into_pages();
     pin_mut!(pages);
     assert!(matches!(
         pages.next().await.unwrap(),
         Err(e) if e.kind() == fds::ErrorKind::InvalidInput
     ));
     assert!(pages.next().await.is_none());
-    assert!(ListObjectsRequest::new("b")
-        .marker("start")
-        .max_keys(0)
-        .send(&c)
-        .await
-        .is_err());
+    for result in [
+        c.list_objects("").send().await,
+        c.list_objects("b")
+            .timeout(std::time::Duration::ZERO)
+            .send()
+            .await,
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), fds::ErrorKind::InvalidInput);
+        assert_eq!(error.dispatch(), fds::Dispatch::NotSent);
+    }
+    let pages = c
+        .list_objects("b")
+        .timeout(std::time::Duration::ZERO)
+        .into_objects();
+    pin_mut!(pages);
+    assert!(matches!(
+        pages.next().await.unwrap(),
+        Err(e) if e.kind() == fds::ErrorKind::InvalidInput && e.dispatch() == fds::Dispatch::NotSent
+    ));
+    assert!(pages.next().await.is_none());
 }

@@ -797,3 +797,225 @@ async fn bucket_and_oauth_operations_match_the_wire_snapshot() {
     }
     assert_snapshot(BUCKET_SNAPSHOT, &actual);
 }
+
+// ---- Listing and bulk deletion ----------------------------------------------
+//
+// Same capture and normalization as above, written to its own fixture,
+// `tests/fixtures/wire_listing_delete.txt`. Paginating operations send several
+// requests; each answer closes its connection, so every request is captured
+// from a fresh socket, in send order.
+
+const LISTING_SNAPSHOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/wire_listing_delete.txt"
+);
+
+/// Read one request from `socket`, answer `200` with `body` and close.
+async fn serve_one(mut socket: tokio::net::TcpStream, body: &str) -> (String, Vec<u8>) {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "peer closed before the request head");
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = find(&buf, b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let head = String::from_utf8(buf[..head_end].to_vec()).unwrap();
+    let length = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+        .unwrap_or(0);
+    while buf.len() < head_end + length {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "peer closed before the request body");
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    assert_eq!(buf.len(), head_end + length, "no bytes after the body");
+    let response = format!(
+        "HTTP/1.1 200 Snapshot\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    socket.write_all(response.as_bytes()).await.unwrap();
+    socket.shutdown().await.ok();
+    (head, buf[head_end..].to_vec())
+}
+
+/// Serve one request per entry of `bodies`, in order, and return the
+/// normalized requests.
+async fn capture_all<F, Fut>(bodies: &'static [&'static str], op: F) -> String
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut captured = Vec::new();
+        for body in bodies {
+            let (socket, _) = listener.accept().await.unwrap();
+            captured.push(serve_one(socket, body).await);
+        }
+        captured
+    });
+    let client = Client::builder()
+        .endpoint(format!("http://{addr}"))
+        .credentials("AKID", "sk")
+        .build()
+        .unwrap();
+    op(client).await;
+    let captured = server.await.unwrap();
+    let mut out = String::new();
+    for (index, (head, body)) in captured.iter().enumerate() {
+        out.push_str(&format!("--- request {} ---\n", index + 1));
+        out.push_str(&normalize(head, body));
+    }
+    out
+}
+
+async fn listing_delete_requests() -> Vec<(&'static str, String)> {
+    use futures_util::TryStreamExt;
+    use std::num::NonZeroU32;
+
+    let keys = |n| NonZeroU32::new(n).unwrap();
+
+    let mut cases = Vec::new();
+    cases.push((
+        "list_objects defaults",
+        capture_all(&["{}"], |c| async move {
+            c.list_objects("b").send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "list_objects all options",
+        capture_all(&["{}"], |c| async move {
+            c.list_objects("b")
+                .prefix(ODD)
+                .delimiter("/")
+                .max_keys(keys(7))
+                .marker("m k+1/2")
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "list_objects empty marker",
+        capture_all(&["{}"], |c| async move {
+            c.list_objects("b").marker("").send().await.unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "list_objects pages",
+        capture_all(
+            &[
+                r#"{"truncated":true,"nextMarker":"n x+1","objects":[]}"#,
+                "{}",
+            ],
+            |c| async move {
+                let pages: Vec<_> = c
+                    .list_objects("b")
+                    .prefix("p/")
+                    .into_pages()
+                    .try_collect()
+                    .await
+                    .unwrap();
+                assert_eq!(pages.len(), 2);
+            },
+        )
+        .await,
+    ));
+    cases.push((
+        "list_objects objects from marker",
+        capture_all(
+            &[
+                r#"{"truncated":true,"nextMarker":"n","objects":[{"name":"p/a"}]}"#,
+                r#"{"objects":[{"name":"p/b"}]}"#,
+            ],
+            |c| async move {
+                let objects: Vec<_> = c
+                    .list_objects("b")
+                    .max_keys(keys(2))
+                    .marker("start")
+                    .into_objects()
+                    .try_collect()
+                    .await
+                    .unwrap();
+                assert_eq!(objects.len(), 2);
+            },
+        )
+        .await,
+    ));
+    cases.push((
+        "delete_objects",
+        capture_all(&["[]"], |c| async move {
+            c.delete_objects("b")
+                .keys(["a", ODD, "a"])
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "delete_objects trash",
+        capture_all(&["[]"], |c| async move {
+            c.delete_objects("b")
+                .keys(["x"])
+                .move_to_trash()
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases.push((
+        "delete_prefix",
+        capture_all(
+            &[
+                r#"{"objects":[{"name":"p/a"}],"truncated":true,"nextMarker":"m"}"#,
+                "[]",
+                r#"{"objects":[{"name":"p/b c"}]}"#,
+                "[]",
+            ],
+            |c| async move {
+                c.delete_prefix("b", "p/").send().await.unwrap();
+            },
+        )
+        .await,
+    ));
+    cases.push((
+        "delete_prefix trash page size",
+        capture_all(&[r#"{"objects":[{"name":"p/a"}]}"#, "[]"], |c| async move {
+            c.delete_prefix("b", "p/")
+                .page_size(keys(2))
+                .move_to_trash()
+                .send()
+                .await
+                .unwrap();
+        })
+        .await,
+    ));
+    cases
+}
+
+#[tokio::test]
+async fn listing_and_bulk_delete_match_the_wire_snapshot() {
+    let mut actual = String::new();
+    for (name, requests) in listing_delete_requests().await {
+        actual.push_str(&format!("=== {name} ===\n{requests}\n"));
+    }
+    let actual = format!("{}\n", actual.trim_end());
+    if std::env::var_os("FDS_UPDATE_WIRE_SNAPSHOT").is_some() {
+        std::fs::write(LISTING_SNAPSHOT, &actual).unwrap();
+    }
+    let expected = std::fs::read_to_string(LISTING_SNAPSHOT)
+        .unwrap_or_else(|e| panic!("read {LISTING_SNAPSHOT}: {e}; set FDS_UPDATE_WIRE_SNAPSHOT=1"));
+    assert_eq!(actual, expected, "wire bytes changed");
+}

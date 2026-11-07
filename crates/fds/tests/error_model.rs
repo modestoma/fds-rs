@@ -159,10 +159,7 @@ async fn dispatch_tracks_whether_the_request_was_sent() {
     assert_eq!(error.kind(), ErrorKind::Transport, "{error:?}");
     assert_eq!(error.dispatch(), Dispatch::NotSent);
     // A refused bulk deletion submitted nothing.
-    let error = c
-        .delete_objects("b", &["a".into()], false)
-        .await
-        .unwrap_err();
+    let error = c.delete_objects("b").keys(["a"]).send().await.unwrap_err();
     assert_eq!(error.dispatch(), Dispatch::NotSent);
     assert!(error.partial_delete_output().is_none());
     // A received response: sent.
@@ -186,7 +183,9 @@ async fn dispatch_tracks_whether_the_request_was_sent() {
         .create_async()
         .await;
     let error = client(server.url())
-        .delete_objects("b", &["a".into(), "b".into()], false)
+        .delete_objects("b")
+        .keys(["a", "b"])
+        .send()
         .await
         .unwrap_err();
     assert!(error.is_outcome_unknown());

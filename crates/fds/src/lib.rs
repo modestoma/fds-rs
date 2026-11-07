@@ -57,8 +57,8 @@
 //!
 //! Every operation is written as
 //! `client.<operation>(required arguments).<option>(..).send().await`.
-//! Single-object, bucket and OAuth operations follow this convention today;
-//! listing, bulk-delete and multipart operations still use request structs
+//! Single-object, bucket, OAuth, listing and bulk-delete operations follow
+//! this convention today; multipart operations still use request structs
 //! until they are migrated to it.
 //!
 //! - The [`Client`] method takes only the required arguments (bucket, object,

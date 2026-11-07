@@ -37,4 +37,5 @@ pub(crate) const HTTP_HEADER_CRC64ECMA: &str = "x-xiaomi-meta-hash-crc64ecma";
 pub(crate) const HTTP_HEADER_MULTIPART_UPLOAD_MODE: &str = "x-xiaomi-multipart-upload-mode";
 
 // ---- Miscellaneous constants ----------------------------------------------
-pub(crate) const DEFAULT_LIST_OBJECTS_MAX_KEYS: i32 = 1000;
+pub(crate) const DEFAULT_LIST_OBJECTS_MAX_KEYS: std::num::NonZeroU32 =
+    std::num::NonZeroU32::new(1000).unwrap();

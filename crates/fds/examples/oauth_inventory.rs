@@ -4,7 +4,6 @@
 //! 运行：cargo run --example oauth_inventory -- BUCKET PREFIX
 //! 只读取存储数据，但 token 交换可能创建或续期凭据。
 use fds::oauth::{FdsServiceClient, OAuthProvider};
-use fds::object::ListObjectsRequest;
 use fds::Client;
 use futures_util::{pin_mut, StreamExt};
 use std::error::Error;
@@ -35,9 +34,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("requested bucket is absent from the application bucket listing".into());
     }
     // Bucket 列表检查不替代服务的逐请求授权；token 到期时停止并交给应用处理。
-    let objects = ListObjectsRequest::new(&args[1])
+    let objects = client
+        .list_objects(&args[1])
         .prefix(&args[2])
-        .objects(&client);
+        .into_objects();
     pin_mut!(objects);
     let mut count = 0u64;
     let mut total = 0u64;

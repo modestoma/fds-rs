@@ -181,14 +181,7 @@ pub async fn smoke(
     );
 
     // list
-    match client
-        .list_objects(&ListObjectsRequest {
-            bucket_name: bucket.into(),
-            prefix: prefix.clone(),
-            ..Default::default()
-        })
-        .await
-    {
+    match client.list_objects(bucket).prefix(&prefix).send().await {
         Ok(l) => rep.assert("list_objects sees >=2", l.object_summaries.len() >= 2),
         Err(e) => rep.fail("list_objects", e),
     }
@@ -279,9 +272,10 @@ pub async fn smoke(
         if !skip_multipart {
             names.push(multipart.clone());
         }
-        let del = client.delete_objects(bucket, &names, false).await;
+        let del = client.delete_objects(bucket).keys(&names).send().await;
         match del {
-            Ok(_) => rep.assert("cleanup delete_objects", true),
+            Ok(o) if o.failures.is_empty() => rep.assert("cleanup delete_objects", true),
+            Ok(o) => rep.fail("cleanup delete_objects", super::output::partial_failure(&o)),
             Err(e) => rep.fail("cleanup delete_objects", e),
         }
         rep.assert(

@@ -408,14 +408,17 @@ async fn inspect_and_set_metadata(client: &Client, bucket: &str, key: &str) -> f
 
 ```rust,no_run
 use fds::Client;
-use fds::object::ListObjectsRequest;
+use std::num::NonZeroU32;
 
 async fn list_directory(client: &Client, bucket: &str) -> fds::Result<()> {
-    let page = ListObjectsRequest::new(bucket)
+    let page_size = NonZeroU32::new(100).unwrap();
+    let page = client
+        .list_objects(bucket)
         .prefix("reports/")
         .delimiter("/")
-        .max_keys(100)
-        .send(client).await?;
+        .max_keys(page_size)
+        .send()
+        .await?;
     for object in page.object_summaries {
         println!("{}\t{}", object.object_name, object.size);
     }
@@ -424,15 +427,20 @@ async fn list_directory(client: &Client, bucket: &str) -> fds::Result<()> {
     }
     if page.truncated {
         // 将服务端 next_marker 原样传回；不是 offset 或自行计算的 key。
-        let _next = ListObjectsRequest::new(bucket)
-            .prefix("reports/").delimiter("/").max_keys(100)
-            .marker(page.next_marker).send(client).await?;
+        let _next = client
+            .list_objects(bucket)
+            .prefix("reports/")
+            .delimiter("/")
+            .max_keys(page_size)
+            .marker(page.next_marker)
+            .send()
+            .await?;
     }
     Ok(())
 }
 ```
 
-默认 `max_keys = 1000`；非正数在执行时拒绝。`ObjectListing` 包含对象数组、common_prefixes、truncated、next_marker 等分页信息。`ObjectSummary` 包含 `object_name`、`size`、`etag`、`owner`、可选 UTC `last_modified` 和整数 `upload_time`。
+默认 `max_keys = 1000`；类型是 `NonZeroU32`，零在编译期就无法传入。`ObjectListing` 包含对象数组、common_prefixes、truncated、next_marker 等分页信息。`ObjectSummary` 包含 `object_name`、`size`、`etag`、`owner`、可选 UTC `last_modified` 和整数 `upload_time`。
 
 prefix 是字符串前缀，没有真实目录实体。要遍历前缀下全部对象通常省略 delimiter；设为 `/` 后，下一层分组出现在 common_prefixes，SDK 不递归进入这些分组。
 
@@ -440,11 +448,10 @@ prefix 是字符串前缀，没有真实目录实体。要遍历前缀下全部�
 
 ```rust,no_run
 use fds::Client;
-use fds::object::ListObjectsRequest;
 use futures_util::{pin_mut, StreamExt};
 
 async fn sum_prefix(client: &Client, bucket: &str, prefix: &str) -> fds::Result<u64> {
-    let objects = ListObjectsRequest::new(bucket).prefix(prefix).objects(client);
+    let objects = client.list_objects(bucket).prefix(prefix).into_objects();
     pin_mut!(objects);
     let mut total = 0u64;
     while let Some(object) = objects.next().await {
@@ -458,7 +465,7 @@ async fn sum_prefix(client: &Client, bucket: &str, prefix: &str) -> fds::Result<
 }
 
 async fn count_pages(client: &Client, bucket: &str) -> fds::Result<usize> {
-    let pages = ListObjectsRequest::new(bucket).pages(client);
+    let pages = client.list_objects(bucket).into_pages();
     pin_mut!(pages);
     let mut count = 0;
     while let Some(page) = pages.next().await {
@@ -469,7 +476,7 @@ async fn count_pages(client: &Client, bucket: &str) -> fds::Result<usize> {
 }
 ```
 
-`pages()`/`objects()` 是惰性流，创建时不请求、不预取下一页；错误后终止。truncated 但 next_marker 缺失或相邻重复时报协议错误；较长循环用常数空间检测，可能先输出部分重复页再报错。objects 会展开每页对象，保留一页响应和常数个 marker，不保证对象去重。列举不是事务快照，并发新增/删除时不要假定清单代表某个精确时刻的完整集合。
+`into_pages()`/`into_objects()` 消费 builder，返回 `Send + 'static` 的惰性流，创建时不请求、不预取下一页；`timeout` 对每一页的请求分别生效；错误后终止。truncated 但 next_marker 缺失或相邻重复时报协议错误；较长循环用常数空间检测，可能先输出部分重复页再报错。objects 会展开每页对象，保留一页响应和常数个 marker，不保证对象去重。列举不是事务快照，并发新增/删除时不要假定清单代表某个精确时刻的完整集合。
 
 ## 复制、重命名与误删恢复
 
@@ -504,21 +511,34 @@ Copy 不自动重试。请求可能已到达服务后的任何失败（错误状
 
 ## 单对象、批量与前缀删除
 
-单个对象调用 `client.delete_object(bucket, key).send().await?`。批量删除接受 `&[String]` 和 `put_to_trash: bool`，发送一个批次；它不自动把任意长数组切成符合服务限制的小批次。
+单个对象调用 `client.delete_object(bucket, key).send().await?`。批量删除用 `client.delete_objects(bucket).keys(names)`，`keys` 接受任何能转换成 `String` 的迭代器（`["a", "b"]`、`Vec<String>`、`&[String]` 等），可多次调用追加；一次 `send()` 发送一个批次，不自动把任意长数组切成符合服务限制的小批次。
 
 ```rust,no_run
-use fds::{Client, Dispatch};
-use fds::object::{DeleteObjectsOutput, ListObjectsRequest};
+use fds::{Client, Dispatch, ErrorKind};
+use fds::object::DeleteObjectsOutput;
+use std::num::NonZeroU32;
 
 async fn delete_selected(client: &Client, bucket: &str, keys: &[String])
     -> fds::Result<DeleteObjectsOutput>
 {
-    match client.delete_objects(bucket, keys, true).await {
-        Ok(output) => Ok(output),
+    let result = client
+        .delete_objects(bucket)
+        .keys(keys)
+        .move_to_trash()
+        .send()
+        .await;
+    match result {
+        // 逐项失败也在 Ok 里：检查 failures。
+        Ok(output) => {
+            for failure in &output.failures {
+                eprintln!("删除失败：{} {}", failure.object_name, failure.error_code);
+            }
+            Ok(output)
+        }
         Err(error) => {
-            if let Some(output) = error.partial_delete_output() {
-                eprintln!("{:?}：已确认删除 {}，明确失败 {}，结果未知 {}", error.kind(),
-                    output.deleted.len(), output.failures.len(), output.unconfirmed.len());
+            if error.kind() == ErrorKind::OutcomeUnknown {
+                let unknown = error.partial_delete_output().map_or(0, |o| o.unconfirmed.len());
+                eprintln!("批次结果未知（{unknown} 项），可能已删除：{error}");
             } else if error.dispatch() == Dispatch::NotSent {
                 eprintln!("批次未提交：{error}");
             }
@@ -535,23 +555,28 @@ async fn delete_prefix(client: &Client, bucket: &str, prefix: &str)
     if prefix.is_empty() {
         return Err("删除范围必须显式指定".into());
     }
-    let request = ListObjectsRequest::new(bucket).prefix(prefix).max_keys(100);
-    Ok(client.delete_objects_with_prefix(&request, true).await?)
+    Ok(client
+        .delete_prefix(bucket, prefix)
+        .page_size(NonZeroU32::new(100).unwrap())
+        .move_to_trash()
+        .send()
+        .await?)
 }
 ```
 
-`put_to_trash = true` 发送 `enableTrash=true`，false 发送 false；不要把 true 理解成 SDK 提供可恢复保证。空 names 不发请求。
+调用 `move_to_trash()` 发送 `enableTrash=true`，不调用时发送 false；不要把它理解成 SDK 提供可恢复保证。空批次不发请求，直接返回空的 `Ok`。
 
 | 结果 | 如何使用 |
 | --- | --- |
 | `Ok(output).deleted` | 按合法服务失败数组推导的成功项，并非逐个 HEAD 再检查 |
-| `error.partial_delete_output()` | 错误发生前已确认的结果（`deleted`、`failures`、`unconfirmed`）；批次未提交时为 None |
-| `output.failures` | 服务返回的 object_name、error_code、error_description；HTTP 200 也可能有失败，此时 kind 为 `PartialFailure` |
-| `output.unconfirmed` | 已尝试传输但结果未确认的批次（kind 为 `OutcomeUnknown`），可能实际已删除 |
-| `error.dispatch()` | `NotSent` 表示失败的批次没有发出（本地校验、连接被拒） |
-| `source()` | 底层原因；逐项失败时为 None |
+| `Ok(output).failures` | 服务返回的 object_name、error_code、error_description；HTTP 200 也可能有逐项失败，这是批量删除的正常结果，不是错误 |
+| `ErrorKind::OutcomeUnknown` | 批次可能已发出但结果无法确认（错误状态、响应损坏、失败项不在请求中）；`partial_delete_output().unconfirmed` 列出整批名字，可能实际已删除 |
+| `error.dispatch()` | `NotSent` 表示批次没有发出（本地校验、连接被拒），此时没有附带结果 |
+| `source()` | `OutcomeUnknown` 的底层原因 |
 
-前缀删除逐页列举、逐页删除，首次部分失败或错误即停止；后续尚未列举的对象不会出现在错误清单中。它会累计已确认结果，因此结果内存随删除数量增长；海量清理可由应用分页、分批持久记录进度。
+`DeleteObjectFailure` 的 `Debug` 只输出 error_code（形如普通标识符时），不输出对象名和描述，避免对象名进入日志；需要时直接读字段。
+
+前缀删除只按 bucket 和 prefix 选择对象（不带 delimiter，嵌套“目录”下的对象也会删除），逐页列举、逐页删除。提交一页之前会检查：名字非空且以 prefix 开头；truncated 页的 next_marker 存在且与本次运行见过的所有 marker 都不同（记住全部 marker，任何长度的循环都会在重复删除之前停下）。全部确认删除才返回 `Ok`；遇到第一个问题即停止并返回错误，`partial_delete_output()` 带有此前所有页已确认的结果：某批出现逐项失败时 kind 为 `PartialFailure`（后续页不再列举），批次结果未知时为 `OutcomeUnknown`，列举失败或检查不通过时为对应错误。尚未列举的对象不会出现在结果中。它会累计已确认结果，因此结果内存随删除数量增长；海量清理可由应用分页、分批持久记录进度。
 
 ## Bucket 与对象 ACL
 
@@ -967,7 +992,7 @@ fn report_error(error: &fds::Error) {
 | `ProtocolViolation` | 服务响应不合约定：空 JSON、非法 JSON、超限响应、回执或分页 marker 与请求不符 |
 | `Timeout` / `Transport` / `Io` / `Cancelled` | 超时 / 连接或传输失败 / 本地 IO / 合作式取消 |
 | `OutcomeUnknown` | Copy、分片 complete、批量删除等变更可能已生效，禁止盲目重试 |
-| `PartialFailure` | 批量删除部分对象失败，逐项结果见 `partial_delete_output()` |
+| `PartialFailure` | 前缀删除因某批出现逐项失败而停止，已确认结果见 `partial_delete_output()`（单批 `delete_objects` 的逐项失败在 `Ok` 里） |
 | `Unexpected` | 其他 HTTP 状态（其余 4xx、未列入成功的 2xx/3xx）和 SDK 内部错误 |
 
 `ErrorKind` 为 non_exhaustive，match 必须留兜底分支。`is_retryable()` 对 RateLimited、HTTP 502/503/504、Timeout 和未发出的 Transport 返回 true；`is_not_found()`、`is_outcome_unknown()` 是对应 kind 的简写。`status()`（`http::StatusCode`）、`service_code()`、`request_id()` 是便利访问器；`ResponseDetails` 还含最多 8 KiB 的 `diagnostic_body()` 和 `body_truncated()`。

@@ -1,4 +1,4 @@
-use fds::object::DeleteObjectsOutput;
+use fds::object::{DeleteObjectFailure, DeleteObjectsOutput};
 use fds::{Client, Dispatch, ErrorKind};
 use mockito::Matcher;
 fn client(s: &mockito::ServerGuard) -> Client {
@@ -77,32 +77,38 @@ async fn bulk_results_are_never_silently_discarded() {
             .create_async()
             .await;
         let r = client(&s)
-            .delete_objects("b", &["a".into(), "b".into()], true)
+            .delete_objects("b")
+            .keys(["a"])
+            .keys(vec![String::from("b")])
+            .move_to_trash()
+            .send()
             .await;
         if body == "[]" {
             assert_eq!(r.unwrap().deleted, ["a", "b"]);
+        } else if body.contains("denied") {
+            // Per-object failures are a normal result.
+            let output = r.unwrap();
+            assert_eq!(output.deleted, ["a"]);
+            assert_eq!(output.failures[0].object_name, "b");
+            assert_eq!(output.failures[0].error_code, "denied");
+            assert_eq!(output.failures[0].error_description, "secret");
+            assert!(output.unconfirmed.is_empty());
+            let debug = format!("{output:?} {:?}", output.failures);
+            assert!(debug.contains("denied"), "{debug}");
+            assert!(
+                !debug.contains("secret") && !debug.contains("\"b\""),
+                "{debug}"
+            );
         } else {
             let e = r.unwrap_err();
             let output = partial(&e);
-            if body.contains("denied") {
-                assert_eq!(e.kind(), ErrorKind::PartialFailure);
-                assert_eq!(e.dispatch(), Dispatch::Sent);
-                assert_eq!(output.deleted, ["a"]);
-                assert_eq!(output.failures[0].object_name, "b");
-                assert_eq!(output.failures[0].error_code, "denied");
-                assert_eq!(output.failures[0].error_description, "secret");
-                assert!(output.unconfirmed.is_empty());
-                assert!(std::error::Error::source(&e).is_none());
-                assert!(!format!("{e} {e:?}").contains("secret"));
-            } else {
-                assert_eq!(e.kind(), ErrorKind::OutcomeUnknown, "{e:?}");
-                assert_eq!(output.unconfirmed, ["a", "b"]);
-                let source = std::error::Error::source(&e).unwrap();
-                assert_eq!(
-                    source.downcast_ref::<fds::Error>().unwrap().kind(),
-                    ErrorKind::ProtocolViolation
-                );
-            }
+            assert_eq!(e.kind(), ErrorKind::OutcomeUnknown, "{e:?}");
+            assert_eq!(output.unconfirmed, ["a", "b"]);
+            let source = std::error::Error::source(&e).unwrap();
+            assert_eq!(
+                source.downcast_ref::<fds::Error>().unwrap().kind(),
+                ErrorKind::ProtocolViolation
+            );
         }
         m.assert_async().await;
     }
@@ -111,8 +117,19 @@ async fn bulk_results_are_never_silently_discarded() {
 async fn empty_batch_sends_nothing() {
     let mut s = mockito::Server::new_async().await;
     let m = s.mock("PUT", Matcher::Any).expect(0).create_async().await;
-    assert!(client(&s)
-        .delete_objects("b", &[], false)
+    let c = client(&s);
+    assert!(c
+        .delete_objects("b")
+        .send()
+        .await
+        .unwrap()
+        .deleted
+        .is_empty());
+    assert!(c
+        .delete_objects("b")
+        .keys(Vec::<String>::new())
+        .move_to_trash()
+        .send()
         .await
         .unwrap()
         .deleted
@@ -152,10 +169,8 @@ async fn prefix_keeps_progress_on_later_delete_or_list_failure() {
             .create_async()
             .await;
         let e = client(&s)
-            .delete_objects_with_prefix(
-                &fds::object::ListObjectsRequest::new("b").prefix("p/"),
-                false,
-            )
+            .delete_prefix("b", "p/")
+            .send()
             .await
             .unwrap_err();
         assert_eq!(partial(&e).deleted, ["p/a"]);
@@ -206,10 +221,8 @@ async fn prefix_empty_page_continues_and_partial_failure_stops() {
         .create_async()
         .await;
     let e = client(&s)
-        .delete_objects_with_prefix(
-            &fds::object::ListObjectsRequest::new("b").prefix("p/"),
-            false,
-        )
+        .delete_prefix("b", "p/")
+        .send()
         .await
         .unwrap_err();
     assert_eq!(e.kind(), ErrorKind::PartialFailure);
@@ -235,10 +248,8 @@ async fn prefix_rejects_missing_marker_and_out_of_scope_names_before_deleting() 
             .await;
         let delete = s.mock("PUT", Matcher::Any).expect(0).create_async().await;
         let error = client(&s)
-            .delete_objects_with_prefix(
-                &fds::object::ListObjectsRequest::new("b").prefix("p/"),
-                false,
-            )
+            .delete_prefix("b", "p/")
+            .send()
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
@@ -278,10 +289,8 @@ async fn prefix_repeated_marker_stops_before_next_batch() {
         .create_async()
         .await;
     let e = client(&s)
-        .delete_objects_with_prefix(
-            &fds::object::ListObjectsRequest::new("b").prefix("p/"),
-            false,
-        )
+        .delete_prefix("b", "p/")
+        .send()
         .await
         .unwrap_err();
     assert_eq!(e.kind(), ErrorKind::ProtocolViolation);
@@ -316,13 +325,7 @@ async fn prefix_success_batches_keep_caller_scope_and_finish() {
         .with_body("[]")
         .create_async()
         .await;
-    let r = client(&s)
-        .delete_objects_with_prefix(
-            &fds::object::ListObjectsRequest::new("b").prefix("p/"),
-            false,
-        )
-        .await
-        .unwrap();
+    let r = client(&s).delete_prefix("b", "p/").send().await.unwrap();
     assert_eq!(r.deleted, ["p/a", "p/b"]);
     first.assert_async().await;
     delete.assert_async().await;
@@ -337,13 +340,19 @@ async fn local_bulk_validation_retains_batch_without_unknown_outcomes() {
     let c = client(&s);
     // Empty collection is a no-op, including when no target was supplied.
     assert!(c
-        .delete_objects("", &[], false)
+        .delete_objects("")
+        .send()
         .await
         .unwrap()
         .deleted
         .is_empty());
-    for (bucket, names) in [("", vec!["a".into()]), ("b", vec!["a".into(), "".into()])] {
-        let error = c.delete_objects(bucket, &names, false).await.unwrap_err();
+    for (bucket, names) in [("", vec!["a"]), ("b", vec!["a", ""])] {
+        let error = c
+            .delete_objects(bucket)
+            .keys(names)
+            .send()
+            .await
+            .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert_eq!(error.dispatch(), Dispatch::NotSent);
         assert!(error.partial_delete_output().is_none());
@@ -366,17 +375,14 @@ async fn bulk_duplicates_preserve_input_and_receipt_order() {
             .create_async()
             .await;
         let result = client(&s)
-            .delete_objects(
-                "b",
-                &["b".into(), "a".into(), "b".into(), "a".into()],
-                false,
-            )
+            .delete_objects("b")
+            .keys(["b", "a", "b", "a"])
+            .send()
             .await;
         if body == "[]" {
             assert_eq!(result.unwrap().deleted, ["b", "a", "b", "a"]);
         } else {
-            let error = result.unwrap_err();
-            let output = partial(&error);
+            let output = result.unwrap();
             assert_eq!(output.deleted, ["b", "b"]);
             assert_eq!(
                 output
@@ -393,41 +399,48 @@ async fn bulk_duplicates_preserve_input_and_receipt_order() {
 }
 
 #[tokio::test]
-async fn prefix_long_cycle_and_initial_marker_are_checked_before_delete() {
+async fn prefix_long_cycle_is_checked_before_delete() {
+    // After a, b, c, d the bounded (Brent) detector of `into_pages` remembers
+    // only d and c, so it would accept the repeated b; deletion remembers
+    // every marker and must stop before submitting p/5.
     let mut s = mockito::Server::new_async().await;
     let c = client(&s);
     let mut reads = Vec::new();
     let mut writes = Vec::new();
     for (marker, next, name) in [
-        ("start", "a", "p/1"),
-        ("a", "b", "p/2"),
-        ("b", "start", "p/3"),
+        (None, "a", "p/1"),
+        (Some("a"), "b", "p/2"),
+        (Some("b"), "c", "p/3"),
+        (Some("c"), "d", "p/4"),
+        (Some("d"), "b", "p/5"),
     ] {
-        reads.push(s.mock("GET", "/b").match_query(Matcher::Exact(format!("delimiter=%2F&marker={marker}&maxKeys=7&prefix=p%2F")))
+        let query = match marker {
+            Some(marker) => format!("delimiter=&marker={marker}&maxKeys=7&prefix=p%2F"),
+            None => "delimiter=&maxKeys=7&prefix=p%2F".to_owned(),
+        };
+        reads.push(s.mock("GET", "/b").match_query(Matcher::Exact(query))
             .with_body(serde_json::json!({"name":"evil", "prefix":"evil", "delimiter":"evil", "maxKeys":999, "objects":[{"name":name}], "truncated":true, "nextMarker":next}).to_string())
             .create_async().await);
         writes.push(
             s.mock("PUT", "/b")
-                .match_query(Matcher::Any)
+                .match_query(Matcher::Exact("deleteObjects=&enableTrash=true".into()))
                 .match_body(Matcher::Json(serde_json::json!([name])))
                 .with_body("[]")
-                .expect(if marker == "b" { 0 } else { 1 })
+                .expect(if name == "p/5" { 0 } else { 1 })
                 .create_async()
                 .await,
         );
     }
-    let request = fds::object::ListObjectsRequest::new("b")
-        .prefix("p/")
-        .delimiter("/")
-        .max_keys(7)
-        .marker("start");
     let error = c
-        .delete_objects_with_prefix(&request, true)
+        .delete_prefix("b", "p/")
+        .page_size(std::num::NonZeroU32::new(7).unwrap())
+        .move_to_trash()
+        .send()
         .await
         .unwrap_err();
-    assert_eq!(partial(&error).deleted, ["p/1", "p/2"]);
+    assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
+    assert_eq!(partial(&error).deleted, ["p/1", "p/2", "p/3", "p/4"]);
     assert!(partial(&error).unconfirmed.is_empty());
-    assert_eq!(request.marker.as_deref(), Some("start"));
     for m in reads.into_iter().chain(writes) {
         m.assert_async().await;
     }
@@ -443,10 +456,7 @@ async fn empty_prefix_does_not_allow_empty_object_names() {
         .create_async()
         .await;
     let no_delete = s.mock("PUT", Matcher::Any).expect(0).create_async().await;
-    let error = client(&s)
-        .delete_objects_with_prefix(&fds::object::ListObjectsRequest::new("b"), false)
-        .await
-        .unwrap_err();
+    let error = client(&s).delete_prefix("b", "").send().await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ProtocolViolation);
     assert!(partial(&error).unconfirmed.is_empty());
     list.assert_async().await;
@@ -455,7 +465,7 @@ async fn empty_prefix_does_not_allow_empty_object_names() {
 
 #[tokio::test]
 async fn bucket_targets_validate_locally_but_root_lists_remain_valid() {
-    use fds::{acl::*, bucket::*, object::*};
+    use fds::{acl::*, bucket::*};
     let mut s = mockito::Server::new_async().await;
     let c = client(&s);
     let mut forbidden = Vec::new();
@@ -489,10 +499,7 @@ async fn bucket_targets_validate_locally_but_root_lists_remain_valid() {
     );
     invalid(c.get_access_log("").send().await.map(|_| ()));
     invalid(c.set_access_log("", AccessLog::default()).send().await);
-    assert!(c
-        .delete_objects_with_prefix(&ListObjectsRequest::new(""), false)
-        .await
-        .is_err());
+    assert!(c.delete_prefix("", "").send().await.is_err());
     for m in forbidden {
         m.assert_async().await;
     }
@@ -512,4 +519,124 @@ async fn bucket_targets_validate_locally_but_root_lists_remain_valid() {
     c.list_authorized_buckets().send().await.unwrap();
     root.assert_async().await;
     authorized.assert_async().await;
+}
+
+#[tokio::test]
+async fn bulk_delete_outcomes_follow_dispatch() {
+    // Not sent: nothing listens, the connection is refused.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refused = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let c = Client::builder()
+        .endpoint(refused)
+        .credentials("AKID", "secret")
+        .build()
+        .unwrap();
+    let error = c.delete_objects("b").keys(["a"]).send().await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Transport);
+    assert_eq!(error.dispatch(), Dispatch::NotSent);
+    assert!(error.partial_delete_output().is_none());
+
+    let mut s = mockito::Server::new_async().await;
+    // Sent, per-object failure: Ok with the failure.
+    let partial_failure = s
+        .mock("PUT", "/b")
+        .match_query(Matcher::Exact("deleteObjects=&enableTrash=false".into()))
+        .match_body(r#"["ok","bad"]"#)
+        .with_body(r#"[{"object_name":"bad","error_code":"AccessDenied","error_description":"d"}]"#)
+        .create_async()
+        .await;
+    let output = client(&s)
+        .delete_objects("b")
+        .keys(["ok", "bad"])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(output.deleted, ["ok"]);
+    assert_eq!(output.failures.len(), 1);
+    assert!(output.unconfirmed.is_empty());
+    partial_failure.assert_async().await;
+
+    // Sent, error status: outcome unknown, every name unconfirmed.
+    let unknown = s
+        .mock("PUT", "/b")
+        .match_query(Matcher::Any)
+        .match_body(r#"["x","y"]"#)
+        .with_status(503)
+        .create_async()
+        .await;
+    let error = client(&s)
+        .delete_objects("b")
+        .keys(["x", "y"])
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::OutcomeUnknown);
+    assert_eq!(error.dispatch(), Dispatch::Sent);
+    assert!(!error.is_retryable());
+    assert_eq!(partial(&error).unconfirmed, ["x", "y"]);
+    assert!(partial(&error).deleted.is_empty());
+    unknown.assert_async().await;
+}
+
+#[tokio::test]
+async fn delete_builders_validate_before_sending() {
+    // Nothing listens here: any request that is sent fails with Transport.
+    let c = Client::builder()
+        .endpoint("http://127.0.0.1:1")
+        .credentials("AKID", "secret")
+        .build()
+        .unwrap();
+    let zero = std::time::Duration::ZERO;
+    let second = std::time::Duration::from_secs(1);
+    for (bucket, key, timeout) in [("", "a", second), ("b", "", second), ("b", "a", zero)] {
+        let error = c
+            .delete_objects(bucket)
+            .keys([key])
+            .timeout(timeout)
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput, "{error:?}");
+        assert_eq!(error.dispatch(), Dispatch::NotSent);
+        assert!(error.partial_delete_output().is_none());
+    }
+    for (bucket, timeout) in [("", second), ("b", zero)] {
+        let error = c
+            .delete_prefix(bucket, "p/")
+            .timeout(timeout)
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput, "{error:?}");
+        assert_eq!(error.dispatch(), Dispatch::NotSent);
+        let output = partial(&error);
+        assert!(output.deleted.is_empty() && output.failures.is_empty());
+    }
+}
+
+#[test]
+fn delete_failure_debug_shows_only_plain_error_codes() {
+    let failure: DeleteObjectFailure = serde_json::from_value(serde_json::json!({
+        "object_name": "private/name",
+        "error_code": "AccessDenied",
+        "error_description": "private description",
+    }))
+    .unwrap();
+    let debug = format!("{failure:?}");
+    assert_eq!(
+        debug,
+        r#"DeleteObjectFailure { error_code: "AccessDenied", .. }"#
+    );
+    let failure: DeleteObjectFailure = serde_json::from_value(serde_json::json!({
+        "object_name": "n",
+        "error_code": "denied for private/name",
+        "error_description": "",
+    }))
+    .unwrap();
+    let debug = format!("{failure:?}");
+    assert!(
+        debug.contains("<withheld>") && !debug.contains("private"),
+        "{debug}"
+    );
 }

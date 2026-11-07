@@ -56,8 +56,12 @@ pub enum ErrorKind {
     /// A mutation may or may not have taken effect (copy, multipart completion,
     /// bulk deletion). Reconcile with the service; never retry blindly.
     OutcomeUnknown,
-    /// A batch completed but some items failed. The per-item outcome is in
-    /// [`Error::partial_delete_output`]. Bulk deletion is the only producer.
+    /// A multi-batch operation stopped because a batch reported per-item
+    /// failures; later items were not attempted. The outcome so far is in
+    /// [`Error::partial_delete_output`].
+    /// [`DeletePrefix`](crate::object::DeletePrefix) is the only producer; a
+    /// single [`DeleteObjects`](crate::object::DeleteObjects) batch returns its
+    /// per-object failures in `Ok`.
     PartialFailure,
     /// Any other failure, including HTTP statuses without a dedicated kind
     /// (other 4xx, unexpected 2xx/3xx) and internal SDK failures.
@@ -173,13 +177,18 @@ impl ResponseDetails {
     /// The service code when it looks like a plain identifier; anything else
     /// (which could echo request material) is withheld from formatting.
     fn printable_service_code(&self) -> Option<&str> {
-        self.service_code.as_deref().filter(|code| {
-            code.len() <= 64
-                && code
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-        })
+        self.service_code.as_deref().and_then(printable_code)
     }
+}
+
+/// An untrusted service code, when it looks like a plain identifier (at most
+/// 64 ASCII letters, digits, `_`, `-` or `.`) and so is safe to format.
+pub(crate) fn printable_code(code: &str) -> Option<&str> {
+    (code.len() <= 64
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')))
+    .then_some(code)
 }
 
 impl fmt::Debug for ResponseDetails {
@@ -337,10 +346,14 @@ impl Error {
         self.kind() == ErrorKind::OutcomeUnknown
     }
 
-    /// Outcomes confirmed by bulk deletion before it stopped: deleted names,
-    /// per-object failures and names whose outcome is unknown. Present on
-    /// errors returned by `delete_objects` / `delete_objects_with_prefix` once
-    /// at least one batch was attempted.
+    /// Outcomes of bulk deletion confirmed before it failed: deleted names,
+    /// per-object failures and names whose outcome is unknown.
+    ///
+    /// Present on [`ErrorKind::OutcomeUnknown`] errors of
+    /// [`DeleteObjects::send`](crate::object::DeleteObjects::send) (every name
+    /// unconfirmed) and on every error of
+    /// [`DeletePrefix::send`](crate::object::DeletePrefix::send) (all pages
+    /// handled so far). `None` for every other error.
     pub fn partial_delete_output(&self) -> Option<&DeleteObjectsOutput> {
         self.0.delete_output.as_ref()
     }

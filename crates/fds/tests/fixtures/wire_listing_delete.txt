@@ -1,0 +1,157 @@
+=== list_objects defaults ===
+--- request 1 ---
+GET /b?delimiter=&maxKeys=1000&prefix= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== list_objects all options ===
+--- request 1 ---
+GET /b?delimiter=%2F&marker=m+k%2B1%2F2&maxKeys=7&prefix=dir%2Fa+b%2Bc.txt HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== list_objects empty marker ===
+--- request 1 ---
+GET /b?delimiter=&marker=&maxKeys=1000&prefix= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== list_objects pages ===
+--- request 1 ---
+GET /b?delimiter=&maxKeys=1000&prefix=p%2F HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+GET /b?delimiter=&marker=n+x%2B1&maxKeys=1000&prefix=p%2F HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== list_objects objects from marker ===
+--- request 1 ---
+GET /b?delimiter=&marker=start&maxKeys=2&prefix= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+GET /b?delimiter=&marker=n&maxKeys=2&prefix= HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+
+=== delete_objects ===
+--- request 1 ---
+PUT /b?deleteObjects=&enableTrash=false HTTP/1.1
+content-length: 25
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+["a","dir/a b+c.txt","a"]
+
+=== delete_objects trash ===
+--- request 1 ---
+PUT /b?deleteObjects=&enableTrash=true HTTP/1.1
+content-length: 5
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+["x"]
+
+=== delete_prefix ===
+--- request 1 ---
+GET /b?delimiter=&maxKeys=1000&prefix=p%2F HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+PUT /b?deleteObjects=&enableTrash=false HTTP/1.1
+content-length: 7
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+["p/a"]
+--- request 3 ---
+GET /b?delimiter=&marker=m&maxKeys=1000&prefix=p%2F HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 4 ---
+PUT /b?deleteObjects=&enableTrash=false HTTP/1.1
+content-length: 9
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+["p/b c"]
+
+=== delete_prefix trash page size ===
+--- request 1 ---
+GET /b?delimiter=&maxKeys=2&prefix=p%2F HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+
+--- request 2 ---
+PUT /b?deleteObjects=&enableTrash=true HTTP/1.1
+content-length: 7
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/0.2.0
+host: <host>
+--- body ---
+["p/a"]

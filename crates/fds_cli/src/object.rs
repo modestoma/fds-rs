@@ -3,6 +3,8 @@ use super::util::{parse_method, print_json, read_json, AclMode, BodyArgs, Metada
 use anyhow::Result;
 use clap::Subcommand;
 use fds::{object::*, *};
+use std::collections::HashSet;
+use std::num::NonZeroU32;
 #[derive(Subcommand)]
 pub enum ObjectCmd {
     Put {
@@ -294,7 +296,11 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             names,
             trash,
         } => {
-            output::delete_result(client.delete_objects(bucket, names, *trash).await, names)?;
+            let mut request = client.delete_objects(bucket).keys(names);
+            if *trash {
+                request = request.move_to_trash();
+            }
+            output::delete_result(request.send().await, names)?;
         }
         ObjectCmd::DeletePrefix {
             bucket,
@@ -304,19 +310,23 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             marker,
             max_keys,
         } => {
-            output::delete_result(
-                client
-                    .delete_objects_with_prefix(
-                        &ListObjectsRequest::new(bucket)
-                            .prefix(prefix)
-                            .delimiter(delimiter.clone().unwrap_or_default())
-                            .marker(marker.clone().unwrap_or_default())
-                            .max_keys(*max_keys),
-                        *trash,
-                    )
-                    .await,
-                &[],
-            )?;
+            let page_size = match positive_max_keys(*max_keys) {
+                Ok(page_size) => page_size,
+                Err(error) => {
+                    return output::delete_outcome(Default::default(), Some(error), &[]);
+                }
+            };
+            let (deleted, error) = delete_prefix(
+                client,
+                bucket,
+                prefix,
+                delimiter.as_deref().unwrap_or_default(),
+                marker.as_deref().unwrap_or_default(),
+                page_size,
+                *trash,
+            )
+            .await;
+            output::delete_outcome(deleted, error, &[])?;
         }
         ObjectCmd::List {
             bucket,
@@ -327,12 +337,13 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
             marker,
         } => {
             use futures_util::{pin_mut, TryStreamExt};
-            let pages = ListObjectsRequest::new(bucket)
+            let pages = client
+                .list_objects(bucket)
                 .prefix(prefix)
                 .delimiter(delimiter)
-                .max_keys(*max_keys)
+                .max_keys(positive_max_keys(*max_keys)?)
                 .marker(marker.clone().unwrap_or_default())
-                .pages(client);
+                .into_pages();
             pin_mut!(pages);
             while let Some(listing) = pages.try_next().await? {
                 print_json(&output::listing(&listing))?;
@@ -382,4 +393,92 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `--max-keys` keeps its `i32` command-line type; zero and negative values
+/// fail like the SDK's former runtime check did.
+fn positive_max_keys(max_keys: i32) -> fds::Result<NonZeroU32> {
+    u32::try_from(max_keys)
+        .ok()
+        .and_then(NonZeroU32::new)
+        .ok_or_else(|| fds::Error::new(ErrorKind::InvalidInput, "max_keys must be positive"))
+}
+
+/// `object delete-prefix`: list one page, check it, delete it as one batch,
+/// then list the next page; stop at the first error or per-object failure.
+///
+/// The SDK's `Client::delete_prefix` selects objects by bucket and prefix only,
+/// while this command also takes `--delimiter` (delete only the listed level)
+/// and `--marker`, and always sends the marker (empty by default). So it pages
+/// itself, with the same safety rules: every listed name must be non-empty and
+/// inside the prefix, and a truncated page's `nextMarker` must differ from
+/// every marker of this run, the starting one included; otherwise nothing from
+/// that page is deleted. The returned output holds everything confirmed so far.
+async fn delete_prefix(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+    delimiter: &str,
+    marker: &str,
+    page_size: NonZeroU32,
+    trash: bool,
+) -> (DeleteObjectsOutput, Option<fds::Error>) {
+    let mut output = DeleteObjectsOutput::default();
+    let mut seen = HashSet::from([marker.to_owned()]);
+    let mut marker = marker.to_owned();
+    loop {
+        let page = match client
+            .list_objects(bucket)
+            .prefix(prefix)
+            .delimiter(delimiter)
+            .max_keys(page_size)
+            .marker(&marker)
+            .send()
+            .await
+        {
+            Ok(page) => page,
+            Err(error) => return (output, Some(error)),
+        };
+        if page
+            .object_summaries
+            .iter()
+            .any(|o| o.object_name.is_empty() || !o.object_name.starts_with(prefix))
+            || (page.truncated
+                && (page.next_marker.is_empty() || !seen.insert(page.next_marker.clone())))
+        {
+            let error = fds::Error::new(
+                ErrorKind::ProtocolViolation,
+                "invalid prefix deletion page or pagination marker",
+            );
+            return (output, Some(error));
+        }
+        let mut batch = client
+            .delete_objects(bucket)
+            .keys(page.object_summaries.into_iter().map(|o| o.object_name));
+        if trash {
+            batch = batch.move_to_trash();
+        }
+        match batch.send().await {
+            Ok(mut batch) => {
+                let failure = (!batch.failures.is_empty()).then(|| output::partial_failure(&batch));
+                output.deleted.append(&mut batch.deleted);
+                output.failures.append(&mut batch.failures);
+                if failure.is_some() {
+                    return (output, failure);
+                }
+            }
+            Err(error) => {
+                if let Some(batch) = error.partial_delete_output() {
+                    output.deleted.extend_from_slice(&batch.deleted);
+                    output.failures.extend_from_slice(&batch.failures);
+                    output.unconfirmed.extend_from_slice(&batch.unconfirmed);
+                }
+                return (output, Some(error));
+            }
+        }
+        if !page.truncated {
+            return (output, None);
+        }
+        marker = page.next_marker;
+    }
 }
