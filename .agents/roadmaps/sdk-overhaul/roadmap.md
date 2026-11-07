@@ -109,6 +109,9 @@ flowchart LR
     t_idempotent_retry["idempotent-retry：幂等写操作的可选重试"]
   end
   subgraph G15["批次 15"]
+    t_cli_oauth_refresh["cli-oauth-refresh：fds_cli --oauth 改用 StorageTokenProvider 自动续期"]
+  end
+  subgraph G16["批次 16"]
     t_docs_release["docs-release：文档、示例与版本号 0.1.0"]
   end
   t_baseline_green --> t_request_timeout
@@ -132,9 +135,11 @@ flowchart LR
   t_object_metadata --> t_idempotent_retry
   t_credentials_provider --> t_docs_release
   t_idempotent_retry --> t_docs_release
+  t_cli_oauth_refresh --> t_docs_release
   t_error_model --> t_upload_idle_timeout
   t_internal_cleanup --> t_cslb_internal
   t_fluent_listing_delete --> t_delete_prefix_options
+  t_credentials_provider --> t_cli_oauth_refresh
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
   class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_fluent_object,t_fluent_bucket,t_fluent_listing_delete,t_fluent_multipart_manager,t_typed_responses,t_object_metadata,t_credentials_provider,t_baseline_green,t_upload_idle_timeout,t_cslb_internal,t_delete_prefix_options done
 ```
@@ -153,7 +158,8 @@ flowchart LR
 - 批次 12：object-metadata✅
 - 批次 13：credentials-provider✅
 - 批次 14：idempotent-retry
-- 批次 15：docs-release
+- 批次 15：cli-oauth-refresh
+- 批次 16：docs-release
 
 ✅ 已完成　⛔ 阻塞　✖️ 已取消。进行中的任务看 `roadmap.py status`（分支存在即进行中）。
 <!-- roadmap:order:end -->
@@ -168,7 +174,7 @@ flowchart LR
 | AC-4 | 阅读 rustdoc，并按示例调用每个操作 | 每个操作只有一种流式 builder 写法；类型名和方法名符合 Rust API Guidelines（`Acl`、`Url`、`object_exists` 等） | 自动：examples 和 doctest 能编译；用户：评审 rustdoc |
 | AC-5 | 查看 `fds` 的公开模块 | `constant`、`encoding`、`auth` 等内部模块不再公开；没有未使用的类型或错误变体；每个公开类型只有一条导出路径 | 自动：`cargo doc -D warnings`、clippy；用户：评审 rustdoc |
 | AC-6 | 使用各操作的返回值 | 时间字段是 `DateTime<Utc>`，大小字段是 `u64`，可能缺失的字段是 `Option`；`GetObjectOutput` 有类型化访问方法和 Stream / AsyncRead 适配；presign 返回 `Url`；不再有 `xxx_with_response` 这类重复 API | 自动：模型反序列化测试 |
-| AC-7 | 运行 `fds_cli` 的各个命令 | 命令行参数、输出格式和退出码与改造前一致（例外见决定记录：revision 5 的 `multipart init` 无 uploadId 报错退出；revision 6 的服务端非法数值与非法 parts 文件提前报错；revision 7 的旧白名单 meta key 与退化的用户元数据 key 报错） | 自动：`cargo test -p fds_cli --all-features` |
+| AC-7 | 运行 `fds_cli` 的各个命令 | 命令行参数、输出格式和退出码与改造前一致（例外见决定记录：revision 5 的 `multipart init` 无 uploadId 报错退出；revision 6 的服务端非法数值与非法 parts 文件提前报错；revision 7 的旧白名单 meta key 与退化的用户元数据 key 报错；revision 8 的 `--oauth` 自动续期） | 自动：`cargo test -p fds_cli --all-features` |
 | AC-8 | 运行 `scripts/check.sh` | 全部通过。因缺网络、缺工具链或缺真实 FDS 凭证而没跑的检查，必须如实标为未验证 | 自动 |
 | AC-9 | 使用会过期的 OAuth token，或给幂等写操作开启重试 | 凭证 provider 能在过期前刷新，Client 不需要重建；幂等写操作在显式开启后按策略重试，非幂等写操作永远不重试 | 自动：mock 测试 |
 | AC-10 | 阅读 README、docs，运行 examples | 内容与新 API 一致；两个 crate 的版本号都是 0.1.0 | 自动：check_docs.py；用户：评审 |
@@ -188,6 +194,7 @@ flowchart LR
 - 2026-11-07 · revision 1 · 用户原话"现在本地删除 GitLab ci 相关的配置，然后提交第一版，然后本轮 roadmap 在本地以 main 分支为基线进行开发" · 明确决定 · `.gitlab-ci.yml` 已移出仓库，基线为本地 main（不受保护），合并方式为 local，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户在确认默认假设时补充"版本号回退至 0.1.0；fds_cli 同步修改" · 明确决定 · 两个 crate 的版本号都定为 0.1.0（原为 0.2.0）；fds_cli 跟随每个任务同步修改 · 影响 docs-release 及全部 API 任务。
 - 2026-11-07 · revision 1 · 默认假设，用户已确认 · 凭证 provider 和幂等写重试排在最后阶段，用户评审时可以删掉 · 影响 credentials-provider、idempotent-retry。
+- 2026-11-08 · revision 8 · 用户对待答问题 cli-oauth-refresh 的回答"改为自动续期" · 明确决定 · 新增任务 cli-oauth-refresh：fds_cli `--oauth` 改用 `StorageTokenProvider` 自动续期；token 过期时由"报错退出 1"变为"自动续期后继续"，记为 AC-7 例外；docs-release 改为依赖它 · 影响 cli-oauth-refresh、docs-release。
 - 2026-11-07 · revision 7 · 用户在提问中选择"接受为例外（推荐）" · 明确决定 · AC-7 例外：fds_cli `--meta` 不再接受既非系统头、也非 `x-xiaomi-meta-*` 的旧白名单 key（content-length、last-modified、last-checked、upload-time、date、authorization、range、content-range、x-xiaomi-multipart-upload-mode），报 InvalidInput 并以 1 退出；SDK 不提供写入原始头的入口 · 影响 object-metadata。
 - 2026-11-07 · revision 7 · 用户在提问中选择"接受（推荐）" · 明确决定 · 系统头传空值时（例如 `--content-type ""`），put / init / complete / upload 不再发送空头；CLI 输出不变，set-metadata 的 body 仍保留空值 · 影响 object-metadata。
 - 2026-11-07 · revision 7 · 用户在提问中选择"拒绝并记例外（推荐）" · 明确决定 · `UserMetadata` 在 send()/build() 时拒绝空 key 和自带 `x-xiaomi-meta-` 前缀的 key（InvalidInput，请求不发出）；`--meta x-xiaomi-meta-=v`、`--meta x-xiaomi-meta-x-xiaomi-meta-a=v` 这类退化输入从成功变为报错，记为 AC-7 例外 · 影响 object-metadata。
