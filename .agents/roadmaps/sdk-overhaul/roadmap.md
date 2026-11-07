@@ -174,6 +174,7 @@ flowchart LR
 - 2026-11-07 · revision 1 · 用户原话"现在本地删除 GitLab ci 相关的配置，然后提交第一版，然后本轮 roadmap 在本地以 main 分支为基线进行开发" · 明确决定 · `.gitlab-ci.yml` 已移出仓库，基线为本地 main（不受保护），合并方式为 local，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户在确认默认假设时补充"版本号回退至 0.1.0；fds_cli 同步修改" · 明确决定 · 两个 crate 的版本号都定为 0.1.0（原为 0.2.0）；fds_cli 跟随每个任务同步修改 · 影响 docs-release 及全部 API 任务。
 - 2026-11-07 · revision 1 · 默认假设，用户已确认 · 凭证 provider 和幂等写重试排在最后阶段，用户评审时可以删掉 · 影响 credentials-provider、idempotent-retry。
+- 2026-11-07 · revision 1 · 用户原话"批准并开始" · 明确决定 · 批准 revision 1（15 个任务，含前置任务 baseline-green）；授权 Agent 在本地把任务分支快进合并进 main；仓库没有远程，不推送 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户原话"保留为 1.86 不变" · 明确决定 · MSRV 保持 `rust-version = "1.86"`，`scripts/check.sh` 中的 1.86 检查保留；只有某个任务确实需要更新的语言特性或依赖时，才在该任务里提出，由用户决定是否提高 · 影响全部任务。
 - 2026-11-07 · revision 1 · 用户原话"我本地自己执行" · 明确决定 · `tests/live_acceptance.rs` 需要真实的 FDS 凭证，由用户本地执行，Agent 不运行，也不接触凭证；相关结果在验收时由用户提供 · 影响 docs-release、accept。
 - 2026-11-07 · revision 1 · 用户原话"不写迁移指南" · 明确决定 · 现有的 `docs/migration.md` 是 0.2 迁移指南，版本号回退到 0.1.0 后已经过时，在 docs-release 中删除，并清理 `docs/README.md`、`docs/runtime.md`、`crates/fds/src/lib.rs` 中对它的引用 · 影响 docs-release。
