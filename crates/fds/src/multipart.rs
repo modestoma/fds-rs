@@ -136,9 +136,7 @@ impl MultipartUpload {
         path: impl AsRef<Path>,
         options: MultipartOptions,
     ) -> Result<Self> {
-        if request.bucket_name.is_empty() || request.object_name.is_empty() {
-            return Err(Error::invalid_input("bucket and object must be non-empty"));
-        }
+        crate::object::validate_object(&request.bucket_name, &request.object_name)?;
         let file = tokio::fs::File::open(path).await?;
         let metadata = file.metadata().await?;
         if !metadata.is_file() || metadata.len() == 0 {

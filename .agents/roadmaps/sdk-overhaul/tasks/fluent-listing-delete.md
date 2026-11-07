@@ -20,6 +20,7 @@
 
 - `client.list_objects("bucket").prefix(..).delimiter(..).max_keys(NonZeroU32 或 u32).marker(..)`，提供 `.send()`（单页）、`.into_pages()`（Stream<Item = Result<ObjectListing>>）、`.into_objects()`（Stream<Item = Result<ObjectSummary>>）。
 - `client.delete_objects("bucket").keys(impl IntoIterator<Item = impl Into<String>>).trash(Trash::Enabled 或 Disabled)`（或者 `.move_to_trash(bool)` 一类意义清楚的方法），`send()` 返回 `Result<DeleteObjectsOutput>`：`deleted`、`failures`、`unconfirmed` 都放在 Ok 里；只有整个批次没发出去或无法判定时才返回 Err（用 error-model 的 dispatch 判断）。
+- 注意（internal-cleanup 交接）：分页循环检测已抽成 `object/listing.rs` 的 `MarkerGuard`，有 `new()`（Brent，供 `pages()`）和 `exact()`（记住全部 marker，供删除）两种模式。删除流程改为复用 `into_pages()` 时，必须保留 `exact` 语义：重复的 marker 要在提交该页删除前立即拒绝（`tests/head_delete.rs::prefix_long_cycle_and_initial_marker_are_checked_before_delete`），否则同一页的删除可能被重复提交。
 - `client.delete_prefix("bucket", "prefix").trash(..).page_size(..)`：基于 `into_pages()` 实现，只使用 bucket 和 prefix（去掉对 delimiter 的隐式依赖）；中途出错时，已经确认的结果要能拿到（作为错误上下文，或者通过一个"部分完成"的输出返回，由任务决定并在 rustdoc 写清楚）。
 - `DeleteObjectFailure` 的 Debug 输出 error_code，object name 是否输出由任务决定并说明理由。
 - fds_cli（`src/object.rs` 中的 ls / rm / rm --prefix 等命令）以及 tests（`pagination_options.rs`、`head_delete.rs` 等）、examples（`pagination.rs`、`copy_prefix.rs`）同步修改。

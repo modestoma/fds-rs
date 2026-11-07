@@ -1,5 +1,5 @@
-//! Protocol constants ported verbatim from `fds/constant.go`. **Values are
-//! byte-exact**; only names are Rust-ified. Crate-internal: the spelling and
+//! Protocol constants. **Values are byte-exact** (they match the reference
+//! Go SDK). Crate-internal: the spelling and
 //! casing are protocol-sensitive implementation details, not public API.
 
 // ---- Header names (lowercase, for case-insensitive matching) --------------

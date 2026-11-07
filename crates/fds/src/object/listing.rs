@@ -8,38 +8,25 @@ use chrono::{DateTime, Utc};
 use futures_util::{stream, Stream, TryStreamExt};
 use http::Method;
 use serde::Deserialize;
+use std::collections::HashSet;
 
-/// One entry in a listing (Go `ObjectSummary`).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ObjectSummary {
-    #[serde(rename = "etag", default, deserialize_with = "crate::de::null_default")]
-    pub etag: String,
-    #[serde(rename = "name", default, deserialize_with = "crate::de::null_default")]
-    pub object_name: String,
-    #[serde(
-        rename = "owner",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub owner: Owner,
-    #[serde(rename = "size", default, deserialize_with = "crate::de::null_default")]
-    pub size: i64,
-    #[serde(
-        rename = "lastModified",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub last_modified: Option<DateTime<Utc>>,
-    #[serde(
-        rename = "uploadTime",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub upload_time: i64,
+crate::de::lenient! {
+    /// One entry in a listing.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct ObjectSummary {
+        pub etag: String,
+        #[serde(rename = "name")]
+        pub object_name: String,
+        pub owner: Owner,
+        pub size: i64,
+        pub last_modified: Option<DateTime<Utc>>,
+        pub upload_time: i64,
+    }
 }
 
-/// Input of `list_objects` (Go `ListObjectsRequest`). No omitempty: all three
-/// query params are always emitted.
+/// Input of `list_objects`. `prefix`, `delimiter` and `maxKeys` are always
+/// emitted, even when empty.
 #[derive(Debug, Clone)]
 pub struct ListObjectsRequest {
     pub bucket_name: String,
@@ -61,60 +48,24 @@ impl Default for ListObjectsRequest {
     }
 }
 
-/// Result of `list_objects` (Go `ObjectListing`); also carries the state needed
-/// to fetch the next batch.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ObjectListing {
-    #[serde(rename = "name", default, deserialize_with = "crate::de::null_default")]
-    pub bucket_name: String,
-    #[serde(
-        rename = "prefix",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub prefix: String,
-    #[serde(
-        rename = "maxKeys",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub max_keys: i32,
-    #[serde(
-        rename = "marker",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub marker: String,
-    #[serde(
-        rename = "truncated",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub truncated: bool,
-    #[serde(
-        rename = "nextMarker",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub next_marker: String,
-    #[serde(
-        rename = "delimiter",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub delimiter: String,
-    #[serde(
-        rename = "objects",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub object_summaries: Vec<ObjectSummary>,
-    #[serde(
-        rename = "commonPrefixes",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub common_prefixes: Vec<String>,
+crate::de::lenient! {
+    /// Result of `list_objects`; also carries the state needed to fetch the
+    /// next batch.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct ObjectListing {
+        #[serde(rename = "name")]
+        pub bucket_name: String,
+        pub prefix: String,
+        pub max_keys: i32,
+        pub marker: String,
+        pub truncated: bool,
+        pub next_marker: String,
+        pub delimiter: String,
+        #[serde(rename = "objects")]
+        pub object_summaries: Vec<ObjectSummary>,
+        pub common_prefixes: Vec<String>,
+    }
 }
 
 impl ListObjectsRequest {
@@ -152,32 +103,22 @@ impl ListObjectsRequest {
     /// cycles are detected eventually and may yield repeated pages before detection.
     /// This is not a snapshot or an object deduplication guarantee.
     pub fn pages(self, client: &Client) -> impl Stream<Item = Result<ObjectListing>> + '_ {
-        let checkpoint = self.marker.clone();
+        let guard = MarkerGuard::new(self.marker.as_deref());
         stream::try_unfold(
-            (self, false, checkpoint, 1usize, 0usize),
-            move |(mut options, done, mut checkpoint, mut power, mut distance)| async move {
+            (self, false, guard),
+            move |(mut options, done, mut guard)| async move {
                 if done {
                     return Ok(None);
                 }
                 let page = client.list_objects(&options).await?;
                 if page.truncated {
-                    let next = &page.next_marker;
-                    if next.is_empty()
-                        || options.marker.as_ref() == Some(next)
-                        || checkpoint.as_ref() == Some(next)
-                    {
+                    if !guard.advance(&page.next_marker) {
                         return Err(Error::protocol("listing has missing or cyclic nextMarker"));
                     }
-                    distance += 1;
-                    if distance == power {
-                        checkpoint = Some(next.clone());
-                        power = power.saturating_mul(2);
-                        distance = 0;
-                    }
-                    options.marker = Some(next.clone());
+                    options.marker = Some(page.next_marker.clone());
                 }
                 let done = !page.truncated;
-                Ok(Some((page, (options, done, checkpoint, power, distance))))
+                Ok(Some((page, (options, done, guard))))
             },
         )
     }
@@ -187,6 +128,66 @@ impl ListObjectsRequest {
         self.pages(client)
             .map_ok(|page| stream::iter(page.object_summaries.into_iter().map(Ok)))
             .try_flatten()
+    }
+}
+
+/// Rejects missing or cyclic `nextMarker`s across one pagination run.
+///
+/// Markers are opaque. By default Brent's cycle detection retains two markers
+/// instead of an ever-growing set: a repetition of the previous marker or of
+/// the latest checkpoint is rejected at once, a longer cycle within a bounded
+/// number of further pages, so a cycle may yield repeated pages first.
+/// [`exact`](Self::exact) additionally remembers every marker and rejects any
+/// repetition at once, for destructive callers.
+pub(crate) struct MarkerGuard {
+    previous: Option<String>,
+    checkpoint: Option<String>,
+    power: usize,
+    distance: usize,
+    seen: Option<HashSet<String>>,
+}
+
+impl MarkerGuard {
+    /// Bounded memory; start from the caller's marker, if any.
+    pub(crate) fn new(start: Option<&str>) -> Self {
+        Self {
+            previous: start.map(str::to_owned),
+            checkpoint: start.map(str::to_owned),
+            power: 1,
+            distance: 0,
+            seen: None,
+        }
+    }
+
+    /// Reject every repetition immediately, retaining all markers.
+    pub(crate) fn exact(start: Option<&str>) -> Self {
+        Self {
+            seen: Some(start.map(str::to_owned).into_iter().collect()),
+            ..Self::new(start)
+        }
+    }
+
+    /// Accept `next` as the marker of the following page; `false` when it is
+    /// empty or repeats an earlier marker.
+    pub(crate) fn advance(&mut self, next: &str) -> bool {
+        if next.is_empty()
+            || self.previous.as_deref() == Some(next)
+            || self.checkpoint.as_deref() == Some(next)
+            || self
+                .seen
+                .as_mut()
+                .is_some_and(|seen| !seen.insert(next.to_owned()))
+        {
+            return false;
+        }
+        self.distance += 1;
+        if self.distance == self.power {
+            self.checkpoint = Some(next.to_owned());
+            self.power = self.power.saturating_mul(2);
+            self.distance = 0;
+        }
+        self.previous = Some(next.to_owned());
+        true
     }
 }
 

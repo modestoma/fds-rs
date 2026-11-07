@@ -1,4 +1,4 @@
-//! Thread-safe node set. Ports `cslb/group.go`.
+//! Thread-safe node set.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};

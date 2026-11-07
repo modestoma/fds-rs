@@ -5,7 +5,7 @@
 //! The low-level multipart requests live in [`crate::multipart`].
 
 use crate::{Error, Result};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName};
 use serde::{Deserialize, Serialize};
 
 mod acl;
@@ -29,19 +29,17 @@ pub use crate::download::{ByteRange, GetObjectOutput};
 pub use crate::metadata::ObjectMetadata;
 pub use crate::upload::UploadBody;
 
-/// Insert a header only when the option is `Some` and non-empty (Go omitempty).
+/// Insert an optional header; `None` and empty values are not sent.
 fn insert_header_opt(
     headers: &mut HeaderMap,
     name: &'static str,
-    value: &Option<String>,
+    value: Option<&str>,
 ) -> Result<()> {
-    if let Some(v) = value {
-        if !v.is_empty() {
-            headers.insert(
-                HeaderName::from_static(name),
-                HeaderValue::from_str(v).map_err(|e| Error::invalid_input(e.to_string()))?,
-            );
-        }
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        headers.insert(
+            HeaderName::from_static(name),
+            crate::client::header_value(value)?,
+        );
     }
     Ok(())
 }

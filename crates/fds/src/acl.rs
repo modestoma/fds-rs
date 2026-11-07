@@ -1,35 +1,28 @@
 //! Access control list types, shared by bucket and object APIs.
-//! Ports `fds/acl.go` plus `Owner` (which lives in `bucket.go` in Go).
 
 use serde::{Deserialize, Serialize};
 
-/// Resource owner (Go `Owner`, defined in bucket.go:124-128).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Owner {
-    #[serde(rename = "id", default, deserialize_with = "crate::de::null_default")]
-    pub id: String,
-    #[serde(
-        rename = "displayName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub display_name: String,
+crate::de::lenient! {
+    /// Resource owner.
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct Owner {
+        pub id: String,
+        pub display_name: String,
+    }
 }
 
-/// Grantee key (Go `GrantKey`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantKey {
-    #[serde(rename = "id", default, deserialize_with = "crate::de::null_default")]
-    pub id: String,
-    #[serde(
-        rename = "displayName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub display_name: String,
+crate::de::lenient! {
+    /// Grantee key.
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct GrantKey {
+        pub id: String,
+        pub display_name: String,
+    }
 }
 
-/// Grantee type (Go `GrantType`).
+/// Grantee type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GrantType {
     #[serde(rename = "USER")]
@@ -38,7 +31,7 @@ pub enum GrantType {
     Group,
 }
 
-/// Grant permission (Go `GrantPermission`).
+/// Grant permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GrantPermission {
     #[serde(rename = "READ")]
@@ -53,43 +46,32 @@ pub enum GrantPermission {
     FullControl,
 }
 
-/// A single grant (Go `Grant`).
+/// A single grant. `permission` and `type` are required; a missing or `null`
+/// grantee reads as the default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
-    #[serde(
-        rename = "grantee",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
+    #[serde(default, deserialize_with = "crate::de::null_default")]
     pub grantee: GrantKey,
-    #[serde(rename = "permission")]
     pub permission: GrantPermission,
     #[serde(rename = "type")]
     pub grant_type: GrantType,
 }
 
-/// Access control list (Go `AccessControlList`).
-///
-/// NOTE: the `grants` field's JSON key is `accessControlList` (Go's field is
-/// named `Grants` but tagged `json:"accessControlList"`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AccessControlList {
-    #[serde(
-        rename = "accessControlList",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub grants: Vec<Grant>,
-    #[serde(
-        rename = "owner",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub owner: Owner,
+crate::de::lenient! {
+    /// Access control list.
+    ///
+    /// NOTE: the `grants` field's JSON key is `accessControlList`.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct AccessControlList {
+        #[serde(rename = "accessControlList")]
+        pub grants: Vec<Grant>,
+        pub owner: Owner,
+    }
 }
 
 impl AccessControlList {
-    /// Append a grant (Go `AddGrant`).
+    /// Append a grant.
     pub fn add_grant(&mut self, grant: Grant) {
         self.grants.push(grant);
     }

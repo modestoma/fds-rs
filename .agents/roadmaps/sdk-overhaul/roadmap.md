@@ -80,7 +80,7 @@ flowchart LR
     t_public_surface["public-surface：收缩公开 API 面并清理死代码 ✅"]
   end
   subgraph G6["批次 6"]
-    t_internal_cleanup["internal-cleanup：内部实现去冗余：serde 样板、header、脱敏、HTTP 配置"]
+    t_internal_cleanup["internal-cleanup：内部实现去冗余：serde 样板、header、脱敏、HTTP 配置 ✅"]
   end
   subgraph G7["批次 7"]
     t_cslb_internal["cslb-internal：cslb 独立工具改为内部并删除死代码"]
@@ -135,7 +135,7 @@ flowchart LR
   t_error_model --> t_upload_idle_timeout
   t_internal_cleanup --> t_cslb_internal
   classDef done fill:#d4edda,stroke:#28a745,color:#155724
-  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_baseline_green,t_upload_idle_timeout done
+  class t_request_timeout,t_downloader_io,t_error_model,t_public_surface,t_internal_cleanup,t_baseline_green,t_upload_idle_timeout done
 ```
 
 - 批次 1：baseline-green✅
@@ -143,7 +143,7 @@ flowchart LR
 - 批次 3：error-model✅
 - 批次 4：upload-idle-timeout✅
 - 批次 5：public-surface✅
-- 批次 6：internal-cleanup
+- 批次 6：internal-cleanup✅
 - 批次 7：cslb-internal
 - 批次 8：fluent-object
 - 批次 9：fluent-bucket

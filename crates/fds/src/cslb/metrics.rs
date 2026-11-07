@@ -1,5 +1,5 @@
-//! Node request/failure counters + failure-ratio. A lightweight `DashMap`-based
-//! reimplementation of `cslb/metrics.go` with in-process snapshots.
+//! Node request/failure counters + failure-ratio: lightweight, `DashMap`-based,
+//! with in-process snapshots.
 
 use dashmap::DashMap;
 
@@ -14,7 +14,7 @@ pub struct Metrics {
 
 impl Metrics {
     /// Create metrics, or `None` when a failure ratio is invalid or unlimited
-    /// (`ratio < 0.0 || ratio >= 1.0`), matching Go `NewMetrics`.
+    /// (`ratio < 0.0 || ratio >= 1.0`).
     #[allow(clippy::manual_range_contains)] // mirror Go: `ratio < any || ratio >= unlimited`
     pub fn new(max_node_failed_ratio: f64, min_sample_size: usize) -> Option<Self> {
         if max_node_failed_ratio < NODE_FAILED_ANY || max_node_failed_ratio >= NODE_FAILED_UNLIMITED
@@ -43,8 +43,7 @@ impl Metrics {
         self.counters.clear();
     }
 
-    /// `failed / total`, clamped to `[0, 1]`; errors if the sample is too small
-    /// (Go `GetNodeFailedRatio`).
+    /// `failed / total`, clamped to `[0, 1]`; errors if the sample is too small.
     pub fn get_node_failed_ratio(&self, node: &dyn Node) -> Result<f64, CslbError> {
         let (total, failed) = self
             .counters

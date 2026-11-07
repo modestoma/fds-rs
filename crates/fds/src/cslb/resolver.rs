@@ -1,6 +1,6 @@
-//! reqwest custom DNS resolver backed by per-host [`LoadBalancer`]s. Ports the
-//! integration role of `fds/cslb.go` (method ①: return the round-robin pick
-//! plus remaining healthy IPs as fallbacks; TTL refresh handles staleness).
+//! reqwest custom DNS resolver backed by per-host [`LoadBalancer`]s: return
+//! the round-robin pick plus remaining healthy IPs as fallbacks; TTL refresh
+//! handles staleness.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};

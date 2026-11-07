@@ -1,5 +1,6 @@
 //! Deletion with explicit partial-failure outcomes.
 
+use super::listing::MarkerGuard;
 use super::validate_object;
 use super::ListObjectsRequest;
 use crate::client::ClientRequest;
@@ -147,7 +148,8 @@ impl Client {
     /// [`delete_objects`](Self::delete_objects). The error's dispatch describes
     /// the failing request only. Objects in later, unlisted pages are not
     /// represented. Pagination keeps the caller's bucket/prefix, never trusts
-    /// echoed response scope.
+    /// echoed response scope. Any repeated pagination marker, including the
+    /// caller's, is rejected before that page is submitted.
     pub async fn delete_objects_with_prefix(
         &self,
         request: &ListObjectsRequest,
@@ -155,10 +157,7 @@ impl Client {
     ) -> Result<DeleteObjectsOutput> {
         let mut output = DeleteObjectsOutput::default();
         let mut request = request.clone();
-        let mut seen = HashSet::new();
-        if let Some(marker) = &request.marker {
-            seen.insert(marker.clone());
-        }
+        let mut guard = MarkerGuard::exact(request.marker.as_deref());
         loop {
             let listing = match self.list_objects(&request).await {
                 Ok(listing) => listing,
@@ -169,9 +168,7 @@ impl Client {
                 .object_summaries
                 .iter()
                 .any(|o| o.object_name.is_empty() || !o.object_name.starts_with(&request.prefix))
-                || (listing.truncated
-                    && (listing.next_marker.is_empty()
-                        || !seen.insert(listing.next_marker.clone())))
+                || (listing.truncated && !guard.advance(&listing.next_marker))
             {
                 return Err(
                     Error::protocol("invalid prefix deletion page or pagination marker")

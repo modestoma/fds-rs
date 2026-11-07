@@ -79,7 +79,7 @@
       "title": "内部实现去冗余：serde 样板、header、脱敏、HTTP 配置",
       "type": "refactor",
       "document": "tasks/internal-cleanup.md",
-      "status": "planned",
+      "status": "done",
       "reviewed_revision": 3,
       "depends_on": [
         "public-surface"

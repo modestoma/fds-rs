@@ -28,51 +28,19 @@ pub struct PutObjectRequest {
     timeout: Option<Duration>,
 }
 
-/// Result of `put_object` / `complete_multipart_upload` (Go `PutObjectResponse`).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct PutObjectResponse {
-    #[serde(
-        rename = "bucketName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub bucket_name: String,
-    #[serde(
-        rename = "objectName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub object_name: String,
-    #[serde(
-        rename = "accessKeyId",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub access_key_id: String,
-    #[serde(
-        rename = "signature",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub signature: String,
-    #[serde(
-        rename = "expires",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub expires: i64,
-    #[serde(
-        rename = "previousVersionId",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub previous_version_id: String,
-    #[serde(
-        rename = "outsideAccess",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub outside_access: bool,
+crate::de::lenient! {
+    /// Result of `put_object` / `complete_multipart_upload`.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct PutObjectResponse {
+        pub bucket_name: String,
+        pub object_name: String,
+        pub access_key_id: String,
+        pub signature: String,
+        pub expires: i64,
+        pub previous_version_id: String,
+        pub outside_access: bool,
+    }
 }
 
 impl PutObjectRequest {
@@ -176,16 +144,16 @@ impl Client {
     pub async fn put_object(&self, req: PutObjectRequest) -> Result<PutObjectResponse> {
         validate_object(&req.bucket_name, &req.object_name)?;
         let mut headers = HeaderMap::new();
-        insert_header_opt(&mut headers, "cache-control", &req.cache_control)?;
-        insert_header_opt(
-            &mut headers,
-            "content-disposition",
-            &req.content_disposition,
-        )?;
-        insert_header_opt(&mut headers, "content-encoding", &req.content_encoding)?;
-        insert_header_opt(&mut headers, "content-type", &req.content_type)?;
-        insert_header_opt(&mut headers, "content-md5", &req.content_md5)?;
-        insert_header_opt(&mut headers, "expect", &req.expect)?;
+        for (name, value) in [
+            ("cache-control", &req.cache_control),
+            ("content-disposition", &req.content_disposition),
+            ("content-encoding", &req.content_encoding),
+            ("content-type", &req.content_type),
+            ("content-md5", &req.content_md5),
+            ("expect", &req.expect),
+        ] {
+            insert_header_opt(&mut headers, name, value.as_deref())?;
+        }
 
         let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.timeout = req

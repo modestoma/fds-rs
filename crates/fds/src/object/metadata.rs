@@ -8,7 +8,7 @@ use bytes::Bytes;
 use http::Method;
 use serde::Deserialize;
 
-/// Input of `set_object_metadata` (Go `SetObjectMetadataRequest`).
+/// Input of `set_object_metadata`.
 #[derive(Debug, Clone, Default)]
 pub struct SetObjectMetadataRequest {
     pub bucket_name: String,
@@ -16,36 +16,20 @@ pub struct SetObjectMetadataRequest {
     pub metadata: ObjectMetadata,
 }
 
-/// Result of `get_object_basic_info` (Go `ObjectBasicInfo`). `metadata` uses the
-/// entry-list form (see [`ObjectMetadata`](super::ObjectMetadata)).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ObjectBasicInfo {
-    #[serde(
-        rename = "allowOutsideAccess",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub allow_outside_access: Option<bool>,
-    #[serde(rename = "size", default, deserialize_with = "crate::de::null_default")]
-    pub size: i64,
-    #[serde(
-        rename = "uploadTime",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub upload_time: i64,
-    #[serde(
-        rename = "storageClass",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub storage_class_type: Option<StorageClass>,
-    #[serde(
-        rename = "metadataBean",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub metadata: ObjectMetadata,
+crate::de::lenient! {
+    /// Result of `get_object_basic_info`. `metadata` uses the entry-list form
+    /// (see [`ObjectMetadata`](super::ObjectMetadata)).
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct ObjectBasicInfo {
+        pub allow_outside_access: Option<bool>,
+        pub size: i64,
+        pub upload_time: i64,
+        #[serde(rename = "storageClass")]
+        pub storage_class_type: Option<StorageClass>,
+        #[serde(rename = "metadataBean")]
+        pub metadata: ObjectMetadata,
+    }
 }
 
 impl SetObjectMetadataRequest {

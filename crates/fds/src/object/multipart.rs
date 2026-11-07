@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use http::Method;
 use serde::{Deserialize, Serialize};
 
-/// Input of `init_multipart_upload` (Go `InitMultipartUploadRequest`).
+/// Input of `init_multipart_upload`.
 #[derive(Debug, Clone, Default)]
 pub struct InitMultipartUploadRequest {
     pub bucket_name: String,
@@ -17,27 +17,15 @@ pub struct InitMultipartUploadRequest {
     pub metadata: Option<ObjectMetadata>,
 }
 
-/// Result of `init_multipart_upload` (Go `InitMultipartUploadResponse`).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct InitMultipartUploadResponse {
-    #[serde(
-        rename = "bucketName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub bucket_name: String,
-    #[serde(
-        rename = "objectName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub object_name: String,
-    #[serde(
-        rename = "uploadId",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub upload_id: String,
+crate::de::lenient! {
+    /// Result of `init_multipart_upload`.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct InitMultipartUploadResponse {
+        pub bucket_name: String,
+        pub object_name: String,
+        pub upload_id: String,
+    }
 }
 
 /// Single-use multipart part request; part numbers start at 1.
@@ -51,18 +39,17 @@ pub struct UploadPartRequest {
     content_md5: Option<String>,
 }
 
-/// Result of `upload_part` (Go `UploadPartResponse`).
+/// Result of `upload_part`, sent back verbatim on completion. Every key is
+/// required.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UploadPartResponse {
-    #[serde(rename = "partNumber")]
     pub part_number: i32,
-    #[serde(rename = "etag")]
     pub etag: String,
-    #[serde(rename = "partSize")]
     pub part_size: i64,
 }
 
-/// Input of `complete_multipart_upload` (Go `CompleteMultipartUploadRequest`).
+/// Input of `complete_multipart_upload`.
 #[derive(Debug, Clone, Default)]
 pub struct CompleteMultipartUploadRequest {
     pub bucket_name: String,
@@ -206,7 +193,7 @@ impl Client {
         let mut cr = ClientRequest::new(&req.bucket_name, &req.object_name, Method::PUT);
         cr.query.add("uploadId", &req.upload_id);
         cr.query.add("partNumber", req.part_number.to_string());
-        insert_header_opt(&mut cr.headers, "content-md5", &req.content_md5)?;
+        insert_header_opt(&mut cr.headers, "content-md5", req.content_md5.as_deref())?;
         cr.body = Some(req.body);
         self.do_json(cr).await
     }

@@ -11,11 +11,9 @@ use crate::{Client, Error, Result};
 use chrono::{DateTime, Utc};
 use http::Method;
 use reqwest::header::HeaderMap;
-use reqwest::header::HeaderName;
-use reqwest::header::HeaderValue;
 use std::time::Duration;
 
-/// Input of `generate_presigned_url` (Go `GeneratePresignedURLRequest`).
+/// Input of `generate_presigned_url`.
 #[derive(Debug, Clone)]
 pub struct GeneratePresignedURLRequest {
     pub cdn: bool,
@@ -83,11 +81,11 @@ impl Client {
         Ok(self.build_request_url(bucket, object, "", false)?.into())
     }
 
-    /// Generate a presigned URL (Go `GeneratePresignedURL`).
+    /// Generate a presigned URL.
     ///
-    /// 🔴 Returns the exact `String`: `Expires` is a
-    /// millisecond timestamp and drives the signature's Date row; `Signature` is
-    /// appended after the sorted query and is NOT URL-encoded.
+    /// Returns the exact `String`: `Expires` is a millisecond timestamp and
+    /// drives the signature's Date row; `Signature` is appended after the
+    /// sorted query and is NOT URL-encoded.
     pub fn generate_presigned_url(&self, req: &GeneratePresignedURLRequest) -> Result<String> {
         validate_object(&req.bucket_name, &req.object_name)?;
         let (access_id, access_secret) = self.access_keys()?;
@@ -106,24 +104,13 @@ impl Client {
         // re-encode the already-encoded query).
         let with_query = format!("{}?{}", base.as_str(), query);
 
-        let headers = metadata_headers(&req.metadata)?;
+        let mut headers = HeaderMap::new();
+        if let Some(metadata) = &req.metadata {
+            metadata.append_to_headers(&mut headers)?;
+        }
         let sig = auth::sign(access_secret, req.method.as_str(), &with_query, &headers)?;
 
         // Append &Signature=<sig> raw (unsorted, un-encoded).
         Ok(format!("{}&{}={}", with_query, HTTP_HEADER_SIGNATURE, sig))
     }
-}
-
-/// Build the header map for signing a presigned URL from optional metadata.
-fn metadata_headers(metadata: &Option<ObjectMetadata>) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    if let Some(md) = metadata {
-        for (k, v) in md.iter() {
-            let name = HeaderName::from_bytes(k.as_bytes())
-                .map_err(|e| Error::invalid_input(e.to_string()))?;
-            let val = HeaderValue::from_str(v).map_err(|e| Error::invalid_input(e.to_string()))?;
-            headers.append(name, val);
-        }
-    }
-    Ok(headers)
 }

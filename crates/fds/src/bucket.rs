@@ -1,4 +1,4 @@
-//! Bucket API (14 methods) + lifecycle / access-log types. Ports `fds/bucket.go`.
+//! Bucket operations and the lifecycle / access-log models.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +14,7 @@ use http::Method;
 
 // ---- Request/response types ------------------------------------------------
 
-/// Input of `create_bucket` (Go `CreateBucketRequest`).
+/// Input of `create_bucket`.
 #[derive(Debug, Clone, Default)]
 pub struct CreateBucketRequest {
     pub bucket_name: String,
@@ -74,68 +74,37 @@ impl SetBucketAclRequest {
     }
 }
 
-/// Result of `get_bucket_info` (Go `GetBucketInfoResponse`).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct GetBucketInfoResponse {
-    #[serde(
-        rename = "allowOutsideAccess",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub allow_outside_access: bool,
-    #[serde(
-        rename = "enableSSE",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub enable_sse: bool,
-    #[serde(
-        rename = "creationTime",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub creation_time: i64,
-    #[serde(rename = "name", default, deserialize_with = "crate::de::null_default")]
-    pub bucket_name: String,
-    #[serde(
-        rename = "numObjects",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub object_num: i64,
-    #[serde(
-        rename = "usedSpace",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub used_space: i64,
-    #[serde(
-        rename = "storageClass",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub storage_class_type: Option<StorageClass>,
+crate::de::lenient! {
+    /// Result of `get_bucket_info`.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct GetBucketInfoResponse {
+        pub allow_outside_access: bool,
+        #[serde(rename = "enableSSE")]
+        pub enable_sse: bool,
+        pub creation_time: i64,
+        #[serde(rename = "name")]
+        pub bucket_name: String,
+        #[serde(rename = "numObjects")]
+        pub object_num: i64,
+        pub used_space: i64,
+        #[serde(rename = "storageClass")]
+        pub storage_class_type: Option<StorageClass>,
+    }
 }
 
-/// Result of `list_buckets` / `list_authorized_buckets` (Go `ListBucketsResponse`).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ListBucketsResponse {
-    #[serde(
-        rename = "owner",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub owner: Owner,
-    #[serde(
-        rename = "buckets",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub buckets: Vec<GetBucketInfoResponse>,
+crate::de::lenient! {
+    /// Result of `list_buckets` / `list_authorized_buckets`.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct ListBucketsResponse {
+        pub owner: Owner,
+        pub buckets: Vec<GetBucketInfoResponse>,
+    }
 }
 
-/// Input of `migrate_bucket` (Go `MigrateBucketRequest`). `orgId`/`teamId` have
-/// no omitempty, so they are always emitted.
+/// Input of `migrate_bucket`. `orgId`/`teamId` are always emitted, even when
+/// empty.
 #[derive(Debug, Clone, Default)]
 pub struct MigrateBucketRequest {
     pub bucket_name: String,
@@ -143,10 +112,9 @@ pub struct MigrateBucketRequest {
     pub team_id: String,
 }
 
-/// A lifecycle action item (Go `LifecycleBaseItem`). NOTE: `days` is a float.
+/// A lifecycle action item. NOTE: `days` is a float and required.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LifecycleBaseItem {
-    #[serde(rename = "days")]
     pub days: f64,
 }
 
@@ -260,30 +228,18 @@ impl<'de> Deserialize<'de> for LifecycleAction {
     }
 }
 
-/// A lifecycle rule (Go `LifecycleRule`). The action JSON key is `actions`;
-/// actions serialize in [`LifecycleAction`] (wire string) order.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LifecycleRule {
-    #[serde(rename = "id", default, deserialize_with = "crate::de::null_default")]
-    pub id: String,
-    #[serde(
-        rename = "prefix",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub prefix: String,
-    #[serde(
-        rename = "enabled",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub enabled: bool,
-    #[serde(
-        rename = "actions",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub action: BTreeMap<LifecycleAction, LifecycleBaseItem>,
+crate::de::lenient! {
+    /// A lifecycle rule. The action JSON key is `actions`; actions serialize
+    /// in [`LifecycleAction`] (wire string) order.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct LifecycleRule {
+        pub id: String,
+        pub prefix: String,
+        pub enabled: bool,
+        #[serde(rename = "actions")]
+        pub action: BTreeMap<LifecycleAction, LifecycleBaseItem>,
+    }
 }
 
 impl LifecycleRule {
@@ -292,15 +248,13 @@ impl LifecycleRule {
     }
 }
 
-/// Lifecycle configuration (Go `LifecycleConfig`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LifecycleConfig {
-    #[serde(
-        rename = "rules",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub rules: Vec<LifecycleRule>,
+crate::de::lenient! {
+    /// Lifecycle configuration.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct LifecycleConfig {
+        pub rules: Vec<LifecycleRule>,
+    }
 }
 
 impl LifecycleConfig {
@@ -309,7 +263,7 @@ impl LifecycleConfig {
     }
 }
 
-/// Input of `get_lifecycle_config` (Go `GetLifecycleConfigRequest`).
+/// Input of `get_lifecycle_config`.
 #[derive(Debug, Clone, Default)]
 pub struct GetLifecycleConfigRequest {
     pub bucket_name: String,
@@ -317,33 +271,16 @@ pub struct GetLifecycleConfigRequest {
     pub rule_id: String,
 }
 
-/// Access log configuration (Go `AccessLog`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AccessLog {
-    #[serde(
-        rename = "bucketName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub bucket_name: String,
-    #[serde(
-        rename = "enabled",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub enabled: bool,
-    #[serde(
-        rename = "logBucketName",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub log_bucket_name: String,
-    #[serde(
-        rename = "logPrefix",
-        default,
-        deserialize_with = "crate::de::null_default"
-    )]
-    pub log_prefix: String,
+crate::de::lenient! {
+    /// Access log configuration.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct AccessLog {
+        pub bucket_name: String,
+        pub enabled: bool,
+        pub log_bucket_name: String,
+        pub log_prefix: String,
+    }
 }
 
 impl MigrateBucketRequest {
@@ -403,14 +340,8 @@ impl Client {
         cr.query = q;
         if !acl.is_empty() {
             let value = acl.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(",");
-            cr.headers.insert(
-                "x-xiaomi-meta-acl",
-                value
-                    .parse()
-                    .map_err(|e: reqwest::header::InvalidHeaderValue| {
-                        Error::invalid_input(e.to_string())
-                    })?,
-            );
+            cr.headers
+                .insert("x-xiaomi-meta-acl", crate::client::header_value(&value)?);
         }
         cr.body = Some(Bytes::new().into()); // empty PUT body (Content-Length: 0)
         self.do_discard(cr).await

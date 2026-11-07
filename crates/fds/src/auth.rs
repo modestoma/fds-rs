@@ -1,7 +1,6 @@
-//! Galaxy-V2 request signing. Ports `fds/auth.go`.
+//! Galaxy-V2 request signing.
 //!
-//! 🔴🔴 This is the core of "functional zero-error": one wrong byte in the
-//! `StringToSign` yields a server 403. See `tests/fixtures/golden.json` for saved signing vectors.
+//! Byte-critical: one wrong byte in the `StringToSign` yields a server 403. See `tests/fixtures/golden.json` for saved signing vectors.
 //!
 //! Crate-internal: signing is an implementation detail, not a public API. The
 //! saved Go signature vectors are checked by `tests::golden_signatures` below.
@@ -26,7 +25,7 @@ use crate::error::{Error, Result};
 type HmacSha1 = Hmac<Sha1>;
 
 /// The exactly-7 subresource keys that participate in the canonical resource
-/// string (auth.go `subResourceMap`). Membership test only; order irrelevant.
+/// string. Membership test only; order irrelevant.
 const SUB_RESOURCES: &[&str] = &[
     "acl",
     "quota",
@@ -67,7 +66,7 @@ impl HeaderLookup for reqwest::header::HeaderMap {
     }
 }
 
-/// Build the `StringToSign` (auth.go:signature, before the HMAC step). Extracted
+/// Build the `StringToSign` (before the HMAC step). Extracted
 /// so it can be asserted byte-for-byte in tests without needing an HMAC oracle.
 pub(crate) fn string_to_sign(
     method: &str,
@@ -98,7 +97,7 @@ pub(crate) fn string_to_sign(
     Ok(buf)
 }
 
-/// Compute the Galaxy-V2 signature (auth.go:signature).
+/// Compute the Galaxy-V2 signature.
 pub(crate) fn sign(
     secret: &str,
     method: &str,
@@ -112,7 +111,7 @@ pub(crate) fn sign(
     Ok(STANDARD.encode(mac.finalize().into_bytes()))
 }
 
-/// First value of the exactly-cased `Expires` query param (auth.go:expires).
+/// First value of the exactly-cased `Expires` query param.
 fn expires(url_str: &str) -> Option<String> {
     let u = Url::parse(url_str).ok()?;
     u.query_pairs()
@@ -120,7 +119,7 @@ fn expires(url_str: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-/// CanonicalizedXiaomiHeaders (auth.go:miHeader): keep `x-xiaomi-` prefixed
+/// CanonicalizedXiaomiHeaders: keep `x-xiaomi-` prefixed
 /// keys, sort ascending, emit `key:value\n` per line.
 fn canonical_xiaomi_headers(headers: &impl HeaderLookup) -> String {
     let mut kv: Vec<(String, String)> = Vec::new();
@@ -140,7 +139,7 @@ fn canonical_xiaomi_headers(headers: &impl HeaderLookup) -> String {
     out
 }
 
-/// CanonicalizedResource (auth.go:resource): the PERCENT-DECODED path plus the
+/// CanonicalizedResource: the PERCENT-DECODED path plus the
 /// filtered/sorted subresource query.
 fn canonical_resource(url_str: &str) -> Result<String> {
     let u = Url::parse(url_str).map_err(|_| Error::invalid_input("invalid signing URL"))?;
@@ -235,6 +234,17 @@ mod tests {
                 case.method, case.url
             );
         }
+    }
+
+    /// The User-Agent (like every header outside Content-MD5, Content-Type,
+    /// Date and `x-xiaomi-*`) is not part of the signature.
+    #[test]
+    fn user_agent_is_not_signed() {
+        let url = "https://cnbj1.fds.api.xiaomi.com/b/o?uploads";
+        let plain = sign("sk", "PUT", url, &dated()).unwrap();
+        let with_ua =
+            TestHeaders::new(&[("date", DATE), ("user-agent", "fds-rs/0.0.0 my-app/1.2")]);
+        assert_eq!(sign("sk", "PUT", url, &with_ua).unwrap(), plain);
     }
 
     const DATE: &str = "Mon, 13 Jul 2026 10:00:00 GMT";

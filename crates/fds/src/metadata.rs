@@ -1,5 +1,4 @@
-//! Object metadata with its three (de)serialization forms. Ports the
-//! `ObjectMetadata` section of `fds/object.go`.
+//! Object metadata with its three (de)serialization forms.
 //!
 //! The three forms are asymmetric — mixing them fails parsing:
 //! 1. **send** (`serialize`, SetObjectMetadata body) = `{"rawMeta": {k:v,...}}` (map);
@@ -9,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use reqwest::header::{HeaderMap, HeaderName};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::constant::{
@@ -22,7 +22,7 @@ use crate::constant::{
 };
 use crate::error::{Error, Result};
 
-/// The allowed "predefined" metadata keys (object.go:302-322, all lowercase).
+/// The allowed "predefined" metadata keys (all lowercase).
 const PREDEFINED: &[&str] = &[
     HTTP_HEADER_CACHE_CONTROL,
     HTTP_HEADER_CONTENT_LENGTH,
@@ -49,7 +49,7 @@ fn is_allowed_key(key_lower: &str) -> bool {
     PREDEFINED.contains(&key_lower) || key_lower.starts_with(XIAOMI_META_PREFIX)
 }
 
-/// Object metadata (Go `ObjectMetadata`). Keys are stored lowercase.
+/// Object metadata. Keys are stored lowercase.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObjectMetadata {
     metadata: HashMap<String, String>,
@@ -73,7 +73,7 @@ impl ObjectMetadata {
     }
 
     /// Set a value. Only predefined keys or `x-xiaomi-meta-*` are accepted;
-    /// otherwise an `Invalid metadata: {k}` error (Go `Set`).
+    /// otherwise an `Invalid metadata: {k}` error.
     pub fn set(&mut self, k: &str, v: impl Into<String>) -> Result<()> {
         let key = k.to_ascii_lowercase();
         if is_allowed_key(&key) {
@@ -112,8 +112,7 @@ impl ObjectMetadata {
         self.get(HTTP_HEADER_CONTENT_TYPE)
     }
 
-    /// Serialize as the SetObjectMetadata request body: `{"rawMeta": {k:v,...}}`
-    /// (Go `serialize`).
+    /// Serialize as the SetObjectMetadata request body: `{"rawMeta": {k:v,...}}`.
     pub fn serialize(&self) -> Result<Vec<u8>> {
         #[derive(Serialize)]
         struct Wrap<'a> {
@@ -126,9 +125,18 @@ impl ObjectMetadata {
         .map_err(Error::json_encode)
     }
 
-    /// Build from HTTP response headers (Go `parseObjectMetadataFromHeader`),
-    /// used by GetObjectMetadata.
-    pub fn from_headers(headers: &reqwest::header::HeaderMap) -> Self {
+    /// Append every entry as a request header, for sending or for signing.
+    pub(crate) fn append_to_headers(&self, headers: &mut HeaderMap) -> Result<()> {
+        for (name, value) in self.iter() {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|e| Error::invalid_input(e.to_string()))?;
+            headers.append(name, crate::client::header_value(value)?);
+        }
+        Ok(())
+    }
+
+    /// Build from HTTP response headers, used by GetObjectMetadata.
+    pub fn from_headers(headers: &HeaderMap) -> Self {
         let mut m = Self::new();
         for (name, value) in headers.iter() {
             let key = name.as_str().to_ascii_lowercase(); // reqwest is already lowercase
@@ -140,8 +148,8 @@ impl ObjectMetadata {
     }
 }
 
-/// Deserialize the entry-list form used by `ObjectBasicInfo.metadataBean`
-/// (Go `ObjectMetadata.UnmarshalJSON`): `{"rawMeta":{"entry":[{key,value}...]}}`.
+/// Deserialize the entry-list form used by `ObjectBasicInfo.metadataBean`:
+/// `{"rawMeta":{"entry":[{key,value}...]}}`.
 impl<'de> Deserialize<'de> for ObjectMetadata {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]

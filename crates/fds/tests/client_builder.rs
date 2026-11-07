@@ -77,7 +77,16 @@ fn limits_and_effective_configuration() {
     assert_eq!(conf.read_timeout(), Duration::from_secs(50));
     assert_eq!(conf.pool_idle_timeout(), Duration::from_secs(90));
     assert_eq!(conf.tcp_keepalive(), Duration::from_secs(30));
+    assert_eq!(conf.pool_max_idle_per_host(), 100);
+    assert_eq!(
+        conf.user_agent(),
+        concat!("fds-rs/", env!("CARGO_PKG_VERSION"))
+    );
     assert!(!conf.enable_md5_calculate());
+    for suffix in ["", "  ", "app\n", "app\u{7f}", "应用/1"] {
+        let error = builder().user_agent_suffix(suffix).build().unwrap_err();
+        assert_eq!(error.kind(), fds::ErrorKind::ConfigInvalid);
+    }
     for duration in [Duration::ZERO, Duration::MAX] {
         for b in [
             builder().connect_timeout(duration),
@@ -103,10 +112,17 @@ fn limits_and_effective_configuration() {
         .read_timeout(d)
         .pool_idle_timeout(d)
         .tcp_keepalive(d)
+        .pool_max_idle_per_host(0)
+        .user_agent_suffix("my-app/1.2 (ops)")
         .enable_md5_calculate(true)
         .build()
         .unwrap();
     let conf = c.configuration();
+    assert_eq!(conf.pool_max_idle_per_host(), 0);
+    assert_eq!(
+        conf.user_agent(),
+        concat!("fds-rs/", env!("CARGO_PKG_VERSION"), " my-app/1.2 (ops)")
+    );
     assert_eq!(conf.connect_timeout(), d);
     assert_eq!(conf.request_timeout(), Some(d));
     assert_eq!(conf.read_timeout(), d);

@@ -50,8 +50,7 @@ impl RetryPolicy {
         if retry >= self.max_retries {
             return None;
         }
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let random = RandomState::new().hash_one(SEQUENCE.fetch_add(1, Ordering::Relaxed));
+        let random = jitter_random();
         let cap = self
             .initial_delay
             .saturating_mul(1u32 << retry.min(31))
@@ -70,6 +69,18 @@ impl RetryPolicy {
         Some(delay.max(hint.unwrap_or_default()))
     }
 }
+/// A fresh, unpredictable `u64` for retry jitter, without an RNG dependency.
+///
+/// `RandomState::new()` hands out SipHash keys derived from per-thread keys
+/// that std seeds from the OS once and then perturbs for every new state, so
+/// hashing a process-wide counter with a fresh state yields a well-mixed value
+/// that differs per call, per thread and per process. This is statistically
+/// adequate for spreading retries; it is not a cryptographic source.
+fn jitter_random() -> u64 {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    RandomState::new().hash_one(SEQUENCE.fetch_add(1, Ordering::Relaxed))
+}
+
 fn retry_after(value: &str) -> Option<Duration> {
     let value = value.trim();
     if !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()) {

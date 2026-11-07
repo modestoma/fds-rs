@@ -1,8 +1,8 @@
-//! HTTP client core and request pipeline. Ports `fds/fds.go`.
+//! HTTP client core and request pipeline.
 //!
-//! 🔴 This is the second byte-critical point (after signing): URL construction
-//! and the exact ordering of "assemble headers → set Date → sign → set
-//! Authorization → send". See the request pipeline below.
+//! Byte-critical, like signing: URL construction and the exact ordering of
+//! "assemble headers → set Date → sign → set Authorization → send". See the
+//! request pipeline below.
 
 use crate::upload::UploadBody;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -128,7 +128,9 @@ impl Client {
             .connect_timeout(conf.connect_timeout)
             .pool_idle_timeout(conf.pool_idle_timeout)
             .tcp_keepalive(conf.tcp_keepalive)
-            .pool_max_idle_per_host(100)
+            .pool_max_idle_per_host(conf.pool_max_idle_per_host)
+            // Added by reqwest after signing; never part of the signature.
+            .user_agent(conf.user_agent.as_str())
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never());
         // No total deadline unless explicitly configured: reqwest's timeout
@@ -153,8 +155,8 @@ impl Client {
         })
     }
 
-    /// Run a request and return the raw response (Go `do`). `cdn` is always
-    /// false in the request pipeline (only presigned URLs may use the CDN host).
+    /// Run a request and return the raw response. `cdn` is always false in the
+    /// request pipeline (only presigned URLs may use the CDN host).
     pub(crate) async fn do_request(&self, req: ClientRequest<'_>) -> Result<reqwest::Response> {
         let mut query = req.query;
         if let crate::oauth::Credentials::OAuth(token) = &self.inner.credentials {
@@ -166,14 +168,8 @@ impl Client {
         let url = self.build_request_url(req.bucket, req.object, &query, false)?;
 
         let mut headers = req.headers;
-        if let Some(md) = req.metadata {
-            for (k, v) in md.iter() {
-                let name = HeaderName::from_bytes(k.as_bytes())
-                    .map_err(|e| Error::invalid_input(e.to_string()))?;
-                let val =
-                    HeaderValue::from_str(v).map_err(|e| Error::invalid_input(e.to_string()))?;
-                headers.append(name, val);
-            }
+        if let Some(metadata) = req.metadata {
+            metadata.append_to_headers(&mut headers)?;
         }
 
         let mut body = req.body;
@@ -286,8 +282,8 @@ impl Client {
         Ok(())
     }
 
-    /// The core send: body handling → Date → sign → Authorization → send →
-    /// status check (Go `doRequest`). Ordering is load-bearing.
+    /// The core send: body handling → Date → sign → Authorization → send.
+    /// Ordering is load-bearing.
     async fn send(
         &self,
         method: Method,
@@ -317,7 +313,7 @@ impl Client {
             .to_string();
         headers.insert(
             HeaderName::from_static(HTTP_HEADER_DATE),
-            HeaderValue::from_str(&date).map_err(|e| Error::unexpected(e.to_string()))?,
+            header_value(&date)?,
         );
 
         match &self.inner.credentials {
@@ -360,26 +356,12 @@ impl Client {
         };
 
         // Rebuild the response around an idle-timed body, retaining the
-        // headers, status and transport extensions. reqwest Response Debug
-        // includes its URL: without access keys, remove credential query
-        // parameters even from raw response escape hatches.
-        use reqwest::ResponseBuilderExt;
-        let mut url = resp.url().clone();
-        if !matches!(
-            self.inner.credentials,
-            crate::oauth::Credentials::AccessKey(..)
-        ) {
-            url.set_query(None);
-        }
-        let url_parts = http::Response::builder()
-            .url(url)
-            .body(())
-            .unwrap()
-            .into_parts()
-            .0;
+        // headers, status and transport extensions. reqwest keeps the URL
+        // outside the http parts, so it is restored as an extension.
+        let url = self.redaction().response_url(resp.url());
         let raw: http::Response<reqwest::Body> = resp.into();
         let (mut parts, body) = raw.into_parts();
-        parts.extensions.extend(url_parts.extensions);
+        parts.extensions.extend(url_extension(url));
         let body = reqwest::Body::wrap(crate::idle::IdleBody::new(body, idle));
         let resp = reqwest::Response::from(http::Response::from_parts(parts, body));
 
@@ -387,26 +369,17 @@ impl Client {
         Ok(resp)
     }
 
-    /// Server-controlled response strings are retained only with access keys.
-    fn redact_error(&self, mut error: Error) -> Error {
-        if !matches!(
-            self.inner.credentials,
-            crate::oauth::Credentials::AccessKey(..)
-        ) {
-            if let Some(response) = error.response_mut() {
-                response.body.clear();
-                response.truncated = false;
-                response.service_code = None;
-                response.request_id = None;
-            }
-        }
-        error
+    fn redaction(&self) -> Redaction {
+        Redaction::for_credentials(&self.inner.credentials)
     }
 
-    /// Build the request URL (Go `buildRequestURL`). 🔴 The object name is
-    /// `go_query_escape`d then `+`→`%20` (so `/`→`%2F`, space→`%20`); the bucket
-    /// is not encoded. The pre-encoded string is parsed once and never
-    /// re-encoded downstream.
+    fn redact_error(&self, error: Error) -> Error {
+        self.redaction().error(error)
+    }
+
+    /// Build the request URL. The object name is `go_query_escape`d then
+    /// `+`→`%20` (so `/`→`%2F`, space→`%20`); the bucket is not encoded. The
+    /// pre-encoded string is parsed once and never re-encoded downstream.
     pub(crate) fn build_request_url(
         &self,
         bucket: &str,
@@ -444,6 +417,70 @@ impl Client {
 }
 
 const DIAGNOSTIC_LIMIT: usize = 8192;
+
+/// A header value built by the SDK or from caller input; bytes that are not
+/// valid in a header are an invalid-input error.
+pub(crate) fn header_value(value: &str) -> Result<HeaderValue> {
+    HeaderValue::from_str(value).map_err(|e| Error::invalid_input(e.to_string()))
+}
+
+/// The extensions reqwest reads a response URL from.
+fn url_extension(url: url::Url) -> http::Extensions {
+    use reqwest::ResponseBuilderExt;
+    // A builder that only carries an extension cannot fail; should it ever,
+    // the response reports reqwest's placeholder URL instead of a real one.
+    http::Response::builder()
+        .url(url)
+        .body(())
+        .map(|response| response.into_parts().0.extensions)
+        .unwrap_or_default()
+}
+
+/// The single redaction policy, decided by the credential mode.
+///
+/// Access-key clients sign in headers, so response URLs carry no secrets and
+/// server diagnostics are kept. Every other mode redacts: OAuth puts the
+/// storage token in the query string, and the anonymous discovery/exchange
+/// channel carries OAuth inputs in the query and must not echo server text.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Redaction {
+    Keep,
+    Redact,
+}
+
+impl Redaction {
+    fn for_credentials(credentials: &crate::oauth::Credentials) -> Self {
+        match credentials {
+            crate::oauth::Credentials::AccessKey(..) => Self::Keep,
+            crate::oauth::Credentials::OAuth(_) | crate::oauth::Credentials::Anonymous => {
+                Self::Redact
+            }
+        }
+    }
+
+    /// The URL reported by a returned response (visible through its Debug
+    /// output and raw-response escape hatches): no query when redacting.
+    fn response_url(self, url: &url::Url) -> url::Url {
+        let mut url = url.clone();
+        if self == Self::Redact {
+            url.set_query(None);
+        }
+        url
+    }
+
+    /// Server-controlled response strings are dropped when redacting.
+    fn error(self, mut error: Error) -> Error {
+        if self == Self::Redact {
+            if let Some(response) = error.response_mut() {
+                response.body.clear();
+                response.truncated = false;
+                response.service_code = None;
+                response.request_id = None;
+            }
+        }
+        error
+    }
+}
 
 /// A failed attempt: local preparation errors are final, transport errors and
 /// idle timeouts may be retried by `do_request` for eligible requests.

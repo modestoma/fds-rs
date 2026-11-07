@@ -1,7 +1,6 @@
-//! Query-string encoding. Ports `fds/httpparser/querystring.go` +
-//! `url.Values.Encode()` semantics.
+//! Query-string encoding with `url.Values.Encode()` semantics.
 //!
-//! 🔴 Byte-critical: the encoded query appears in the request line, and the
+//! Byte-critical: the encoded query appears in the request line, and the
 //! subresource subset feeds the signature. We replicate Go's `url.QueryEscape`
 //! and `url.Values.Encode()` (sort keys ascending, stable within a key).
 

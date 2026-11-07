@@ -1,4 +1,4 @@
-//! Node-selection strategies. Ports `cslb/strategy*.go`.
+//! Node-selection strategies.
 
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,14 +8,14 @@ use arc_swap::ArcSwap;
 
 use super::{CslbError, Node};
 
-/// Controls how a node is chosen (Go `Strategy`). Thread-safe.
+/// Controls how a node is chosen. Thread-safe.
 pub trait Strategy: Send + Sync {
     fn set_nodes(&self, nodes: Vec<Arc<dyn Node>>);
     fn next(&self) -> Result<Arc<dyn Node>, CslbError>;
     fn next_for(&self, input: &dyn Any) -> Result<Arc<dyn Node>, CslbError>;
 }
 
-/// Round-robin strategy (Go `roundRobinStrategy`).
+/// Round-robin strategy.
 pub struct RoundRobinStrategy {
     index: AtomicU64,
     nodes: ArcSwap<Vec<Arc<dyn Node>>>,
@@ -59,10 +59,10 @@ impl Strategy for RoundRobinStrategy {
     }
 }
 
-/// A hash function mapping a request key to a `u64` (Go `HashFunc`).
+/// A hash function mapping a request key to a `u64`.
 pub type HashFunc = Arc<dyn Fn(&dyn Any) -> Result<u64, CslbError> + Send + Sync>;
 
-/// Hashed strategy (Go `hashedStrategy`): requires an input via `next_for`.
+/// Hashed strategy: requires an input via `next_for`.
 pub struct HashedStrategy {
     hash_func: HashFunc,
     nodes: ArcSwap<Vec<Arc<dyn Node>>>,

@@ -6,15 +6,14 @@ use crate::client::ClientRequest;
 use crate::{Client, Error, Result};
 use bytes::Bytes;
 use http::Method;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
+use reqwest::header::{HeaderValue, RANGE};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const COPY_UNKNOWN: &str =
     "copy outcome unknown; the destination may have been written, do not retry blindly";
 
-/// Input of `get_object` (Go `GetObjectRequest`).
+/// Input of `get_object`.
 #[derive(Debug, Clone, Default)]
 pub struct GetObjectRequest {
     pub bucket_name: String,
@@ -27,7 +26,7 @@ pub struct GetObjectRequest {
     pub timeout: Option<Duration>,
 }
 
-/// Input of `copy_object` (Go `CopyObjectRequest`).
+/// Input of `copy_object`.
 #[derive(Debug, Clone, Default)]
 pub struct CopyObjectRequest {
     pub source_bucket_name: String,
@@ -117,20 +116,13 @@ impl Client {
         req: &GetObjectRequest,
     ) -> Result<crate::object::GetObjectOutput> {
         validate_object(&req.bucket_name, &req.object_name)?;
-        let mut headers = HeaderMap::new();
-        if let Some(range) = req.range {
-            headers.insert(
-                "range",
-                HeaderValue::from_str(&range.to_string())
-                    .map_err(|e| Error::invalid_input(e.to_string()))?,
-            );
-        }
         let mut cr =
             ClientRequest::new(&req.bucket_name, &req.object_name, Method::GET).read_only();
-        if headers.contains_key("range") {
+        if let Some(range) = req.range {
+            cr.headers
+                .insert(RANGE, crate::client::header_value(&range.to_string())?);
             cr.accepted_statuses = &[200, 206];
         }
-        cr.headers = headers;
         cr.timeout = req
             .timeout
             .map(|t| crate::config::validate_timeout(t, crate::ErrorKind::InvalidInput))

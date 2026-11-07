@@ -516,3 +516,54 @@ async fn body_read_failure_preserves_status_request_id_and_source() {
         serve.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn every_request_identifies_the_sdk_in_user_agent() {
+    const UA: &str = concat!("fds-rs/", env!("CARGO_PKG_VERSION"));
+    let mut server = mockito::Server::new_async().await;
+    let plain = server
+        .mock("GET", "/b")
+        .match_query(Matcher::Any)
+        .match_header("user-agent", UA)
+        .match_header(
+            "authorization",
+            Matcher::Regex(r"^Galaxy-V2 AKID:.+$".to_string()),
+        )
+        .with_body(r#"{"name":"b"}"#)
+        .create_async()
+        .await;
+    client_for(&server)
+        .list_objects(&ListObjectsRequest::new("b"))
+        .await
+        .unwrap();
+    plain.assert_async().await;
+
+    let suffixed = server
+        .mock("HEAD", "/b")
+        .match_header("user-agent", format!("{UA} my-app/1.2").as_str())
+        .create_async()
+        .await;
+    let client = Client::builder()
+        .endpoint(server.url())
+        .credentials("AKID", "sk")
+        .user_agent_suffix("my-app/1.2")
+        .build()
+        .unwrap();
+    assert!(client.does_bucket_exist("b").await.unwrap());
+    suffixed.assert_async().await;
+
+    // The unauthenticated discovery channel identifies itself too.
+    let discovery = server
+        .mock("GET", "/")
+        .match_query(Matcher::Any)
+        .match_header("user-agent", UA)
+        .with_body(r#""cnbj1.fds.api.xiaomi.com""#)
+        .create_async()
+        .await;
+    fds::oauth::FdsServiceClient::new(server.url())
+        .unwrap()
+        .get_endpoint("cnbj1", "fds")
+        .await
+        .unwrap();
+    discovery.assert_async().await;
+}

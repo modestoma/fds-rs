@@ -10,7 +10,7 @@ endpoint 仅接受 HTTP(S) origin，允许端口、IPv6 与根路径 `/`；拒�
 
 请求构造器本身不发网络请求，执行时由 Client 统一校验 bucket/key 等参数。文件 body 构造会打开文件，但还不发送。读取请求可借用，上传请求拥有且消耗 body。请求链之间没有事务或自动回滚。
 
-连接池每主机最大空闲连接数固定为 100，不代表总连接或并发上限。CDN origin 只用于显式 CDN 预签名，未配置时报错；普通数据请求始终使用 FDS endpoint。不跟随同源或跨源重定向。
+连接池每主机最大空闲连接数默认为 100，可用 `pool_max_idle_per_host` 调整，不代表总连接或并发上限。每个请求带 `User-Agent: fds-rs/<版本>`，可用 `user_agent_suffix` 追加应用标识；User-Agent 由 HTTP 层在签名之后添加，不参与签名。CDN origin 只用于显式 CDN 预签名，未配置时报错；普通数据请求始终使用 FDS endpoint。不跟随同源或跨源重定向。
 
 CSLB 在 DNS 解析时轮换首选 IP 并附加备选地址，按 TTL 刷新；连接复用不重新轮换。集成 resolver 没有 reqwest 失败反馈回调，不能保证自动故障摘除；独立 LoadBalancer 的失败统计需调用者显式反馈。进程内指标不包含 HTTP exporter。
 

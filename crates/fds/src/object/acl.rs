@@ -7,7 +7,7 @@ use crate::{Client, Error, Result};
 use bytes::Bytes;
 use http::Method;
 
-/// Input of `get_object_acl` (Go `GetObjectACLRequest`).
+/// Input of `get_object_acl`.
 #[derive(Debug, Clone, Default)]
 pub struct GetObjectACLRequest {
     pub bucket_name: String,
@@ -16,7 +16,7 @@ pub struct GetObjectACLRequest {
     pub version_id: Option<String>,
 }
 
-/// Input of `set_object_acl` (Go `SetObjectACLRequest`).
+/// Input of `set_object_acl`.
 #[derive(Debug, Clone, Default)]
 pub struct SetObjectACLRequest {
     pub bucket_name: String,

@@ -28,7 +28,7 @@ fn basic_info_entry_list_metadata() {
 #[test]
 fn object_listing_tolerates_null_fields() {
     // FDS returns `null` (not absent) for marker/nextMarker/delimiter and for
-    // empty slices — Go tolerates it, and so must we.
+    // empty slices; it reads as the default.
     let json = r#"{"name":"b","prefix":"manifest/","maxKeys":100,"marker":null,"truncated":false,"nextMarker":null,"delimiter":null,"objects":[{"name":"manifest/a","size":3,"owner":null,"lastModified":null}],"commonPrefixes":null}"#;
     let l: ObjectListing = serde_json::from_str(json).unwrap();
     assert_eq!(l.bucket_name, "b");
@@ -90,7 +90,7 @@ fn absolute_url() {
 #[test]
 fn storage_class_transparent_string() {
     // Serializes/deserializes as a bare string, and accepts ANY casing the
-    // server returns (Go treats it as an opaque string).
+    // server returns (an opaque string).
     assert_eq!(
         serde_json::to_string(&StorageClass::new("Archive")).unwrap(),
         "\"Archive\""
@@ -99,4 +99,29 @@ fn storage_class_transparent_string() {
     assert_eq!(sc.as_str(), "Standard");
     let sc2: StorageClass = serde_json::from_str("\"STANDARD_IA\"").unwrap();
     assert_eq!(sc2.as_str(), "STANDARD_IA");
+}
+
+#[test]
+fn marker_guard_bounded_and_exact_modes() {
+    use super::listing::MarkerGuard;
+    for start in [None, Some("start")] {
+        for mut guard in [MarkerGuard::new(start), MarkerGuard::exact(start)] {
+            assert!(!guard.advance(""));
+            assert!(guard.advance("a"));
+            assert!(!guard.advance("a"), "adjacent repetition");
+            assert!(guard.advance("b"));
+            assert!(!guard.advance("a"), "repetition of the checkpoint");
+        }
+    }
+    // A cycle back to the caller's marker after three pages: the bounded mode
+    // only detects it later, the exact mode at once.
+    let pages = ["a", "b", "start"];
+    let mut bounded = MarkerGuard::new(Some("start"));
+    assert!(pages.iter().all(|next| bounded.advance(next)));
+    let mut exact = MarkerGuard::exact(Some("start"));
+    assert!(exact.advance("a") && exact.advance("b"));
+    assert!(!exact.advance("start"));
+    // Bounded mode still terminates on that cycle.
+    let mut cycle = ["a", "b", "start"].iter().cycle();
+    assert!((0..16).any(|_| !bounded.advance(cycle.next().unwrap())));
 }

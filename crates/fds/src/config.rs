@@ -18,9 +18,14 @@ pub struct ClientConfiguration {
     pub(crate) read_timeout: Duration,
     pub(crate) pool_idle_timeout: Duration,
     pub(crate) tcp_keepalive: Duration,
+    pub(crate) pool_max_idle_per_host: usize,
+    pub(crate) user_agent: String,
     #[cfg(feature = "cslb")]
     pub(crate) cslb_max_nodes: usize,
 }
+
+/// `fds-rs/<crate version>`, the User-Agent product token of every request.
+const USER_AGENT: &str = concat!("fds-rs/", env!("CARGO_PKG_VERSION"));
 
 impl ClientConfiguration {
     fn for_endpoint(endpoint: Url) -> Self {
@@ -34,6 +39,8 @@ impl ClientConfiguration {
             read_timeout: Duration::from_secs(50),
             pool_idle_timeout: Duration::from_secs(90),
             tcp_keepalive: Duration::from_secs(30),
+            pool_max_idle_per_host: 100,
+            user_agent: USER_AGENT.to_owned(),
             #[cfg(feature = "cslb")]
             cslb_max_nodes: 20,
         }
@@ -71,6 +78,15 @@ impl ClientConfiguration {
     pub fn tcp_keepalive(&self) -> Duration {
         self.tcp_keepalive
     }
+    /// Maximum idle connections kept per host. Defaults to 100.
+    pub fn pool_max_idle_per_host(&self) -> usize {
+        self.pool_max_idle_per_host
+    }
+    /// The User-Agent sent with every request: `fds-rs/<version>`, followed by
+    /// the [suffix](ClientBuilder::user_agent_suffix) when one is set.
+    pub fn user_agent(&self) -> &str {
+        &self.user_agent
+    }
     #[cfg(feature = "cslb")]
     pub fn cslb_max_nodes(&self) -> usize {
         self.cslb_max_nodes
@@ -90,6 +106,8 @@ pub struct ClientBuilder {
     read_timeout: Option<Duration>,
     pool_idle_timeout: Option<Duration>,
     tcp_keepalive: Option<Duration>,
+    pool_max_idle_per_host: Option<usize>,
+    user_agent_suffix: Option<String>,
     #[cfg(feature = "cslb")]
     cslb_max_nodes: Option<usize>,
 }
@@ -206,6 +224,19 @@ impl ClientBuilder {
         self.tcp_keepalive = Some(value);
         self
     }
+    /// Maximum idle connections kept in the pool per host. Defaults to 100;
+    /// `0` disables keeping idle connections. Not a concurrency limit.
+    pub fn pool_max_idle_per_host(mut self, value: usize) -> Self {
+        self.pool_max_idle_per_host = Some(value);
+        self
+    }
+    /// Identify the application: appended to the User-Agent after a space,
+    /// as in `fds-rs/<version> my-app/1.2`. Must be nonempty printable ASCII
+    /// (spaces allowed). The User-Agent is not signed.
+    pub fn user_agent_suffix(mut self, value: impl Into<String>) -> Self {
+        self.user_agent_suffix = Some(value.into());
+        self
+    }
     /// Maximum DNS nodes retained per CSLB host (not an HTTP concurrency limit).
     #[cfg(feature = "cslb")]
     pub fn cslb_max_nodes(mut self, value: usize) -> Self {
@@ -247,6 +278,19 @@ impl ClientBuilder {
             return Err(Error::config_invalid(
                 "tcp_keepalive must be whole seconds in 1..=32767",
             ));
+        }
+        if let Some(value) = self.pool_max_idle_per_host {
+            conf.pool_max_idle_per_host = value;
+        }
+        if let Some(suffix) = &self.user_agent_suffix {
+            if suffix.trim().is_empty()
+                || !suffix.bytes().all(|b| b == b' ' || b.is_ascii_graphic())
+            {
+                return Err(Error::config_invalid(
+                    "user_agent_suffix must be nonempty printable ASCII",
+                ));
+            }
+            conf.user_agent = format!("{USER_AGENT} {suffix}");
         }
         #[cfg(feature = "cslb")]
         if let Some(value) = self.cslb_max_nodes {

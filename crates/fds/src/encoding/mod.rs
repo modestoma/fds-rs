@@ -1,4 +1,4 @@
-//! Query-string encoding. Ports `fds/httpparser/`. Crate-internal: the
+//! Query-string encoding. Crate-internal: the
 //! byte-exact encoding is an implementation detail.
 
 mod query;

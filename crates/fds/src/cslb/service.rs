@@ -1,4 +1,4 @@
-//! Node sources. Ports `cslb/service.go`, `service_static.go`, `service_rrdns.go`.
+//! Node sources: a static node list and round-robin DNS.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use super::Node;
 /// `None`).
 pub type NodeFailedCallback = Arc<dyn Fn(String) + Send + Sync>;
 
-/// A group of interchangeable nodes (Go `Service`). Thread-safe.
+/// A group of interchangeable nodes. Thread-safe.
 ///
 /// Methods return boxed futures so the trait stays usable as `Arc<dyn Service>`.
 pub trait Service: Send + Sync {
@@ -27,7 +27,7 @@ pub trait Service: Send + Sync {
     }
 }
 
-/// A fixed list of nodes (Go `staticService`).
+/// A fixed list of nodes.
 pub struct StaticService {
     static_nodes: Vec<Arc<dyn Node>>,
     nodes: ArcSwap<Vec<Arc<dyn Node>>>,
@@ -54,7 +54,7 @@ impl Service for StaticService {
     }
 }
 
-/// Round-robin DNS service (Go `rrDNSService`): resolves hostnames to A/AAAA
+/// Round-robin DNS service: resolves hostnames to A/AAAA
 /// records each refresh.
 pub struct RrDnsService {
     hostnames: Vec<String>,

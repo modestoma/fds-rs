@@ -112,8 +112,7 @@ impl UploadBody {
             use md5::{Digest, Md5};
             headers.insert(
                 "content-md5",
-                HeaderValue::from_str(&hex::encode(Md5::digest(bytes)))
-                    .map_err(|_| Error::invalid_input("invalid checksum"))?,
+                crate::client::header_value(&hex::encode(Md5::digest(bytes)))?,
             );
         }
         headers.insert("content-length", HeaderValue::from(self.length));

@@ -1,4 +1,4 @@
-//! Client-side load balancing (CSLB). Ports the `cslb/` package + `fds/cslb.go`.
+//! Client-side load balancing (CSLB).
 //! Enabled by the `cslb` feature. **Wire-format-neutral**: it only affects which
 //! IP a connection targets, never the request bytes/signature.
 //!
@@ -8,8 +8,8 @@
 //! that returns the round-robin pick plus the remaining healthy IPs as
 //! fallbacks, refreshed on a TTL timer. The resolver is not public: it would
 //! expose `reqwest` types. The load-balancing building blocks below are
-//! standalone utilities. Precise connect-failure exile (Go's dialer retry) is
-//! a possible future enhancement.
+//! standalone utilities. Precise connect-failure exile (a dialer retry) is a
+//! possible future enhancement.
 
 mod group;
 mod metrics;
@@ -28,7 +28,7 @@ pub(crate) use resolver::CslbResolver;
 pub use service::{NodeFailedCallback, RrDnsService, Service, StaticService};
 pub use strategy::{HashFunc, HashedStrategy, RoundRobinStrategy, Strategy};
 
-// ---- Constants (option.go / cslb.go / fds/cslb.go) ------------------------
+// ---- Constants -------------------------------------------------------------
 
 pub const NODE_COUNT_UNLIMITED: usize = usize::MAX / 2;
 pub const DEFAULT_MIN_SAMPLE_SIZE: usize = 10;
@@ -38,11 +38,11 @@ pub const HEALTHY_NODE_MUST_ALL: f64 = 1.0;
 pub const HEALTHY_NODE_ANY: f64 = 0.0;
 pub const NODE_FAILED_UNLIMITED: f64 = 1.0;
 pub const NODE_FAILED_ANY: f64 = 0.0;
-/// FDS's DNS cache TTL (fds/cslb.go).
+/// FDS's DNS cache TTL.
 pub const DNS_CACHE_TTL: Duration = Duration::from_secs(600);
 
 /// A load-balancer node — anything with a stable string representation used as
-/// its key (Go `Node: fmt.Stringer`). The blanket impl makes `IpAddr` (etc.) a
+/// its key. The blanket impl makes `IpAddr` (etc.) a
 /// `Node` directly.
 pub trait Node: std::fmt::Display + Send + Sync {}
 impl<T: std::fmt::Display + Send + Sync + ?Sized> Node for T {}
@@ -62,7 +62,7 @@ pub enum CslbError {
     Other(String),
 }
 
-/// Load-balancer options (Go `LoadBalancerOption`).
+/// Load-balancer options.
 #[derive(Clone, Debug)]
 pub struct LoadBalancerOption {
     pub max_node_count: usize,
@@ -94,8 +94,8 @@ struct LbInner {
 }
 
 impl LbInner {
-    /// service.refresh → metrics reset → group.set → strategy.set_nodes
-    /// (Go `refresh`). A `Mutex` provides the singleflight-like serialization.
+    /// service.refresh → metrics reset → group.set → strategy.set_nodes.
+    /// A `Mutex` provides the singleflight-like serialization.
     async fn refresh(&self) {
         let _guard = self.refresh_lock.lock().await;
         self.service.refresh().await;
@@ -135,8 +135,7 @@ impl LbInner {
     }
 }
 
-/// Orchestrates a service + strategy with TTL refresh and failure-based exile
-/// (Go `LoadBalancer`).
+/// Orchestrates a service + strategy with TTL refresh and failure-based exile.
 pub struct LoadBalancer {
     inner: Arc<LbInner>,
 }
@@ -181,13 +180,12 @@ impl LoadBalancer {
         Self { inner }
     }
 
-    /// Pick the next node (round-robin), refreshing once and retrying on error
-    /// (Go `Next`).
+    /// Pick the next node (round-robin), refreshing once and retrying on error.
     pub async fn next(&self) -> Result<Arc<dyn Node>, CslbError> {
         self.pick(|s| s.next()).await
     }
 
-    /// Pick a node for a request key (Go `NextFor`).
+    /// Pick a node for a request key.
     pub async fn next_for(&self, input: &dyn std::any::Any) -> Result<Arc<dyn Node>, CslbError> {
         self.pick(|s| s.next_for(input)).await
     }
@@ -208,8 +206,7 @@ impl LoadBalancer {
         result
     }
 
-    /// Report a node failure; may exile it and/or trigger a refresh (Go
-    /// `NodeFailed`).
+    /// Report a node failure; may exile it and/or trigger a refresh.
     pub async fn node_failed(&self, node: &dyn Node) {
         self.inner.node_failed(node).await;
     }

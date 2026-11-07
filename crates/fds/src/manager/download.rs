@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use md5::{Digest, Md5};
-use reqwest::header::{HeaderValue, CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
 use serde::{Deserialize, Serialize};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::task::TaskTracker;
@@ -578,8 +578,7 @@ async fn download_part(
     request.accepted_statuses = &[200, 206];
     request.headers.insert(
         RANGE,
-        HeaderValue::from_str(&format!("bytes={start}-{}", end - 1))
-            .map_err(|_| Error::invalid_input("invalid range"))?,
+        crate::client::header_value(&format!("bytes={start}-{}", end - 1))?,
     );
     let mut response = client.do_request(request).await?;
     // Even a full-object request sent with Range must be honored; no silent 200 fallback.

@@ -107,6 +107,8 @@ Client 内部共享配置、凭据和连接池，可廉价 `clone()` 后交给�
 | `request_timeout(Duration)` | 无 | 显式开启单次请求总期限，覆盖响应 body 的流式消费；`GetObjectRequest` / `PutObjectRequest` 的 `.timeout(Duration)` 可按请求覆盖 |
 | `pool_idle_timeout(Duration)` | 90 秒 | 空闲连接在池中保留的时间 |
 | `tcp_keepalive(Duration)` | 30 秒 | 整数秒，1–32767；实际探测由操作系统调度 |
+| `pool_max_idle_per_host(usize)` | 100 | 连接池每主机最多保留的空闲连接数；0 表示不保留空闲连接；不是并发上限 |
+| `user_agent_suffix(text)` | 无 | 追加在 `fds-rs/<版本>` 之后、以空格分隔的应用标识，须为非空的可打印 ASCII；User-Agent 不参与签名 |
 | `enable_md5_calculate(bool)` | false | 为内存 body 计算十六进制 Content-MD5；文件/流另见上传章节 |
 | `retry_policy(RetryPolicy)` | 不重试 | 只对显式分类的读取生效 |
 | `cslb_max_nodes(usize)` | 20 | 仅 `cslb` feature；必须大于零，限制每个主机保留的 DNS 节点数 |
