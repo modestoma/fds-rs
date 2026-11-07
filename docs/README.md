@@ -1,6 +1,6 @@
 # 文档导航
 
-日常 SDK 接入只需阅读仓库根目录的 [中文调用手册](../README.md)，其中包含各功能的调用示例、三个完整组合程序和全部示例程序的索引；crate 级 rustdoc（`cargo doc -p fds --open`）给出快速上手、builder 约定、错误处理和 feature 说明。这里按用途保留补充资料，不重复维护另一份调用手册。
+日常 SDK 接入只需阅读仓库根目录的 [中文调用手册](../README.md)，其中包含各功能的调用示例、三个完整组合程序和全部示例程序的索引；crate 级 rustdoc（`cargo doc -p fds-rs --open`）给出快速上手、builder 约定、错误处理和 feature 说明。这里按用途保留补充资料，不重复维护另一份调用手册。
 
 | 文档 | 适用场景 |
 | --- | --- |
@@ -8,6 +8,7 @@
 | [协议说明与能力限制](protocol.md) | 核对原始资料中的冲突、OAuth/CDN 采用依据和未提供能力 |
 | [CLI 使用手册](cli.md) | 从命令行操作 Bucket 和对象 |
 | [验证指南](validation.md) | 运行本地检查、真实服务 smoke、OAuth 验证和下载基准 |
+| [发布指南](release.md) | 提交规范、自动版本号、crates.io 发布与首次发布准备 |
 | [原始 API 索引](open_api/README.md) | 按功能查找 35 份 YAML、33 项操作的 SDK 映射与文件摘要 |
 
 ## 资料维护

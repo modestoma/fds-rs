@@ -27,7 +27,7 @@ export FDS_LIVE=1
 export FDS_ENDPOINT=https://YOUR-REGION-ENDPOINT
 export FDS_LIVE_BUCKET=YOUR-SCRATCH-BUCKET
 # 使用安全环境注入 FDS_ACCESS_KEY_ID / FDS_ACCESS_KEY_SECRET；不要写入命令历史。
-cargo test --locked -p fds --test live_acceptance live_object_roundtrip -- --ignored --test-threads=1 --nocapture
+cargo test --locked -p fds-rs --test live_acceptance live_object_roundtrip -- --ignored --test-threads=1 --nocapture
 ```
 
 每次测试在固定命名空间下生成 PID + 纳秒的独立对象名，覆盖 slash、中文、空格、加号和百分号。
@@ -46,7 +46,7 @@ XiaoMi 还需 `FDS_OAUTH_OPEN_ID`、`FDS_OAUTH_MAC_KEY`、`FDS_OAUTH_MAC_ALGORIT
 `FDS_OAUTH_FIXTURE_TEXT`，勿用大对象或敏感内容。
 
 ```sh
-FDS_LIVE=1 cargo test --locked -p fds --test live_acceptance live_oauth_discovery_and_read -- --ignored --test-threads=1
+FDS_LIVE=1 cargo test --locked -p fds-rs --test live_acceptance live_oauth_discovery_and_read -- --ignored --test-threads=1
 ```
 
 断言 discovery 精确返回、交换 token 尚未过期、app Bucket 列举及 OAuth 读取字节。
@@ -84,7 +84,7 @@ CLI 使用 `FDS_ENDPOINT`、`FDS_ACCESS_KEY_ID`、`FDS_ACCESS_KEY_SECRET`，见 
 ## 本地下载基准
 
 ```sh
-cargo build --locked -p fds --example download_memory
+cargo build --locked -p fds-rs --example download_memory
 python3 scripts/benchmark_download.py target/debug/examples/download_memory
 ```
 

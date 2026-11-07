@@ -1,10 +1,12 @@
 # FDS Rust SDK
 
+[![crates.io](https://img.shields.io/crates/v/fds-rs.svg)](https://crates.io/crates/fds-rs) [![docs.rs](https://img.shields.io/docsrs/fds-rs)](https://docs.rs/fds-rs) [![license](https://img.shields.io/crates/l/fds-rs.svg)](LICENSE)
+
 小米 FDS 对象存储的异步 Rust SDK，基于 Tokio 和 reqwest，支持 Bucket 管理、对象读写、分页、ACL、分片上传、断点下载、预签名 URL 和 OAuth。
 
 适用于 Rust 服务端、命令行和原生客户端；当前不提供浏览器/WASM 接口或 Kotlin/Swift 封装。终端应用不要内置长期 Access Key Secret，可使用服务端签发的短期预签名 URL，或已开通的 OAuth 认证。
 
-本文是 `fds` 0.1.0 的完整调用入口。示例函数只有被调用时才执行请求，服务权限与地区支持以实际 FDS 环境为准。crate 级 rustdoc（`cargo doc -p fds --open`）另有快速上手、builder 约定、错误处理和 feature 的英文概述。
+本文是 SDK（crates.io 包名 `fds-rs`，代码中以 `fds` 引用）的完整调用入口。示例函数只有被调用时才执行请求，服务权限与地区支持以实际 FDS 环境为准。crate 级 rustdoc（[docs.rs](https://docs.rs/fds-rs) 或本地 `cargo doc -p fds-rs --open`）另有快速上手、builder 约定、错误处理和 feature 的英文概述。
 
 ## 目录
 
@@ -34,26 +36,20 @@
 
 ## 依赖与运行环境
 
-仓库声明的最低 Rust 版本为 1.86。`fds` 和 `fds_cli` 的当前版本均为 0.1.0，通过公司内网 Cargo 源（registry 名 `artifactory`）分发，需要在可访问内网的环境中下载；发布前可用 path 依赖指向本仓库的 `crates/fds`。
-
-在项目的 `.cargo/config.toml` 或全局 `~/.cargo/config.toml` 中添加以下配置，保留已有配置：
-
-```toml
-[registries.artifactory]
-index = "sparse+https://pkgs.d.xiaomi.net/artifactory/api/cargo/cargo-local/index/"
-credential-provider = "cargo:token"
-```
+仓库声明的最低 Rust 版本为 1.86。SDK 以 `fds-rs` 发布到 crates.io，库名为 `fds`，代码中写 `use fds::...`；CLI 包为 `fds_cli`。两者版本号保持一致。
 
 在项目 `Cargo.toml` 中添加依赖：
 
 ```toml
 [dependencies]
-fds = { version = "0.1.0", registry = "artifactory" }
+fds-rs = "0.1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }
 bytes = "1"
 futures-util = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 ```
+
+也可以执行 `cargo add fds-rs`。
 
 按用到的类型添加依赖：字节流示例需要 `bytes`/`futures-util`，UTC 过期时间需要 `chrono`。组合示例文件另列依赖。SDK 的传递依赖不能代替应用自己的直接依赖声明。
 
@@ -63,11 +59,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 | `manager` | 是 | `Client::download_file`（`DownloadFile`）、断点与请求限流（`RequestLimiter`） |
 | `cslb` | 否 | 让 Client 通过内部 CSLB DNS resolver 解析主机；不增加公开模块或类型 |
 
-只用核心：`fds = { version = "0.1.0", registry = "artifactory", default-features = false }`。
-启用 CSLB：`fds = { version = "0.1.0", registry = "artifactory", features = ["cslb"] }`。
+只用核心：`fds-rs = { version = "0.1.0", default-features = false }`。
+启用 CSLB：`fds-rs = { version = "0.1.0", features = ["cslb"] }`。
 独立 CLI 操作见 [CLI 手册](docs/cli.md)。
 
-运行 `cargo check` 验证依赖解析和构建。如果提示需要认证，配置环境变量 `CARGO_REGISTRIES_ARTIFACTORY_TOKEN`，值为 `Bearer <TOKEN>`，使用具有读取权限的 Artifactory 令牌。不要将令牌写入仓库。网络、证书或版本不存在的问题需要分别排查。
+运行 `cargo check` 验证依赖解析和构建。
 
 ## 客户端配置与通用调用约定
 
@@ -1110,7 +1106,7 @@ async fn read_with_deadline(client: &Client, bucket: &str, key: &str)
 流程：流式计算本地文件 MD5 → PUT 文件与自定义摘要元数据 → HEAD 检查长度 → GET 分块计算 MD5 → 比较长度和摘要 → 生成 10 分钟 GET 预签名 URL。
 
 ```sh
-cargo run --locked -p fds --example upload_verify -- BUCKET UNIQUE_KEY LOCAL_FILE
+cargo run --locked -p fds-rs --example upload_verify -- BUCKET UNIQUE_KEY LOCAL_FILE
 ```
 
 读取 `FDS_ENDPOINT`、`FDS_ACCESS_KEY_ID`、`FDS_ACCESS_KEY_SECRET`。额外直接依赖 `md-5 = "0.10"`，库名为 `md5`。MD5 在此仅用于意外传输/内容差异检查，不作为抗篡改认证。文件从计算摘要到上传完成必须保持不变；使用业务唯一 key 避免覆盖和并发改写。验证失败不会删除远端对象。程序成功时只将预签名 URL 写到 stdout，诊断写 stderr；stdout 应交给受控接收方，勿收集到公开日志。
@@ -1122,7 +1118,7 @@ cargo run --locked -p fds --example upload_verify -- BUCKET UNIQUE_KEY LOCAL_FIL
 流程：逐页遍历源 prefix → 校验返回 key 范围 → 映射目标 prefix → 服务端 Copy → HEAD 目标大小 → 输出完成计数。
 
 ```sh
-cargo run --locked -p fds --example copy_prefix -- SRC_BUCKET SRC_PREFIX DST_BUCKET DST_PREFIX
+cargo run --locked -p fds-rs --example copy_prefix -- SRC_BUCKET SRC_PREFIX DST_BUCKET DST_PREFIX
 ```
 
 使用相同的三项 FDS 环境变量。复制串行执行，不下载文件，不自动删除源对象。拒绝同桶重叠前缀，防止复制结果再次进入源清单。目标 key 可能被覆盖，应使用新的目标命名空间；失败时已复制对象保留。大小相等不是内容一致证明，源清单也不是快照；需要严格迁移一致性时冻结源写入并增加内容校验和业务清单。
@@ -1134,14 +1130,14 @@ cargo run --locked -p fds --example copy_prefix -- SRC_BUCKET SRC_PREFIX DST_BUC
 流程：QQ provider token 换 storage token → 构建绑定 appId 的 Client → 确认所选 Bucket 位于 app Bucket 返回列表 → 分页统计该前缀对象数与总字节数。
 
 ```sh
-cargo run --locked -p fds --example oauth_inventory -- BUCKET PREFIX
+cargo run --locked -p fds-rs --example oauth_inventory -- BUCKET PREFIX
 ```
 
 环境变量：`FDS_OAUTH_ORIGIN`（交换入口）、`FDS_ENDPOINT`（对象入口）、`FDS_APP_ID`、`FDS_OAUTH_APP_ID`、`FDS_PROVIDER_TOKEN`。两处 origin 都由应用明确配置。程序不修改 Bucket 或对象，但 token 交换仍可能创建/续期凭据。示例使用 `storage_token`，没有自动刷新；长时间统计若 token 到期会返回错误。需要自动续期时可改用 `StorageTokenProvider`（见[刷新与轮换凭据](#刷新与轮换凭据)）。
 
 ### 全部示例程序
 
-示例位于 `crates/fds/examples`，`scripts/check.sh` 在每种 feature 组合下编译全部示例。需要连接服务的示例统一读取 `FDS_ENDPOINT`、`FDS_ACCESS_KEY_ID`、`FDS_ACCESS_KEY_SECRET`（OAuth 示例见上文），运行方式为 `cargo run --locked -p fds --example <名称> -- <参数>`。
+示例位于 `crates/fds/examples`，`scripts/check.sh` 在每种 feature 组合下编译全部示例。需要连接服务的示例统一读取 `FDS_ENDPOINT`、`FDS_ACCESS_KEY_ID`、`FDS_ACCESS_KEY_SECRET`（OAuth 示例见上文），运行方式为 `cargo run --locked -p fds-rs --example <名称> -- <参数>`。
 
 | 示例 | 内容 | 是否联网 |
 | --- | --- | --- |
@@ -1166,19 +1162,21 @@ cargo run --locked -p fds --example oauth_inventory -- BUCKET PREFIX
 
 ## Workspace 与 CLI
 
-根目录是纯 workspace；`crates/fds` 是 SDK，`crates/fds_cli` 是独立验证工具，包名和二进制名均为 `fds_cli`。
+根目录是纯 workspace；`crates/fds` 是 SDK（包名 `fds-rs`），`crates/fds_cli` 是独立验证工具，包名和二进制名均为 `fds_cli`。
 
-从内网源安装 CLI：先将上面的 registry 配置添加到全局 `~/.cargo/config.toml`，然后执行：
+从 crates.io 安装 CLI：
 
 ```sh
-cargo install fds_cli --version 0.1.0 --registry artifactory --locked
+cargo install fds_cli --version 0.1.0 --locked
 fds_cli --help
 ```
 
-默认安装到 `~/.cargo/bin`（自定义 `CARGO_HOME` 时为 `$CARGO_HOME/bin`），确保该目录在 `PATH` 中。下载认证方式与 SDK 相同。
+默认安装到 `~/.cargo/bin`（自定义 `CARGO_HOME` 时为 `$CARGO_HOME/bin`），确保该目录在 `PATH` 中。
 
 本地开发可使用 `cargo run -p fds_cli -- --help` 或 `cargo install --path crates/fds_cli --locked`。不再提供 SDK 的 `cli` feature 或旧命令兼容层。完整命令与 SDK 映射见 [CLI 使用手册](docs/cli.md)。
 
+版本发布流程见 [发布指南](docs/release.md)。
+
 ## 许可证
 
-Apache-2.0。
+[MIT](LICENSE)。

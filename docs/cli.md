@@ -4,7 +4,7 @@
 
 ## 构建与配置
 
-安装：在仓库根目录执行 `cargo install --path crates/fds_cli --locked`。
+安装：执行 `cargo install fds_cli --locked`；本地开发时在仓库根目录执行 `cargo install --path crates/fds_cli --locked`。
 
 普通命令需要配置环境变量 `FDS_ENDPOINT`、`FDS_ACCESS_KEY_ID`、`FDS_ACCESS_KEY_SECRET`；endpoint 使用完整 origin，例如 `https://cnbj1.fds.api.xiaomi.com`。也可通过参数指定：
 

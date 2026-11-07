@@ -6,18 +6,20 @@ cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
 # The tracing subscriber regression requires serial tests.
 for flags in '' '--no-default-features' '--all-features' '--no-default-features --features cslb'; do
     read -r -a feature_args <<< "$flags"
-    cargo test --locked -p fds "${feature_args[@]}" -- --test-threads=1
-    cargo check --locked -p fds --all-targets "${feature_args[@]}"
+    cargo test --locked -p fds-rs "${feature_args[@]}" -- --test-threads=1
+    cargo check --locked -p fds-rs --all-targets "${feature_args[@]}"
 done
 cargo test --locked -p fds_cli --all-features
 cargo check --locked -p fds_cli --all-targets
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-deps
 cargo run --locked -p fds_cli -- --help > /dev/null
+# Packages exactly what crates.io would receive and builds it in isolation.
+cargo package --locked --workspace --allow-dirty
 # Install with rustup toolchain install 1.86.0 --profile minimal first.
 for flags in '--no-default-features' '' '--all-features'; do
     read -r -a feature_args <<< "$flags"
-    cargo +1.86.0 test --locked -p fds "${feature_args[@]}" -- --test-threads=1
-    cargo +1.86.0 check --locked -p fds --all-targets "${feature_args[@]}"
+    cargo +1.86.0 test --locked -p fds-rs "${feature_args[@]}" -- --test-threads=1
+    cargo +1.86.0 check --locked -p fds-rs --all-targets "${feature_args[@]}"
 done
 cargo +1.86.0 check --locked -p fds_cli --all-features --all-targets
 python3 scripts/check_coverage.py

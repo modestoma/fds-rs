@@ -1,0 +1,30 @@
+name: CI
+
+# Pushes to main run this through release.yml, which releases only after it passes.
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # scripts/check.sh also runs the MSRV build with `cargo +1.86.0`.
+      - run: rustup toolchain install 1.86.0 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: bash scripts/check.sh

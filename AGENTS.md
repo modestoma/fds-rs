@@ -6,7 +6,11 @@
 
 ## 验证
 
-本地验证以 `scripts/check.sh` 为准，包括 fmt、clippy `-D warnings`、各 feature 组合的测试与 check、fds_cli 测试、`cargo doc -D warnings`、MSRV 1.86、文档与覆盖率脚本、`git diff --check`。项目当前没有 CI。
+本地验证以 `scripts/check.sh` 为准，包括 fmt、clippy `-D warnings`、各 feature 组合的测试与 check、fds_cli 测试、`cargo doc -D warnings`、MSRV 1.86、`cargo package`、文档与覆盖率脚本、`git diff --check`。GitHub Actions 的 `ci.yml` 运行同一个脚本。
+
+## 发布
+
+SDK 以 `fds-rs`（库名 `fds`）、CLI 以 `fds_cli` 发布到 crates.io，版本号由 semantic-release 根据 Conventional Commits 计算，不要手动改版本号。流程见 `docs/release.md`。
 
 ## Git 提交
 

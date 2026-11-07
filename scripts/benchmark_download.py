@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """macOS client-only RSS benchmark; server and verification stay in Python.
-Run: cargo build --offline -p fds --example download_memory
+Run: cargo build --offline -p fds-rs --example download_memory
      python3 scripts/benchmark_download.py target/debug/examples/download_memory
 """
 import hashlib

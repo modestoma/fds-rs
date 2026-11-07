@@ -58,16 +58,20 @@ for example in examples:
     if f"](crates/fds/examples/{example.name})" not in readme:
         errors.append(f"README.md: example {example.name} is not linked")
 
-# Documented dependency versions follow the crate versions.
-def crate_version(name):
-    manifest = (root / "crates" / name / "Cargo.toml").read_text()
-    return re.search(r'^version = "([^"]+)"', manifest, re.M).group(1)
-version = crate_version("fds")
-if crate_version("fds_cli") != version:
-    errors.append("crates/fds_cli/Cargo.toml: version differs from crates/fds")
+# Documented dependency versions follow the workspace version, which both
+# crates inherit; scripts/set_version.py rewrites all of them on release.
+import tomllib
+workspace = tomllib.loads((root / "Cargo.toml").read_text())
+version = workspace["workspace"]["package"]["version"]
+if workspace["workspace"]["dependencies"]["fds"]["version"] != version:
+    errors.append("Cargo.toml: workspace dependency fds-rs version differs from the workspace version")
+for name in ("fds", "fds_cli"):
+    package = tomllib.loads((root / "crates" / name / "Cargo.toml").read_text())["package"]
+    if package.get("version") != {"workspace": True}:
+        errors.append(f"crates/{name}/Cargo.toml: version must be inherited from the workspace")
 for path in documents:
     content = path.read_text()
-    for found in re.findall(r'(?:fds|fds_cli)\s*=\s*\{\s*version\s*=\s*"([^"]+)"', content):
+    for found in re.findall(r'(?:fds-rs|fds_cli)\s*=\s*(?:\{\s*version\s*=\s*)?"([^"]+)"', content):
         if found != version:
             errors.append(f"{path.relative_to(root)}: dependency version {found} != {version}")
     for found in re.findall(r"--version\s+(\d+\.\d+\.\d+)", content):

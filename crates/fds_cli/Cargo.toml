@@ -1,11 +1,16 @@
 [package]
 name = "fds_cli"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.86"
-description = "Command-line verification tool for the FDS Rust SDK"
-license = "Apache-2.0"
-publish = ["artifactory"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Command-line tool for XiaoMi FDS object storage, built on the fds-rs SDK"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["fds", "xiaomi", "object-storage", "cli"]
+categories = ["command-line-utilities"]
+include = ["src/**/*", "tests/**/*", "README.md", "LICENSE"]
 
 [[bin]]
 name = "fds_cli"
@@ -15,7 +20,7 @@ path = "src/main.rs"
 cslb = ["fds/cslb"]
 
 [dependencies]
-fds = { path = "../fds", version = "0.1.0", registry = "artifactory", features = ["manager"] }
+fds = { workspace = true, features = ["manager"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

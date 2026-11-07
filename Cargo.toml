@@ -1,3 +1,16 @@
 [workspace]
 members = ["crates/fds", "crates/fds_cli"]
 resolver = "2"
+
+# Shared by both crates; scripts/set_version.py bumps the version on release.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+license = "MIT"
+repository = "https://github.com/modestoma/fds-rs"
+homepage = "https://github.com/modestoma/fds-rs"
+
+[workspace.dependencies]
+# The package is published as fds-rs; the library target stays `fds`.
+fds = { package = "fds-rs", path = "crates/fds", version = "0.1.0" }

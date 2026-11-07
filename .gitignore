@@ -3,3 +3,6 @@
 .DS_Store
 # skill-creator eval workspaces (regenerable scratch: run outputs, benchmark, review.html)
 .claude/skills/*-workspace/
+
+# semantic-release tooling
+/node_modules
