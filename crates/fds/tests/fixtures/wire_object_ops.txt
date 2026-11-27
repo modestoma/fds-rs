@@ -261,6 +261,26 @@ host: <host>
 --- body ---
 {"accessControlList":[{"grantee":{"id":"ALL_USERS","displayName":""},"permission":"READ","type":"GROUP"}],"owner":{"id":"","displayName":""}}
 
+=== set_object_outside_access true ===
+PUT /b/dir%2Fa%20b%2Bc.txt?setOutsideAccess=true HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/<version>
+host: <host>
+--- body ---
+
+
+=== set_object_outside_access false ===
+PUT /b/dir%2Fa%20b%2Bc.txt?setOutsideAccess=false HTTP/1.1
+date: <date>
+authorization: Galaxy-V2 AKID:<signature>
+accept: */*
+user-agent: fds-rs/<version>
+host: <host>
+--- body ---
+
+
 === presign GET ===
 https://cnbj1.fds.api.xiaomi.com/b/dir%2Fa%20b%2Bc.txt?Expires=1752400000123&GalaxyAccessKeyId=AKID&Signature=9fex3WP5M3zy+aMAi5aW0z8JC3w=
 

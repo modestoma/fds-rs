@@ -71,7 +71,7 @@ pub(crate) mod multipart;
 mod presign;
 mod put;
 
-pub use acl::{GetObjectAcl, SetObjectAcl, SetObjectPublic};
+pub use acl::{GetObjectAcl, SetObjectAcl, SetObjectOutsideAccess, SetObjectPublic};
 #[cfg(feature = "manager")]
 pub(crate) use basic::head_request;
 pub use basic::{

@@ -441,6 +441,22 @@ async fn requests() -> Vec<(&'static str, String)> {
         })
         .await,
     ));
+    for allow in [true, false] {
+        cases.push((
+            if allow {
+                "set_object_outside_access true"
+            } else {
+                "set_object_outside_access false"
+            },
+            capture(plain, 200, "", move |c| async move {
+                c.set_object_outside_access("b", ODD, allow)
+                    .send()
+                    .await
+                    .unwrap();
+            })
+            .await,
+        ));
+    }
     cases
 }
 
