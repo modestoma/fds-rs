@@ -3,9 +3,10 @@
 //! Every request is captured from a raw TCP socket exactly as the SDK sends
 //! it: request line, header lines in send order and the raw body. Only the
 //! values that legitimately differ between runs are normalized: the `host`
-//! port, the `date` header and the signature inside `authorization` (a
-//! function of the captured method, URL and headers plus that date; the signer
-//! itself is pinned by the Go golden vectors). Presigned URLs carry no clock
+//! port, the `date` header, the crate version in `user-agent` and the
+//! signature inside `authorization` (a function of the captured method, URL
+//! and headers plus that date; the signer itself is pinned by the Go golden
+//! vectors). Presigned URLs carry no clock
 //! and are compared in full, signature included.
 //!
 //! The expected texts are `tests/fixtures/wire_object_ops.txt` and
@@ -122,6 +123,15 @@ fn normalize(head: &str, body: &[u8]) -> String {
                 assert!(value.ends_with(" GMT"), "{line}");
                 "date: <date>".to_string()
             }
+            // The crate version changes on every release; the rest of the
+            // value is still compared.
+            Some(("user-agent", value)) => format!(
+                "user-agent: {}",
+                value.replace(
+                    concat!("fds-rs/", env!("CARGO_PKG_VERSION")),
+                    "fds-rs/<version>"
+                )
+            ),
             Some(("authorization", "OAuth")) => line.to_string(),
             Some(("authorization", value)) => {
                 let signature = value
