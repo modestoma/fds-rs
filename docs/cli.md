@@ -188,6 +188,8 @@ fds_cli object set-acl demo-bucket demo/hello.txt --file ./acl.json --action del
 fds_cli object get-acl demo-bucket demo/hello.txt # 验证 grant 已移除
 fds_cli object set-public demo-bucket demo/hello.txt # 设为公开可读
 fds_cli object get-acl demo-bucket demo/hello.txt # 应出现 ALL_USERS 的 GROUP/READ 授权
+fds_cli object set-outside-access demo-bucket demo/hello.txt true # 打开外网访问；false 关闭
+fds_cli object basic-info demo-bucket demo/hello.txt # 回读 allowOutsideAccess
 fds_cli object get-acl demo-bucket demo/versioned.txt --version-id YOUR_VERSION_ID # 查看指定版本 ACL
 fds_cli object set-acl demo-bucket demo/versioned.txt --version-id YOUR_VERSION_ID --file ./acl.json --action add # 增加指定版本授权
 fds_cli object get-acl demo-bucket demo/versioned.txt --version-id YOUR_VERSION_ID # 回读指定版本授权

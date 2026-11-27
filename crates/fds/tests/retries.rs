@@ -240,6 +240,15 @@ fn idempotent_writes(c: &Client, mode: RetryMode) -> Vec<Write> {
         ),
         (
             "PUT",
+            "/b/outside",
+            c.set_object_outside_access("b", "outside", true)
+                .retry(mode)
+                .send()
+                .map(done)
+                .boxed(),
+        ),
+        (
+            "PUT",
             "/b/part",
             c.upload_part("b", "part", "id", part, b"x".to_vec())
                 .retry(mode)

@@ -76,3 +76,9 @@ Galaxy-V2 使用 HMAC-SHA1/Base64。签名包含 Date/Expires 行、排序的 x-
 ## Copy 回执
 
 官方 [galaxy-fds-core 3.0.44 源码包](https://repo.maven.apache.org/maven2/com/xiaomi/infra/galaxy/galaxy-fds-core/3.0.44/galaxy-fds-core-3.0.44-sources.jar) 的 `CopyObjectResult` 继承 `PutObjectResult`，目标字段为 `bucketName` / `objectName`。SDK 要求这两个字段为字符串且匹配请求，允许其他字段以兼容服务演进，但不返回其中的签名或凭据字段。这是源码契约依据，不代表已完成目标环境的真实 Copy 验证。
+
+## 对象外网访问
+
+原始 YAML 没有这项操作。官方 [Java SDK](https://github.com/XiaoMi/galaxy-fds-sdk-java/blob/4d7bfe5fc26c4e478e9016a139beaedca7f17089/src/main/java/com/xiaomi/infra/galaxy/fds/client/GalaxyFDSClient.java#L1495) 的 `setObjectOutsideAccess` 和 [Python SDK](https://github.com/XiaoMi/galaxy-fds-sdk-python/blob/a2268d421d36edee817070b194522dcc16adf96e/fds/galaxy_fds_client.py#L1688) 的 `set_object_outside_access` 都发送 `PUT /{bucket}/{object}?setOutsideAccess=true|false`，不带 body，以 HTTP 200 为成功；Java 另带 `Content-Type: application/json`，Python 不带，说明服务端不依赖它。`setOutsideAccess` 不在签名子资源列表中，规范化资源只含路径。SDK 不带 body 和 Content-Type，忽略响应体。
+
+Java SDK 不重试这项操作（不在 `retryMethodSet` 中），但请求是把开关设为给定值，重复执行结果相同，所以 SDK 把它归为幂等写，默认不重试，按策略开启。两份 SDK 都同样提供 Bucket 级 `PUT /{bucket}?setOutsideAccess=...`，SDK 目前只实现对象级。开关的服务端效果（哪些网络算外网、是否需要 owner 权限）没有文档，也未做真实服务验证。

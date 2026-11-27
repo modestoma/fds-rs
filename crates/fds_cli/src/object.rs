@@ -156,6 +156,14 @@ pub enum ObjectCmd {
         bucket: String,
         object: String,
     },
+    /// Turn outside (public network) access on or off; read it with basic-info
+    SetOutsideAccess {
+        bucket: String,
+        object: String,
+        /// `true` allows outside access, `false` forbids it
+        #[arg(action = clap::ArgAction::Set)]
+        allow: bool,
+    },
 }
 
 pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
@@ -395,6 +403,17 @@ pub async fn run_object(client: &Client, cmd: &ObjectCmd) -> Result<()> {
         }
         ObjectCmd::SetPublic { bucket, object } => {
             client.set_object_public(bucket, object).send().await?;
+            output::ok()?;
+        }
+        ObjectCmd::SetOutsideAccess {
+            bucket,
+            object,
+            allow,
+        } => {
+            client
+                .set_object_outside_access(bucket, object, *allow)
+                .send()
+                .await?;
             output::ok()?;
         }
     }

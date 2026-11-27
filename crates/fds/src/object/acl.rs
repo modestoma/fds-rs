@@ -113,6 +113,41 @@ impl SetObjectPublic {
     }
 }
 
+/// Builder for [`Client::set_object_outside_access`].
+#[derive(Debug)]
+#[must_use = "an operation builder does nothing until `send` is awaited"]
+pub struct SetObjectOutsideAccess {
+    client: Client,
+    bucket: String,
+    object: String,
+    allow: bool,
+    timeout: Option<Duration>,
+    retry: crate::RetryMode,
+}
+
+impl SetObjectOutsideAccess {
+    timeout_option!();
+
+    retry_option!();
+
+    /// PUT `/{bucket}/{object}?setOutsideAccess=true|false` without a body.
+    ///
+    /// An idempotent write (the flag is set to the given value), retried
+    /// when the client's [`RetryPolicy`](crate::RetryPolicy) enables
+    /// idempotent writes or [`retry`](Self::retry) says so.
+    pub async fn send(self) -> Result<()> {
+        validate_object(&self.bucket, &self.object)?;
+        let mut cr = ClientRequest::new(&self.bucket, &self.object, Method::PUT)
+            .idempotent(self.retry)
+            .with_timeout(self.timeout)?;
+        cr.query.add(
+            "setOutsideAccess",
+            if self.allow { "true" } else { "false" },
+        );
+        self.client.do_discard(cr).await
+    }
+}
+
 impl Client {
     /// Get an object's ACL.
     pub fn get_object_acl(
@@ -168,5 +203,33 @@ impl Client {
         object: impl Into<String>,
     ) -> SetObjectPublic {
         SetObjectPublic::new(self, bucket, object)
+    }
+
+    /// Turn an object's outside (public network) access on or off.
+    ///
+    /// A switch of its own, not an ACL grant:
+    /// [`set_object_public`](Self::set_object_public) only changes the ACL and
+    /// leaves it alone. Read the current value from
+    /// [`ObjectBasicInfo::allow_outside_access`](crate::object::ObjectBasicInfo::allow_outside_access).
+    ///
+    /// ```no_run
+    /// # async fn example(client: &fds::Client) -> fds::Result<()> {
+    /// client.set_object_outside_access("bucket", "key", true).send().await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn set_object_outside_access(
+        &self,
+        bucket: impl Into<String>,
+        object: impl Into<String>,
+        allow: bool,
+    ) -> SetObjectOutsideAccess {
+        SetObjectOutsideAccess {
+            client: self.clone(),
+            bucket: bucket.into(),
+            object: object.into(),
+            allow,
+            timeout: None,
+            retry: crate::RetryMode::Policy,
+        }
     }
 }

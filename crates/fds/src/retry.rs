@@ -31,7 +31,8 @@ use std::{
 ///   [`retry_idempotent_writes`](Self::retry_idempotent_writes) or a
 ///   per-request [`RetryMode::Enabled`]: `put_object` and `upload_part` with
 ///   a bytes body, `delete_object`, `set_object_metadata`,
-///   `set_lifecycle_config` and `set_access_log`. Repeating one of them
+///   `set_object_outside_access`, `set_lifecycle_config` and
+///   `set_access_log`. Repeating one of them
 ///   leaves the same final state, but a repeat can still be observed:
 ///   `delete_object` may report `NotFound` when an earlier attempt already
 ///   deleted the object, a repeated `put_object` may add a version in a

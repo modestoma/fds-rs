@@ -649,6 +649,8 @@ async fn revoke_object_read(client: &Client, bucket: &str, key: &str, user_id: &
 
 `client.set_object_public(bucket, key).send().await?` 添加 `ALL_USERS` Group 的 Read 授权，意味着公开可读。只有业务明确需要匿名访问时才使用。
 
+`client.set_object_outside_access(bucket, key, true).send().await?` 打开对象的外网访问，传 `false` 关闭；请求为 `PUT /{bucket}/{object}?setOutsideAccess=true|false`，不带 body。它是独立开关，不是 ACL 授权，`set_object_public` 不会修改它。当前值用 `get_object_basic_info` 读取 `allow_outside_access`。属于幂等写，只在 `RetryPolicy::retry_idempotent_writes()` 或 `.retry(RetryMode::Enabled)` 时重试。协议依据见 [协议说明](docs/protocol.md#对象外网访问)。
+
 创建桶的 canned ACL 使用独立枚举，可设置多个值：
 
 ```rust,no_run

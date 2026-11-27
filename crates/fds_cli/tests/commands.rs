@@ -246,6 +246,30 @@ async fn cache_and_head_are_distinct_operations() {
 }
 
 #[tokio::test]
+async fn outside_access_sends_the_flag_and_rejects_other_values() {
+    let mut server = Server::new_async().await;
+    for allow in ["true", "false"] {
+        let mock = server
+            .mock("PUT", format!("/b/k?setOutsideAccess={allow}").as_str())
+            .create_async()
+            .await;
+        let result = run(
+            &server.url(),
+            &["object", "set-outside-access", "b", "k", allow],
+        )
+        .await;
+        success(&result);
+        mock.assert_async().await;
+    }
+    let result = run(
+        &server.url(),
+        &["object", "set-outside-access", "b", "k", "yes"],
+    )
+    .await;
+    assert_eq!(result.status.code(), Some(2));
+}
+
+#[tokio::test]
 async fn pagination_exposes_markers_and_follows_all_pages() {
     let mut server = Server::new_async().await;
     let one = server

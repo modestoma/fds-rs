@@ -558,6 +558,11 @@ async fn every_object_builder_validates_names_and_timeout_before_sending() {
                 .timeout(t)
                 .send()
                 .await,
+            client
+                .set_object_outside_access(bucket, object, true)
+                .timeout(t)
+                .send()
+                .await,
         ];
         for (index, result) in results.into_iter().enumerate() {
             let error = result.unwrap_err();
